@@ -19,10 +19,22 @@ jobs:
       fail-fast: false
       matrix:
         # Matrix-ready for the Postgres 11-17 version matrix wired in phase 2
-        # (P2-T13). Phase 0/1 have no PG-dependent tests yet, so a single entry
-        # keeps CI green now; expand this list to [11, 12, 13, 14, 15, 16, 17]
-        # when validate lands.
+        # (P2-T13). Expand this list to [11, 12, 13, 14, 15, 16, 17] when the
+        # validate version matrix lands; the pull/profile integration tests
+        # already run against the matrixed Postgres service below.
         pg: ["16"]
+    services:
+      postgres:
+        image: postgres:${{ matrix.pg }}
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -34,6 +46,9 @@ jobs:
       - name: Test
         env:
           ROWSHAPE_PG_VERSION: ${{ matrix.pg }}
+          # Real seeded Postgres for the pull/profile catalog tests (P1-T3+),
+          # the Docker-free equivalent of the RFC §13 testcontainers target.
+          ROWSHAPE_TEST_PG_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
         run: go test ./...
 
   canonical-cross-platform:

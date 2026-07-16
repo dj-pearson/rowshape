@@ -365,8 +365,8 @@
           "verification": ["go test against a testcontainers Postgres with a seeded schema", "assert superuser refusal without --i-know"],
           "artifacts": ["cmd/pull.go", "internal/profile/catalog.go", "internal/profile/catalog_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 3
         },
         {
