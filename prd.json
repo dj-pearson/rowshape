@@ -570,8 +570,8 @@
           "verification": ["go test ./internal/profile/hll/... (accuracy within bound; memory bounded; no-extension path)"],
           "artifacts": ["internal/profile/hll/hll.go", "internal/profile/hll/hll_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 1
         },
         {
