@@ -124,6 +124,9 @@ type Column struct {
 	Frequencies []float64  `yaml:"frequencies,omitempty"` // parallels Values
 	Range       *Range     `yaml:"range,omitempty"`       // MUST NOT appear on text/bytea (§6.1)
 	Histogram   *Histogram `yaml:"histogram,omitempty"`   // privacy: standard+ (§8.2)
+	// Shape carries a JSON key skeleton (key names, depth, leaf types) for a
+	// jsonb_shape column — never leaf values (RFC §6.3).
+	Shape any `yaml:"shape,omitempty"`
 
 	Redact Redact `yaml:"redact,omitempty"` // per-column privacy override (§8.2)
 

@@ -385,8 +385,8 @@
           "verification": ["go test ./internal/profile/... (text/bytea range-omission, format-class, jsonb skeleton, confidence-tagging)"],
           "artifacts": ["internal/profile/columns.go", "internal/profile/format_class.go", "internal/profile/columns_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 4
         },
         {

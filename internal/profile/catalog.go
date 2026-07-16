@@ -33,9 +33,15 @@ type querier interface {
 }
 
 // ReadStructure reads engine identity and every in-scope table's structure into
-// a fixture. All reads run inside a read-only transaction so a conformant
-// emitter can never write (RFC §13, INV-BLAST-RADIUS-ZERO).
+// a fixture — no column profiling. All reads run inside a read-only transaction
+// so a conformant emitter can never write (RFC §13, INV-BLAST-RADIUS-ZERO).
 func ReadStructure(ctx context.Context, conn *pgx.Conn, opts Options) (*fixture.Fixture, error) {
+	return read(ctx, conn, opts, false)
+}
+
+// read is the shared body behind ReadStructure and Fast. When profile is set it
+// also runs fast-mode column profiling (P1-T4) on each table.
+func read(ctx context.Context, conn *pgx.Conn, opts Options, profile bool) (*fixture.Fixture, error) {
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return nil, fmt.Errorf("begin read-only transaction: %w", err)
@@ -66,6 +72,11 @@ func ReadStructure(ctx context.Context, conn *pgx.Conn, opts Options) (*fixture.
 		tbl, err := r.readTable(ctx, t)
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", t.qualified, err)
+		}
+		if profile {
+			if err := r.profileTable(ctx, t, &tbl); err != nil {
+				return nil, fmt.Errorf("profile %s: %w", t.qualified, err)
+			}
 		}
 		f.Tables[t.qualified] = tbl
 	}

@@ -20,6 +20,53 @@ const testDSNEnv = "ROWSHAPE_TEST_PG_DSN"
 // testSchema is the throwaway schema the integration tests build and read.
 const testSchema = "rowshape_p1t3"
 
+// richSchema is a throwaway schema exercising every profiling category.
+const richSchema = "rowshape_p1t4"
+
+// seedRich builds a table with one column per profiling category so the
+// fast-mode profiler can be exercised end to end.
+func seedRich(t *testing.T, conn *pgx.Conn) {
+	t.Helper()
+	ctx := context.Background()
+	stmts := []string{
+		`DROP SCHEMA IF EXISTS ` + richSchema + ` CASCADE`,
+		`CREATE SCHEMA ` + richSchema,
+		`CREATE TABLE ` + richSchema + `.t (
+			id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+			email text,
+			status text NOT NULL,
+			bio text,
+			amount numeric(10,2),
+			n int,
+			created_at timestamptz,
+			uid uuid,
+			payload jsonb,
+			blob bytea
+		)`,
+		`INSERT INTO ` + richSchema + `.t (email,status,bio,amount,n,created_at,uid,payload,blob)
+			SELECT
+				case when g%20=0 then null else 'user'||g||'@example.invalid' end,
+				(ARRAY['active','trialing','canceled'])[1+g%3],
+				'some free text bio number '||g||' with words',
+				(g*1.5)::numeric(10,2),
+				g,
+				timestamptz '2021-01-01' + (g||' hours')::interval,
+				gen_random_uuid(),
+				jsonb_build_object('k1',g,'k2','v'||g,'nested',jsonb_build_object('a',true,'b',g)),
+				decode(md5(g::text),'hex')
+			FROM generate_series(1,300) g`,
+		`ANALYZE ` + richSchema + `.t`,
+	}
+	for _, s := range stmts {
+		if _, err := conn.Exec(ctx, s); err != nil {
+			t.Fatalf("seedRich failed on %q: %v", s, err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = conn.Exec(context.Background(), `DROP SCHEMA IF EXISTS `+richSchema+` CASCADE`)
+	})
+}
+
 func adminConn(t *testing.T) *pgx.Conn {
 	t.Helper()
 	dsn := os.Getenv(testDSNEnv)

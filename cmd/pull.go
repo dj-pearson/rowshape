@@ -77,9 +77,9 @@ func runPull(ctx context.Context, opts *pullOptions) error {
 		return toolError()
 	}
 
-	f, err := profile.ReadStructure(ctx, conn, profile.Options{Schemas: opts.schemas})
+	f, err := profile.Fast(ctx, conn, profile.Options{Schemas: opts.schemas})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "rowshape pull: reading structure failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "rowshape pull: profiling failed: %v\n", err)
 		return toolError()
 	}
 
