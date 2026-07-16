@@ -87,6 +87,13 @@ var catalog = map[string]Explanation{
 		Remediation: "Delete in bounded batches (by primary-key range), and check the fan-out tail before deleting parents with many cascaded children. Consider detaching or soft-deleting children first so the cascade is bounded.",
 		References:  []string{"RFC §6.6", "PRD §10"},
 	},
+	"RS-PERF-002": {
+		Code:        "RS-PERF-002",
+		Title:       "Unqualified UPDATE/DELETE touches every row",
+		Summary:     "An UPDATE or DELETE with no WHERE clause rewrites or removes every row of a large table — a slow, lock-holding, bloat-inducing full scan that is almost never intended.",
+		Remediation: "Add a WHERE clause to scope the change. For a genuine full-table update, run it in bounded batches (by primary-key range) and VACUUM afterward to reclaim the bloat.",
+		References:  []string{"PRD §10"},
+	},
 }
 
 // Explain returns the documentation for a finding code.

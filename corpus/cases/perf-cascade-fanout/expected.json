@@ -1,0 +1,7 @@
+{
+  "description": "DELETE on a parent with a long-tailed ON DELETE CASCADE (max 21000 vs mean 15.5) risks a huge slow cascade — RS-PERF WARN.",
+  "verdict": "WARN",
+  "findings": [
+    {"code": "RS-PERF", "severity": "warn"}
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "description": "UPDATE with no WHERE rewrites all 6M rows — RS-PERF WARN.",
+  "verdict": "WARN",
+  "findings": [
+    {"code": "RS-PERF", "severity": "warn"}
+  ]
+}

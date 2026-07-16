@@ -1,0 +1,13 @@
+rowshape_fixture: "1"
+meta:
+  id: perf-unqualified-update
+  engine: {name: postgres, version: "16"}
+  privacy: standard
+  profile: {mode: fast, escalated: []}
+tables:
+  public.accounts:
+    rows: {value: 6000000, confidence: exact}
+    columns:
+      id: {type: bigint, nullable: false, unique: {value: true, confidence: exact, via: constraint}}
+      status: {type: text, nullable: false}
+    constraints: [{name: accounts_pkey, kind: primary_key, columns: [id]}]
