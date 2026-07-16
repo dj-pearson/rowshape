@@ -1,0 +1,931 @@
+{
+  "$schema": "rowshape/ralph-loop-prd/v1",
+  "version": "0.1.0-foundation",
+  "generated_from": [
+    "PRD-rowshape-v1.md (Draft v0.6)",
+    "RFC-0001-rowshape-fixture-spec.md (Draft v0.3)"
+  ],
+  "build_status": {
+    "note": "Built section by section. Foundation + Phase 0 are complete; later phases are titled stubs awaiting fill.",
+    "sections_complete": ["meta", "project", "stack", "loop", "invariants", "kill_criteria", "phase-0"],
+    "sections_pending": ["phase-1", "phase-1b", "phase-2", "phase-3", "phase-4", "phase-5", "milestones"]
+  },
+
+  "project": {
+    "name": "rowshape",
+    "tagline": "The type-checker for database migrations — a human and an agent get the same answer through the same contract.",
+    "one_liner": "Execute a proposed schema change against production-shaped data in a disposable environment and return a machine-readable verdict.",
+    "owner": "Dan Pearson / Pearson Media LLC",
+    "domain": "rowshape.com",
+    "language": "Go",
+    "license": {
+      "cli": "MIT",
+      "spec": "MIT",
+      "cloud": "commercial/closed (registry, audit trail, attestation service)",
+      "rationale": "PRD §8.4 — the moat is being the default in the agent loop; every restriction taxes exactly that. MIT chosen, not defaulted."
+    },
+    "repos": [
+      { "name": "rowshape/rowshape", "purpose": "CLI + MCP server (single Go binary), OSS core", "license": "MIT" },
+      { "name": "rowshape/fixture-spec", "purpose": "The Rowshape Fixture Spec (RFC-0001), own repo, own version", "license": "MIT" },
+      { "name": "rowshape/corpus", "purpose": "(migration, fixture, expected verdict) triples — the regression suite and credibility asset", "license": "MIT" }
+    ]
+  },
+
+  "stack": {
+    "cli": {
+      "language": "Go",
+      "rationale": "PRD §7 — single static binary no runtime; native dialect of the category; hydrate is CPU-bound; advantages compound over time.",
+      "key_deps": {
+        "postgres": "pgx",
+        "cli": "cobra or stdlib flag",
+        "mcp": "modelcontextprotocol/go-sdk (>=v1.0.0, no-breaking-changes guarantee)",
+        "disposable_targets": "testcontainers-go (open question 17.2 vs embedded/pg_tmp)"
+      },
+      "explicitly_no": ["ORM", "gofakeit / general fake-data library (own synthesis engine — PRD §16)"],
+      "distribution": ["goreleaser -> GitHub Releases (darwin/linux/windows, amd64+arm64)", "Homebrew tap", "go install", "npm wrapper package", "FROM scratch Docker image for CI"]
+    },
+    "marketing_and_docs": {
+      "framework": "Astro Starlight",
+      "hosting": "Cloudflare Pages",
+      "language": "TypeScript",
+      "rationale": "PRD §9 — fits existing Pages standard, purpose-built for docs+landing, ships zero JS by default. The Go decision was about the binary, not the website."
+    },
+    "api": {
+      "language": "Go",
+      "hosting": "Coolify (single VPS)",
+      "imports": "the CLI's own `fixture` and `verdict` packages",
+      "rationale": "PRD §9 — RFC §11 canonical form must have exactly ONE implementation. If the server recomputes canonicalization in TypeScript, digests eventually disagree and attestations silently stop verifying. Not Deno edge functions for this reason.",
+      "phase": "5 (recorded now, built later; constrains v1 verdict shape via §9.1)"
+    },
+    "datastore": {
+      "service": "self-hosted Supabase (on Coolify, alongside the API)",
+      "usage": {
+        "postgres": "metadata + immutable audit records",
+        "storage": "fixture blobs",
+        "gotrue": "auth"
+      },
+      "rationale": "PRD §9 — single VPS is defensible because validate never calls the cloud, fixtures are committed to git (registry is convenience not dependency), and fixtures are value-free by design so a breach exposes statistics not customer data."
+    },
+    "billing": "Stripe (phase 5)"
+  },
+
+  "loop": {
+    "description": "This file is the single source of truth for the build loop (Claude /loop). The work signal is `passes`: every story with `passes: false` is unfinished and is work to do. Each iteration: read this file, select the next actionable `passes: false` story, do exactly that story, verify it, flip `passes` to true only when it truly passes, commit. Repeat until no `passes: false` stories remain.",
+    "work_signal": "passes (boolean). false = needs work, true = done and verified. To list all remaining work: every story where passes == false.",
+    "operating_rules": [
+      "Study the referenced spec section(s) in `spec_refs` BEFORE implementing a task. The spec wins over intuition.",
+      "Do exactly ONE story per iteration. Do not batch or skip ahead.",
+      "A story may only be selected when every id in its `depends_on` has `passes: true`.",
+      "Never set `passes` to true without every `acceptance_criteria` met AND every `verification` command passing.",
+      "Never weaken an invariant, downgrade a confidence level, or relax an acceptance criterion to make a task pass. If blocked, set status `blocked` and record why.",
+      "Respect all entries in `invariants` on every task, in every phase, forever.",
+      "Prefer the smallest change that satisfies the task. No speculative surface area.",
+      "After each task: commit with the task id in the message, then re-read this file before selecting the next.",
+      "Check `kill_criteria` at the named checkpoints; if a threshold is hit, stop and surface it rather than pushing on."
+    ],
+    "task_selection": "Lowest phase order first; within a phase, lowest `priority` number among stories with `passes: false` whose `depends_on` are all `passes: true`.",
+    "status_values": ["todo", "in_progress", "blocked", "done"],
+    "status_note": "`status` is optional human context (use `blocked` to record a stuck story). `passes` is the authoritative done-signal the loop reads.",
+    "stop_conditions": [
+      "No `passes: false` stories remain in any non-deferred phase.",
+      "A milestone marked as the launch gate (see `milestones`) is satisfied.",
+      "A kill_criteria threshold is triggered (stop and surface, do not auto-continue)."
+    ]
+  },
+
+  "invariants": [
+    {
+      "id": "INV-VERDICT-SHAPE",
+      "statement": "The verdict is one Go `Verdict` struct with two marshalers (JSON + human). Human output is always a rendering of the JSON, never a separate code path. CLI, MCP server, and GitHub Action all render the same struct.",
+      "source": "PRD §10"
+    },
+    {
+      "id": "INV-VERDICT-STABLE",
+      "statement": "The verdict contract (fields, codes, exit codes) is the public API. Finding codes are permanent and namespaced (RS-LOCK, RS-DATA, RS-CONSTRAINT, RS-INDEX, RS-PERF, RS-REVERSE). Exit codes: 0 PASS, 1 FAIL, 2 WARN-only, 3 tool error. `remediation` is mandatory on every error.",
+      "source": "PRD §10"
+    },
+    {
+      "id": "INV-CONFIDENCE-CAPPING",
+      "statement": "A verdict is capped by the minimum confidence across the facts it relied on. exact/measured -> PASS allowed; estimated/declared/absent -> WARN max. A finding resting on estimated facts CANNOT produce PASS; it produces WARN naming the command that resolves it. Findings MUST NOT downgrade a dependency's confidence to reach a stronger verdict.",
+      "source": "RFC §7.4, PRD §10/§11",
+      "priority": "This is the one thing that must never be wrong (a wrong PASS is unrecoverable)."
+    },
+    {
+      "id": "INV-UNIQUENESS",
+      "statement": "`unique` MUST be `exact` or absent. Uniqueness is NEVER inferred from a sample.",
+      "source": "RFC §7.2"
+    },
+    {
+      "id": "INV-DURATIONS-BUCKETS",
+      "statement": "Durations are reported as buckets (instant/fast/noticeable/slow/outage) with the extrapolation basis attached, never as point estimates. Extrapolation is model-based (per operation class) and engine-version-conditional; refuse to extrapolate when engine.version is absent.",
+      "source": "PRD §10, RFC §9.1/§9.2"
+    },
+    {
+      "id": "INV-NO-ROWS",
+      "statement": "A fixture contains no rows — only statistics. Never emit `range`/min/max on text or bytea columns. `strict` privacy must be supported; emitters MUST NOT default to `permissive`. `inspect --leaks` must enumerate every value-derived field.",
+      "source": "RFC §3.1/§6.1/§8, PRD §11"
+    },
+    {
+      "id": "INV-ONE-CANONICAL-FORM",
+      "statement": "Canonical form (keys sorted lexicographically, two-space indent, no anchors/aliases, floats to 6 sig figs, \\n line endings, meta.digest + meta.generated_at excluded) has exactly ONE implementation, in Go, shared by CLI and API.",
+      "source": "RFC §11, PRD §9"
+    },
+    {
+      "id": "INV-DSSE-SHAPE",
+      "statement": "Verdicts are emitted in a DSSE/in-toto-signable predicate shape from day one (subject = fixture digest + migration file digests; predicateType = https://rowshape.com/attestation/v1; predicate = verdict body incl depends_on + confidence). No signing infra in v1 — just a format that won't need retrofitting.",
+      "source": "PRD §9.1, §13"
+    },
+    {
+      "id": "INV-NEVER-GATE-VALIDATE",
+      "statement": "`validate` is free forever and never calls the cloud. The moment `validate` is gated, the agent loop breaks and the wedge dies.",
+      "source": "PRD §8.4, §9"
+    },
+    {
+      "id": "INV-BLAST-RADIUS-ZERO",
+      "statement": "No `rowshape apply` in v1. `validate` never touches a non-disposable DB (hard-refuse if target host matches the fixture source host). `verify` is read-only. `pull` requires a read-only role; refuse superuser without --i-know.",
+      "source": "PRD §11"
+    },
+    {
+      "id": "INV-DETERMINISM",
+      "statement": "hydrate --seed N produces identical output for the same fixture + hydrator version across platforms. Per-column PRNG derived via hash(seed, table, column, row_ordinal); generation order must not depend on Go map iteration order (canonicalize first).",
+      "source": "RFC §10"
+    },
+    {
+      "id": "INV-SUPPLY-CHAIN",
+      "statement": "Ship SBOM and cosign signatures from the first release. Single static binary, no runtime, deps kept deliberately few.",
+      "source": "PRD §7, §11"
+    }
+  ],
+
+  "kill_criteria": [
+    { "checkpoint": "Week 6", "test": "If pull + hydrate don't produce a database that reproduces a known corpus pathology, the fixture premise is wrong. Stop before building validate on top of it.", "source": "PRD §14.1" },
+    { "checkpoint": "Week 12", "test": "If the agent-loop demo doesn't work end-to-end without a human turn, the wedge isn't real. Reassess whether a 3rd linter in this market is worth continuing.", "source": "PRD §14.1" },
+    { "checkpoint": "Week 20", "test": "If there are zero unsolicited issues or PRs from people you didn't tell about it, that's information — do not push harder on momentum alone.", "source": "PRD §14.1" }
+  ],
+
+  "phases": [
+    {
+      "id": "phase-0",
+      "order": 0,
+      "name": "Foundation — claim, spec, skeleton",
+      "weeks": "1",
+      "ships": "Claim rowshape.com, GitHub org, npm name, Go module path. Fixture Spec RFC public. Repo + goreleaser skeleton.",
+      "source": "PRD §14 (Phase 0), §7, §11",
+      "definition_of_done": [
+        "All namespaces reserved and the Go module path is fixed and documented.",
+        "rowshape/fixture-spec is a public repo containing RFC-0001 versioned `1`, MIT.",
+        "rowshape/rowshape is a Go module that builds a single binary with stub subcommands and MIT license.",
+        "goreleaser produces signed, SBOM-accompanied artifacts on all five platforms across every distribution channel.",
+        "CI builds, tests, and lints on every push."
+      ],
+      "tasks": [
+        {
+          "id": "P0-T1",
+          "title": "Reserve all namespaces and fix the Go module path",
+          "description": "Claim the rowshape.com domain, the `rowshape` GitHub org, the `rowshape` npm package name, and decide the canonical Go module path (e.g. github.com/rowshape/rowshape). Document the module path so every later import is stable.",
+          "depends_on": [],
+          "spec_refs": ["PRD §14 Phase 0", "PRD §7 (distribution)"],
+          "acceptance_criteria": [
+            "rowshape.com registered.",
+            "GitHub org `rowshape` created.",
+            "npm name `rowshape` reserved (placeholder publish of the wrapper package name).",
+            "Canonical Go module path decided and written into docs/DECISIONS.md."
+          ],
+          "verification": ["Manual: registrar + GitHub + npm confirmations captured", "grep module path in go.mod matches docs/DECISIONS.md"],
+          "artifacts": ["docs/DECISIONS.md"],
+          "type": "ops",
+          "passes": false,
+          "status": "todo",
+          "priority": 1
+        },
+        {
+          "id": "P0-T2",
+          "title": "Publish the Fixture Spec RFC as its own public repo",
+          "description": "Create rowshape/fixture-spec and publish RFC-0001 (format version `1`) as an open spec others can emit. Own repo, own version, MIT. Cross-link with the CLI repo README and MCPFold per PRD §8.2.",
+          "depends_on": ["P0-T1"],
+          "spec_refs": ["PRD §3", "PRD §6", "PRD §16", "RFC-0001 (whole)"],
+          "acceptance_criteria": [
+            "rowshape/fixture-spec public, LICENSE = MIT.",
+            "RFC-0001 committed with `rowshape_fixture: \"1\"` as the declared major version.",
+            "README states the extensibility/compatibility rules (RFC §12) and links CLI repo + MCPFold."
+          ],
+          "verification": ["Repo is public and clone-able", "RFC renders on GitHub"],
+          "artifacts": ["fixture-spec/RFC-0001.md", "fixture-spec/README.md", "fixture-spec/LICENSE"],
+          "type": "docs/spec",
+          "passes": false,
+          "status": "todo",
+          "priority": 2
+        },
+        {
+          "id": "P0-T3",
+          "title": "Scaffold the Go CLI module and subcommand skeleton",
+          "description": "Create rowshape/rowshape as a Go module. Wire the CLI framework (cobra or stdlib flag) with stub subcommands: init, pull, hydrate, validate, explain, plan, verify, mcp. Reserve package boundaries `fixture/` and `verdict/` so the phase-5 API can import them unchanged (PRD §9). MIT LICENSE. Each stub returns exit code 3 (tool error) with 'not implemented'.",
+          "depends_on": ["P0-T1"],
+          "spec_refs": ["PRD §7", "PRD §8.1", "PRD §9 (package boundaries)", "PRD §10 (exit codes)"],
+          "acceptance_criteria": [
+            "`go build ./...` produces one binary named `rowshape`.",
+            "Every subcommand in PRD §8.1 exists as a stub and prints usage.",
+            "Packages `fixture/` and `verdict/` exist with placeholder types (Verdict struct scaffold matching PRD §10 fields).",
+            "LICENSE = MIT."
+          ],
+          "verification": ["go build ./...", "go vet ./...", "rowshape --help lists all subcommands", "rowshape validate returns exit code 3"],
+          "artifacts": ["go.mod", "main.go", "cmd/*", "internal/fixture/*", "internal/verdict/*", "LICENSE"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 3
+        },
+        {
+          "id": "P0-T4",
+          "title": "goreleaser release pipeline across all channels",
+          "description": "Configure goreleaser to build darwin/linux/windows on amd64+arm64 and publish to GitHub Releases, a Homebrew tap, `go install`, an npm wrapper package that fetches the platform binary on install (so `npx rowshape` works), and a FROM scratch Docker image for CI.",
+          "depends_on": ["P0-T3"],
+          "spec_refs": ["PRD §7 (distribution)", "PRD §7 (npx objection)"],
+          "acceptance_criteria": [
+            "A tagged release produces binaries for all 5 platform/arch combos.",
+            "Homebrew tap formula generated.",
+            "npm wrapper package installs and runs `npx rowshape --help`.",
+            "`FROM scratch` Docker image runs `rowshape --help`."
+          ],
+          "verification": ["goreleaser release --snapshot --clean", "docker run <image> --help", "npx <wrapper> --help"],
+          "artifacts": [".goreleaser.yaml", "npm/", "Dockerfile"],
+          "type": "code/ops",
+          "passes": false,
+          "status": "todo",
+          "priority": 4
+        },
+        {
+          "id": "P0-T5",
+          "title": "Supply-chain: SBOM + cosign from the first release",
+          "description": "Wire SBOM generation and cosign signatures into goreleaser so every release artifact is signed and carries an SBOM. This is half the reason to be in Go (PRD §7/§11) and most of a security review.",
+          "depends_on": ["P0-T4"],
+          "spec_refs": ["PRD §7", "PRD §11 (SBOM and cosign)", "INV-SUPPLY-CHAIN"],
+          "acceptance_criteria": [
+            "Each released binary has a cosign signature.",
+            "Each release includes an SBOM (e.g. syft/SPDX or CycloneDX).",
+            "`cosign verify-blob` succeeds against a released artifact."
+          ],
+          "verification": ["cosign verify-blob ...", "SBOM file present per artifact"],
+          "artifacts": [".goreleaser.yaml (sbom + signs blocks)"],
+          "type": "code/ops",
+          "passes": false,
+          "status": "todo",
+          "priority": 5
+        },
+        {
+          "id": "P0-T6",
+          "title": "CI skeleton (build, test, lint)",
+          "description": "GitHub Actions workflow that builds, runs `go test ./...`, and lints (gofmt/vet/golangci-lint) on every push and PR. This is the harness the corpus and later phases plug into.",
+          "depends_on": ["P0-T3"],
+          "spec_refs": ["PRD §12 (corpus runs in CI)", "PRD §14"],
+          "acceptance_criteria": [
+            "CI runs on push and PR.",
+            "Build + test + lint jobs are green on the skeleton.",
+            "Workflow is matrix-ready for the PG 11–17 version matrix added in phase 2."
+          ],
+          "verification": ["CI green on a trivial PR"],
+          "artifacts": [".github/workflows/ci.yml"],
+          "type": "ops",
+          "passes": false,
+          "status": "todo",
+          "priority": 6
+        }
+      ]
+    },
+    {
+      "id": "phase-1",
+      "order": 1,
+      "name": "pull / hydrate for Postgres (deterministic, own synthesis engine)",
+      "weeks": "2-5",
+      "ships": "`pull` (fast mode) and `hydrate` for Postgres. Reads production shape read-only, emits a committable rowshape.yaml, and reconstructs a deterministic disposable database from it.",
+      "source": "PRD §14 Phase 1, §6, §11; RFC §5/§6/§8/§9/§10/§13",
+      "scope_note": "Fast mode only: catalog + pg_stats + reservoir sample. HyperLogLog, uniqueness existence probes, auto-escalation, and `inspect --leaks` are DEFERRED to phase-1b. In phase 1, `distinct` stays `estimated` (via pg_stats) and `unique` is `exact` only when a catalog constraint/index proves it, otherwise absent (INV-UNIQUENESS).",
+      "definition_of_done": [
+        "A read-only `pull` against a Postgres produces a valid, digest-stable, <100KB rowshape.yaml in fast mode, with a confidence attached to every fact and privacy enforced.",
+        "`hydrate --seed N` deterministically reconstructs a disposable database honoring null_fraction (+/-0.5%), `unique`, and fan-out distribution shape.",
+        "Declared rows and hydrated rows are never conflated (RFC §9).",
+        "Week-6 kill-criteria smoke passes: pull + hydrate reproduces a known migration pathology (kill_criteria Week 6)."
+      ],
+      "tasks": [
+        {
+          "id": "P1-T1",
+          "title": "Fixture Go data model (internal/fixture)",
+          "description": "Model the entire RFC §5/§6 document as Go structs: meta (id, generated_at, generator, engine{name,version}, privacy, source, profile{mode,scanned_at,escalated}, digest); tables map keyed by qualified name; column profiles (universal §6.1, numeric/temporal §6.2, format classes §6.3); constraints §6.4; indexes §6.5; references/fanout §6.6. Scalar facts are {value, confidence, via} objects, NOT bare scalars. Readers MAY accept a bare scalar as shorthand for confidence:estimated (weakest reading). Unknown fields ignored, x_ vendor extensions preserved, unknown major version refused (RFC §12).",
+          "depends_on": ["P0-T3"],
+          "spec_refs": ["RFC §5", "RFC §6", "RFC §12", "INV-NO-ROWS"],
+          "acceptance_criteria": [
+            "Structs round-trip to/from the YAML examples in RFC §5 and §6 byte-for-byte (modulo canonicalization).",
+            "A bare scalar deserializes as {value, confidence: estimated} (RFC §6.1).",
+            "`tables` is a map keyed by qualified name, not a list (RFC §5).",
+            "Unknown fields are ignored; unknown major `rowshape_fixture` version is refused (RFC §12).",
+            "Confidence type enforces ordering exact > measured > estimated > declared (RFC §7.1)."
+          ],
+          "verification": ["go test ./internal/fixture/... (round-trip + confidence-ordering tests)"],
+          "artifacts": ["internal/fixture/model.go", "internal/fixture/confidence.go", "internal/fixture/model_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 1
+        },
+        {
+          "id": "P1-T2",
+          "title": "Canonical form + digest (single Go implementation)",
+          "description": "Implement RFC §11 canonical form: keys sorted lexicographically, two-space indent, no anchors/aliases, floats to 6 significant figures, \\n line endings, meta.digest and meta.generated_at excluded. Compute meta.digest = SHA-256 over the canonical form. This is the ONE canonical implementation the phase-5 API will import (INV-ONE-CANONICAL-FORM).",
+          "depends_on": ["P1-T1"],
+          "spec_refs": ["RFC §11", "INV-ONE-CANONICAL-FORM", "INV-DETERMINISM"],
+          "acceptance_criteria": [
+            "Two canonicalizations of the same fixture are byte-identical.",
+            "Digest is stable across runs against an unchanged database and across platforms (RFC §13).",
+            "Floats render to exactly 6 significant figures; keys are lexicographically sorted; meta.digest and meta.generated_at are excluded from the hashed bytes."
+          ],
+          "verification": ["go test ./internal/fixture/... (golden canonical-form + digest-stability tests, run on linux+darwin+windows in CI)"],
+          "artifacts": ["internal/fixture/canonical.go", "internal/fixture/digest.go", "internal/fixture/testdata/*.golden"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 2
+        },
+        {
+          "id": "P1-T3",
+          "title": "`pull` — read structure via catalog (read-only)",
+          "description": "Implement schema reads via catalog queries only: tables, columns, types, structural nullability, constraints (§6.4), indexes (§6.5), references + on_delete (§6.6). No SELECT * on user tables. Require a read-only role; refuse to run as superuser without --i-know. An existing unique constraint/index is a proof of uniqueness -> set unique {value:true, confidence:exact, via:constraint} for free. Preserve validated:false (NOT VALID) constraints.",
+          "depends_on": ["P1-T1"],
+          "spec_refs": ["PRD §6", "PRD §11", "RFC §6.4", "RFC §6.5", "RFC §6.6", "RFC §13 (conformant emitter)", "INV-BLAST-RADIUS-ZERO"],
+          "acceptance_criteria": [
+            "Produces the tables map with constraints, indexes, and references populated from the catalog.",
+            "Unique constraint/index sets unique.confidence=exact via constraint (RFC §6.4).",
+            "validated:false constraints are preserved (RFC §6.4).",
+            "Refuses to run as superuser without --i-know; uses a read-only path (no writes, no SELECT * on user tables)."
+          ],
+          "verification": ["go test against a testcontainers Postgres with a seeded schema", "assert superuser refusal without --i-know"],
+          "artifacts": ["cmd/pull.go", "internal/profile/catalog.go", "internal/profile/catalog_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 3
+        },
+        {
+          "id": "P1-T4",
+          "title": "`pull` fast-mode column profiling (pg_stats + reservoir sample)",
+          "description": "Profile each column in fast mode: null_fraction, distinct (estimated via pg_stats), numeric/temporal range + optional histogram (§6.2), text length stats, and format-class inference from a sample against the closed vocabulary (§6.3) with `opaque` as mandatory fallback. MUST NOT emit range/min/max on text or bytea columns (§6.1) — only length. Most facts land at `estimated`. Uniqueness is NOT inferred here (that is catalog-proven in P1-T3 or deferred to phase-1b probes); never infer unique:true from the sample (INV-UNIQUENESS).",
+          "depends_on": ["P1-T3"],
+          "spec_refs": ["PRD §6", "RFC §6.1", "RFC §6.2", "RFC §6.3", "INV-NO-ROWS", "INV-UNIQUENESS"],
+          "acceptance_criteria": [
+            "Every emitted fact carries a confidence; sample-derived facts are `estimated`.",
+            "text and bytea columns NEVER receive range/min/max (only length) — asserted by test (RFC §6.1 MUST).",
+            "format is one of the closed §6.3 vocabulary; ambiguous columns emit `opaque`.",
+            "jsonb_shape carries a key skeleton (names/depth/leaf types) but never leaf values (§6.3).",
+            "No unique:true is produced from the sample."
+          ],
+          "verification": ["go test ./internal/profile/... (text/bytea range-omission, format-class, jsonb skeleton, confidence-tagging)"],
+          "artifacts": ["internal/profile/columns.go", "internal/profile/format_class.go", "internal/profile/columns_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 4
+        },
+        {
+          "id": "P1-T5",
+          "title": "Privacy levels + redaction in the emitter",
+          "description": "Enforce RFC §8 at emit time. strict / standard (default) / permissive. strict emits none of: numeric/temporal range, histograms, values/frequencies, verbatim CHECK expressions (they become opaque). permissive materializes values/frequencies only when distinct<=50 AND every value occurs >= k times (default k=20). Per-column overrides (redact: [range, histogram] | all) always win. MUST support strict; MUST NOT default to permissive. meta.source is a salted per-fixture hash of the host, never the hostname (§8.4).",
+          "depends_on": ["P1-T4"],
+          "spec_refs": ["RFC §8", "PRD §11", "INV-NO-ROWS"],
+          "acceptance_criteria": [
+            "strict output contains no range, histogram, values/frequencies, or verbatim CHECK expressions.",
+            "default privacy is `standard`; permissive is never the default.",
+            "permissive value sets appear only when distinct<=50 AND min per-value count >= k (k=20 default).",
+            "per-column `redact` overrides are honored.",
+            "meta.source is a salted hash, never the hostname."
+          ],
+          "verification": ["go test ./internal/profile/... (per-level field matrix from RFC §8.2, k-threshold, redact overrides, source-hash)"],
+          "artifacts": ["internal/profile/privacy.go", "internal/profile/privacy_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 5
+        },
+        {
+          "id": "P1-T6",
+          "title": "Emit rowshape.yaml (assembled fixture)",
+          "description": "Assemble the profiled data into a rowshape.yaml with a complete meta block: id, generated_at, generator, engine{name,version} (version MANDATORY — RFC §9.1), privacy, source (salted hash), profile{mode:fast, scanned_at, escalated:[]}, and computed digest. Write human-readable, diffable YAML. `rowshape init` should scaffold config; wire the minimal `init` here.",
+          "depends_on": ["P1-T2", "P1-T5"],
+          "spec_refs": ["RFC §5", "RFC §3 (small enough to commit)", "RFC §9.1 (engine.version mandatory)", "PRD §8.1 (init)"],
+          "acceptance_criteria": [
+            "Output is valid YAML that round-trips through the P1-T1 data model.",
+            "meta.engine.version is always present.",
+            "Fixture for a 200-table schema is under 100KB (RFC §3.3).",
+            "meta.digest matches a fresh recomputation over the file."
+          ],
+          "verification": ["rowshape pull --from $TEST_URL -> rowshape.yaml; rowshape (re)digest matches; yaml lint; size check on a synthetic 200-table schema"],
+          "artifacts": ["internal/fixture/emit.go", "cmd/init.go", "cmd/pull.go (wiring)"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 6
+        },
+        {
+          "id": "P1-T7",
+          "title": "`hydrate` — own deterministic synthesis engine",
+          "description": "Build the synthesis engine (NOT gofakeit — PRD §16). Given rowshape.yaml + --seed, synthesize N rows into a disposable database. Determinism per RFC §10: per-column PRNG via hash(seed, table, column, row_ordinal) so adding a column or changing --scale does not reshuffle other columns' prefixes; generation order MUST NOT depend on Go map iteration order (canonicalize first). Honor null_fraction within +/-0.5%, honor `unique`, reproduce fan-out DISTRIBUTION shape (p50/p95/max), not just the mean (§6.6); satisfy declared constraints unless orphan_fraction>0 demands otherwise. Substitute obviously-fake values (e.g. user_00417@example.invalid) — realism of shape, not content (RFC §13).",
+          "depends_on": ["P1-T1", "P1-T6"],
+          "spec_refs": ["RFC §10", "RFC §6.6", "RFC §13 (conformant hydrator)", "PRD §16 (own engine)", "INV-DETERMINISM"],
+          "acceptance_criteria": [
+            "hydrate --seed N is byte-reproducible for the same fixture + hydrator version across platforms.",
+            "null_fraction reproduced within +/-0.5%; `unique` honored.",
+            "fan-out distribution shape reproduced (p50/p95/max), not just the mean.",
+            "Generated values are obviously fake; content realism is explicitly NOT attempted.",
+            "Changing --scale does not reshuffle the retained prefix of values."
+          ],
+          "verification": ["go test ./internal/hydrate/... (determinism across platforms in CI matrix, null_fraction tolerance, fan-out distribution assertion, scale-prefix stability)"],
+          "artifacts": ["cmd/hydrate.go", "internal/hydrate/engine.go", "internal/hydrate/prng.go", "internal/hydrate/engine_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 7
+        },
+        {
+          "id": "P1-T8",
+          "title": "Declared rows vs. hydrated rows separation",
+          "description": "Guarantee RFC §9: the fixture always declares production rows (e.g. 1.2M) even when hydrate --scale 0.01 materializes 12k. The data model and hydrate path must keep declared rows (drives later extrapolation) strictly separate from the hydrated count (tests correctness). They MUST NOT be conflated anywhere.",
+          "depends_on": ["P1-T7"],
+          "spec_refs": ["RFC §9", "INV-DURATIONS-BUCKETS (extrapolation depends on declared rows)"],
+          "acceptance_criteria": [
+            "hydrate --scale 0.01 on a fixture declaring 1.2M rows creates ~12k rows while the fixture still reports declared rows = 1.2M.",
+            "No code path uses hydrated count where declared rows are meant (guarded by test)."
+          ],
+          "verification": ["go test ./internal/hydrate/... (scale test asserting declared vs materialized counts diverge correctly)"],
+          "artifacts": ["internal/hydrate/scale.go", "internal/hydrate/scale_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 8
+        },
+        {
+          "id": "P1-T9",
+          "title": "Disposable hydrate target orchestration",
+          "description": "Provide the disposable Postgres target for hydrate: default via testcontainers-go (Docker), and accept a user-provided --target URL. Records open-question 17.2 (testcontainers vs embedded/pg_tmp); ship testcontainers-go as the default now and leave the swap point clean. The container is thrown away after use.",
+          "depends_on": ["P1-T7"],
+          "spec_refs": ["PRD §8.1", "PRD §17 (open question 2)", "RFC §1 (hydrate definition)"],
+          "acceptance_criteria": [
+            "hydrate spins up a disposable Postgres (testcontainers-go default) and tears it down after.",
+            "--target <url> hydrates into a provided database instead.",
+            "The target abstraction is a single interface so pg_tmp/embedded can be swapped without touching the engine."
+          ],
+          "verification": ["go test ./internal/target/... (container lifecycle up/teardown; provided-URL path)"],
+          "artifacts": ["internal/target/target.go", "internal/target/testcontainers.go", "internal/target/target_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 9
+        },
+        {
+          "id": "P1-T10",
+          "title": "Week-6 gate: reproduce a known pathology end-to-end",
+          "description": "Kill-criteria checkpoint (Week 6). Using a small handcrafted pathology fixture (a precursor to the full phase-2 corpus) — e.g. `email` at 3.2% null and a fan-out column with a long tail (max >> mean) — prove pull->rowshape.yaml->hydrate produces a database where a direct query confirms the null ratio and the fan-out tail actually exist. If this fails, STOP and surface: the fixture premise is wrong and `validate` must not be built on it.",
+          "depends_on": ["P1-T7", "P1-T8", "P1-T9"],
+          "spec_refs": ["PRD §14.1 (Week 6 kill criteria)", "RFC §6.6", "kill_criteria[0]"],
+          "acceptance_criteria": [
+            "A checked-in pathology fixture hydrates into a DB where querying confirms null_fraction is within tolerance of 3.2%.",
+            "The fan-out tail is reproduced: measured max fan-out >> mean, matching the fixture's p95/max within tolerance.",
+            "This runs in CI as an executable smoke test."
+          ],
+          "verification": ["go test ./test/pathology/... (hydrate then SQL-assert null ratio and fan-out tail)"],
+          "artifacts": ["test/pathology/email_null.yaml", "test/pathology/fanout_tail.yaml", "test/pathology/pathology_test.go"],
+          "type": "code/gate",
+          "gate": "kill_criteria Week 6",
+          "passes": false,
+          "status": "todo",
+          "priority": 10
+        }
+      ]
+    },
+    {
+      "id": "phase-1b",
+      "order": 2,
+      "name": "Confidence model — HLL, uniqueness probes, auto-escalation, inspect --leaks",
+      "weeks": "6",
+      "ships": "The confidence engine: client-side HyperLogLog, exact uniqueness probes, auto-escalation of dangerous columns, and `inspect --leaks`. This is what makes a cheap `fast` fixture safe by construction.",
+      "source": "PRD §14 Phase 1b, §11, §16; RFC §7.2/§7.3/§8.3",
+      "scope_note": "This phase upgrades facts from `estimated` toward `measured`/`exact` and adds the self-audit surface. It does not build findings or capping yet (those consume this in phase 2), but the correctness of capping in phase 2 rests entirely on the confidence levels produced here.",
+      "definition_of_done": [
+        "distinct can reach `measured` via client-side HLL with a published error rate.",
+        "unique reaches `exact` only via catalog, existence probe, or count comparison — never a sample (INV-UNIQUENESS).",
+        "fast mode auto-escalates exactly the dangerous columns (n_distinct/rows > 0.95, no unique constraint), with a cost ceiling that WARNs on what it skips.",
+        "`rowshape inspect --leaks` enumerates every value-derived field with its source column and privacy level."
+      ],
+      "tasks": [
+        {
+          "id": "P1b-T1",
+          "title": "Client-side HyperLogLog distinct estimation",
+          "description": "Stream each column with a server-side cursor, hash each value, discard it — bounded memory, no values retained, no server extension (postgresql-hll is unavailable on most managed Postgres, so depending on it would gate the feature behind the infra that most needs it). Sets distinct {confidence: measured, via: hll, error: e}. Precision 14 (~1.6% error, 16KB state) per open-question RFC §14.4 leaning; the error rate is published in distinct.error and feeds §7.4.",
+          "depends_on": ["P1-T4"],
+          "spec_refs": ["RFC §7.3", "RFC §14.4 (HLL precision)", "RFC §7.1 (measured)"],
+          "acceptance_criteria": [
+            "distinct via HLL lands at confidence `measured` with `error` populated.",
+            "No column values are retained in memory beyond the streaming hash.",
+            "Runs without any server-side extension.",
+            "Measured error stays within the precision-14 bound on a known-cardinality test column."
+          ],
+          "verification": ["go test ./internal/profile/hll/... (accuracy within bound; memory bounded; no-extension path)"],
+          "artifacts": ["internal/profile/hll/hll.go", "internal/profile/hll/hll_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 1
+        },
+        {
+          "id": "P1b-T2",
+          "title": "Exact uniqueness probes (existence + count)",
+          "description": "Implement the two probe-based routes to unique=exact from RFC §7.2: (2) existence probe `SELECT EXISTS (SELECT 1 FROM t WHERE c IS NOT NULL GROUP BY c HAVING count(*)>1)` — one boolean out, short-circuits on first duplicate; (3) count comparison `SELECT count(*)-count(DISTINCT c) FROM t` — one integer out, gives duplicate count. Route (1), catalog proof, already lands free in P1-T3. If none is affordable, omit `unique` entirely. NEVER infer unique from a sample.",
+          "depends_on": ["P1-T3"],
+          "spec_refs": ["RFC §7.2", "INV-UNIQUENESS"],
+          "acceptance_criteria": [
+            "unique reaches `exact` only via constraint, existence probe, or count comparison.",
+            "Probes emit no row values (boolean/integer only).",
+            "When no route is affordable, `unique` is omitted, not guessed.",
+            "A property test confirms unique:true is never produced from sampling."
+          ],
+          "verification": ["go test ./internal/profile/... (probe correctness on unique + non-unique columns; omission path)"],
+          "artifacts": ["internal/profile/uniqueness.go", "internal/profile/uniqueness_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 2
+        },
+        {
+          "id": "P1b-T3",
+          "title": "Auto-escalation of dangerous columns (default behavior)",
+          "description": "In fast mode, automatically escalate to a full pass any column where n_distinct/rows > 0.95 AND no unique constraint exists — exactly the columns that look unique but aren't proven, where a wrong answer costs an outage. Record escalated columns in meta.profile.escalated and set mode `targeted` when any escalation fires. This makes the cheap default safe by construction, not by remembering a flag.",
+          "depends_on": ["P1b-T1", "P1b-T2"],
+          "spec_refs": ["RFC §7.3", "PRD §16 (sampling resolved via confidence model)"],
+          "acceptance_criteria": [
+            "Columns matching the predicate are escalated automatically; others are not.",
+            "meta.profile.escalated lists exactly the escalated columns.",
+            "mode becomes `targeted` when escalation occurs, `fast` otherwise."
+          ],
+          "verification": ["go test ./internal/profile/... (escalation predicate selects the right column set; escalated list + mode recorded)"],
+          "artifacts": ["internal/profile/escalation.go", "internal/profile/escalation_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 3
+        },
+        {
+          "id": "P1b-T4",
+          "title": "Escalation cost ceiling (soft cap + WARN)",
+          "description": "Resolve open-question PRD §17.3 / RFC §14.5: a fast pull that quietly full-scans a 400M-row table is a bad surprise. Implement a soft cap (--max-escalation-rows) that, when exceeded, degrades to omitting `unique` for that column and emits a WARN naming exactly what was skipped and why. Silent truncation is forbidden.",
+          "depends_on": ["P1b-T3"],
+          "spec_refs": ["PRD §17 (open question 3)", "RFC §14.5", "RFC §7.4 (omission is safe)"],
+          "acceptance_criteria": [
+            "Escalation beyond the cap omits `unique` (safe per §7.4) rather than blocking.",
+            "A WARN names the skipped column and the row count that triggered the cap.",
+            "Default cap is documented; overridable via --max-escalation-rows."
+          ],
+          "verification": ["go test ./internal/profile/... (cap triggers omission + WARN; no silent skip)"],
+          "artifacts": ["internal/profile/escalation.go (cap)", "internal/profile/escalation_cap_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 4
+        },
+        {
+          "id": "P1b-T5",
+          "title": "`exact` profile mode (full streaming pass)",
+          "description": "Implement the `exact` profile mode from RFC §7.3: a full streaming pass per table — HLL for distinct, exact null counts, exact uniqueness probes. Minutes to hours; reads values into emitter memory but emits only aggregates. This is the manual counterpart to auto-escalation for the whole database.",
+          "depends_on": ["P1b-T1", "P1b-T2"],
+          "spec_refs": ["RFC §7.3", "RFC §13 (emits only aggregates)"],
+          "acceptance_criteria": [
+            "`rowshape pull --exact` performs a full pass; null counts are `exact`, distinct is `measured` via HLL.",
+            "Only aggregates are emitted; no row values leave the emitter.",
+            "meta.profile.mode records `exact`."
+          ],
+          "verification": ["go test ./internal/profile/... (exact-mode confidence levels; aggregate-only output)"],
+          "artifacts": ["internal/profile/mode_exact.go", "internal/profile/mode_exact_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 5
+        },
+        {
+          "id": "P1b-T6",
+          "title": "`rowshape inspect --leaks`",
+          "description": "Enumerate every field in a given fixture derived from row values, with its source column and privacy level (RFC §8.3). A trust feature, not a compliance checkbox: Priya's security team finds these fields anyway; pointing at them first is the difference between a documented tradeoff and an undisclosed leak. Ship in v1 (PRD §11).",
+          "depends_on": ["P1-T6"],
+          "spec_refs": ["RFC §8.3", "PRD §11", "INV-NO-ROWS"],
+          "acceptance_criteria": [
+            "Lists every value-derived field (range, histogram bounds, values/frequencies, CHECK expressions, length.max on free_text) with source column + privacy level.",
+            "Output is complete: a test fixture with known leaks enumerates all of them and nothing spurious.",
+            "Exits non-zero option available for CI gating (documented)."
+          ],
+          "verification": ["go test ./cmd/... (inspect --leaks on a fixture with seeded value-derived fields lists exactly them)"],
+          "artifacts": ["cmd/inspect.go", "internal/fixture/leaks.go", "cmd/inspect_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 6
+        }
+      ]
+    },
+    {
+      "id": "phase-2",
+      "order": 3,
+      "name": "Corpus + capping tests FIRST, then validate + verdict contract + RS-LOCK / RS-DATA",
+      "weeks": "7-10",
+      "ships": "The corpus and capping regression suite, then `validate`, the verdict contract, and the first finding classes (RS-LOCK, RS-DATA, RS-CONSTRAINT, RS-INDEX) with model-based extrapolation across the PG version matrix.",
+      "source": "PRD §14 Phase 2, §8.1, §10, §11, §12; RFC §7.4/§9",
+      "ordering_rule": "The corpus (P2-T1) and the capping tests (P2-T2) land BEFORE the findings they test (P2-T8..T11). Reversing this means writing findings, demoing them, then discovering which were wrong on PG 11 (PRD §14, §12).",
+      "definition_of_done": [
+        "rowshape/corpus runs (migration, fixture, expected verdict) triples against every supported PG major (11-17).",
+        "Capping tests exist and pass BEFORE the findings, asserting RFC §7.4 (estimated -> WARN, unproven uniqueness cannot PASS).",
+        "One Verdict struct with two marshalers renders identically for CLI, MCP, and Action; exit codes 0/1/2/3 honored; verdict is DSSE-signable shaped.",
+        "validate hydrates a disposable target, applies the migration through the detected runner, and returns RS-LOCK / RS-DATA / RS-CONSTRAINT / RS-INDEX findings with bucketed, version-conditional estimates and mandatory remediation."
+      ],
+      "tasks": [
+        {
+          "id": "P2-T1",
+          "title": "Corpus repo scaffold (rowshape/corpus)",
+          "description": "Create rowshape/corpus: executable (migration, fixture, expected verdict) triples covering the documented ways Postgres migrations break — volatile default rewrite, SET NOT NULL full-scan, unique index that can't build, VALIDATE tripping on pre-existing orphans, cascade delete fan-out tail, NOT VALID constraint validated in the same transaction. A runnable harness, not prose. This is an asset people star and cite (PRD §12).",
+          "depends_on": ["P0-T6"],
+          "spec_refs": ["PRD §12", "PRD §14 (phase 2 ordering)"],
+          "acceptance_criteria": [
+            "Repo holds at least one triple per pathology named in PRD §12.",
+            "Each triple is executable via a test harness that consumes a fixture + migration and asserts the expected verdict.",
+            "Harness is parameterized by PG major version (wired to the matrix in P2-T13)."
+          ],
+          "verification": ["corpus test harness runs green on the seeded triples (against PG 16 initially)"],
+          "artifacts": ["corpus/README.md", "corpus/cases/*/{migration,fixture.yaml,expected.json}", "corpus/harness/*"],
+          "type": "code/asset",
+          "passes": false,
+          "status": "todo",
+          "priority": 1
+        },
+        {
+          "id": "P2-T2",
+          "title": "Capping tests FIRST (the wrong-PASS regression suite)",
+          "description": "Before any finding exists, write corpus entries that exercise RFC §7.4 capping: a fixture profiling a column at `estimated` cannot yield PASS for a finding depending on it (must WARN naming the resolving command); uniqueness that is unproven cannot certify ADD CONSTRAINT UNIQUE. These are untested assertions until something exercises them — and a wrong PASS is unrecoverable (PRD §11, §15). Write these before the findings they cap.",
+          "depends_on": ["P2-T1"],
+          "spec_refs": ["RFC §7.4", "PRD §11", "PRD §12", "PRD §14 (capping before findings)", "INV-CONFIDENCE-CAPPING"],
+          "acceptance_criteria": [
+            "A triple where the relevant fact is `estimated` asserts a WARN (not PASS) with the resolving command named.",
+            "A triple with unproven uniqueness asserts ADD CONSTRAINT UNIQUE cannot PASS.",
+            "These tests are committed and RED (pending the capping engine P2-T4) — they define the contract findings must satisfy."
+          ],
+          "verification": ["corpus capping suite present; goes GREEN only once P2-T4 lands"],
+          "artifacts": ["corpus/cases/capping-*/*"],
+          "type": "test",
+          "passes": false,
+          "status": "todo",
+          "priority": 2
+        },
+        {
+          "id": "P2-T3",
+          "title": "Verdict struct + two marshalers (DSSE-signable shape)",
+          "description": "Implement the one `Verdict` struct in internal/verdict matching PRD §10 exactly: rowshape, verdict, fixture{id,digest}, duration_ms, findings[] with code/severity/title/location/detail/evidence/estimate/depends_on/confidence/remediation/explain. Two marshalers: JSON and a human renderer that is a RENDERING of the struct, never a separate code path. Exit codes 0 PASS / 1 FAIL / 2 WARN-only / 3 tool error. Shape it as a DSSE/in-toto predicate from day one (§9.1): subject = fixture digest + migration file digests; predicateType = https://rowshape.com/attestation/v1.",
+          "depends_on": ["P1-T2"],
+          "spec_refs": ["PRD §10", "PRD §9.1", "INV-VERDICT-SHAPE", "INV-VERDICT-STABLE", "INV-DSSE-SHAPE"],
+          "acceptance_criteria": [
+            "JSON output matches the PRD §10 example schema (field-for-field).",
+            "Human output is produced by rendering the same struct (proven by a test that both marshalers consume one Verdict value).",
+            "Exit codes map 0/1/2/3 as specified; WARN-only is configurable to fail.",
+            "Verdict serializes as a DSSE predicate with subject = fixture digest + migration file digests; predicateType is the owned URI.",
+            "remediation is required (non-empty) on every finding with severity error."
+          ],
+          "verification": ["go test ./internal/verdict/... (JSON golden vs PRD §10; single-struct/two-marshaler test; exit-code table; DSSE predicate shape; remediation-required)"],
+          "artifacts": ["internal/verdict/verdict.go", "internal/verdict/render_human.go", "internal/verdict/dsse.go", "internal/verdict/verdict_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 3
+        },
+        {
+          "id": "P2-T4",
+          "title": "Confidence capping engine",
+          "description": "Each finding declares `depends_on` (fixture facts). The verdict a finding can produce is capped by the MINIMUM confidence across its dependencies: exact/measured -> PASS allowed; estimated/declared/absent -> WARN max. A capped finding produces a WARN naming the command that resolves it. Findings MUST NOT downgrade a dependency's confidence to reach a stronger verdict — enforce this in code, not by convention. Turns P2-T2 GREEN.",
+          "depends_on": ["P2-T3", "P2-T2"],
+          "spec_refs": ["RFC §7.4", "PRD §10", "PRD §11", "INV-CONFIDENCE-CAPPING"],
+          "acceptance_criteria": [
+            "Verdict severity is capped at the min confidence of the finding's declared dependencies.",
+            "estimated/absent dependency -> WARN with a resolving command string.",
+            "No API allows lowering a dependency's confidence to raise a verdict (structurally prevented).",
+            "The P2-T2 capping corpus suite passes."
+          ],
+          "verification": ["go test ./internal/verdict/... + corpus capping suite green"],
+          "artifacts": ["internal/verdict/capping.go", "internal/verdict/capping_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 4
+        },
+        {
+          "id": "P2-T5",
+          "title": "Model-based, version-conditional extrapolation",
+          "description": "Extrapolate cost/duration per operation class along a known model (table rewrite O(n), constraint validation O(n), b-tree build O(n log n), CREATE INDEX CONCURRENTLY O(n log n) two-pass no exclusive lock, catalog-only O(1)) using DECLARED rows, not hydrated count. Cost models are engine-version-conditional (PG11+ catalog fast-path for non-volatile defaults; volatile default still rewrites; SET NOT NULL still full-scans). MUST refuse to extrapolate when engine.version is absent. Report buckets (instant/fast/noticeable/slow/outage) with basis attached; estimate confidence never exceeds the confidence of `rows`.",
+          "depends_on": ["P2-T3"],
+          "spec_refs": ["RFC §9.1", "RFC §9.2", "PRD §10", "PRD §12 (version-conditional)", "INV-DURATIONS-BUCKETS"],
+          "acceptance_criteria": [
+            "Each operation class maps to its model; extrapolation uses declared rows.",
+            "Refuses to extrapolate (and says so) when engine.version is missing.",
+            "Findings report buckets with {model, basis_rows, basis_ms, declared_rows}; never a point estimate.",
+            "A version-conditional case differs correctly between PG 11 and PG 16 (asserted in corpus)."
+          ],
+          "verification": ["go test ./internal/estimate/... (model table; version-conditional divergence; no-version refusal; bucket output)"],
+          "artifacts": ["internal/estimate/models.go", "internal/estimate/versioned.go", "internal/estimate/estimate_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 5
+        },
+        {
+          "id": "P2-T6",
+          "title": "Runner detection (Alembic, Prisma, Drizzle, raw SQL)",
+          "description": "Detect the user's migration runner and shell out to it — orchestrate, do not reimplement. Support Alembic, Prisma, Drizzle, and plain raw-SQL directories (psql -f). Rowshape applies the migration set through the detected runner against the disposable target only.",
+          "depends_on": ["P1-T9"],
+          "spec_refs": ["PRD §8.1 (runner detection)", "PRD §13 (v1 runners)"],
+          "acceptance_criteria": [
+            "Auto-detects Alembic / Prisma / Drizzle / raw-SQL dir from the repo.",
+            "Shells out to the detected tool; no migration logic is reimplemented.",
+            "Detection is overridable/explicitly selectable."
+          ],
+          "verification": ["go test ./internal/runner/... (detection fixtures per tool; shell-out invocation)"],
+          "artifacts": ["internal/runner/detect.go", "internal/runner/{alembic,prisma,drizzle,rawsql}.go", "internal/runner/detect_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 6
+        },
+        {
+          "id": "P2-T7",
+          "title": "`validate` orchestration (the main event)",
+          "description": "Wire `rowshape validate [--json]`: hydrate a disposable Postgres (from P1-T9), apply the current migration set via the detected runner (P2-T6), and capture success/failure, per-statement wall time, lock mode + duration, rows affected, constraint violations, and index build behavior. Feed captures into findings + extrapolation + capping and emit the Verdict. HARD-REFUSE if the target host matches the fixture source host; never touch a non-disposable DB.",
+          "depends_on": ["P2-T4", "P2-T5", "P2-T6"],
+          "spec_refs": ["PRD §8.1", "PRD §11", "INV-BLAST-RADIUS-ZERO", "INV-NEVER-GATE-VALIDATE"],
+          "acceptance_criteria": [
+            "validate hydrates, applies, captures the six signal classes, and returns a Verdict.",
+            "--json emits the machine verdict; default emits the human rendering of the same struct.",
+            "Refuses when target host == fixture source host; only operates on disposable/provided targets.",
+            "validate makes no network call to any cloud service."
+          ],
+          "verification": ["go test ./cmd/... (end-to-end validate on a corpus triple); assert host-match refusal; assert no cloud egress"],
+          "artifacts": ["cmd/validate.go", "internal/validate/capture.go", "cmd/validate_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 7
+        },
+        {
+          "id": "P2-T8",
+          "title": "RS-LOCK findings (lock mode + rewrite duration)",
+          "description": "Detect lock-mode and table-rewrite pathologies: ACCESS EXCLUSIVE locks, volatile-default rewrites, type changes. Report lock_mode, rows_rewritten, bucketed duration via the extrapolation engine, and mandatory expand/backfill/contract remediation. Version-conditional (consume engine.version). Corpus entry precedes/accompanies this per ordering rule.",
+          "depends_on": ["P2-T2", "P2-T7"],
+          "spec_refs": ["PRD §10 (RS-LOCK-001 example)", "PRD §12", "RFC §9.1", "INV-VERDICT-STABLE"],
+          "acceptance_criteria": [
+            "RS-LOCK-001 fires on the volatile-default rewrite corpus case with correct lock_mode + rows_rewritten evidence.",
+            "Duration is a bucket with basis; remediation is the split expand/backfill/contract recipe.",
+            "Finding declares depends_on (e.g. public.<t>.rows) and carries capped confidence.",
+            "Behaves version-conditionally between PG 11 and PG 16."
+          ],
+          "verification": ["corpus RS-LOCK cases green across PG matrix"],
+          "artifacts": ["internal/findings/rslock.go", "internal/findings/rslock_test.go", "corpus/cases/rslock-*/*"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 8
+        },
+        {
+          "id": "P2-T9",
+          "title": "RS-DATA findings (uniqueness, null-on-NOT-NULL, orphans)",
+          "description": "Detect data-shape pathologies: ADD CONSTRAINT UNIQUE on a column whose uniqueness is unproven (must WARN via capping, e.g. RS-DATA-014), SET NOT NULL / NOT NULL column where null_fraction > 0, FOREIGN KEY ... VALIDATE against nonzero orphan_fraction. Every finding declares depends_on and is capped.",
+          "depends_on": ["P2-T2", "P2-T7"],
+          "spec_refs": ["RFC §7.4 (RS-DATA-014)", "RFC §6.6 (orphan_fraction)", "PRD §10", "INV-CONFIDENCE-CAPPING", "INV-UNIQUENESS"],
+          "acceptance_criteria": [
+            "RS-DATA-014 warns (never PASS) when uniqueness is `estimated`/absent, naming `rowshape pull --exact <col>`.",
+            "A NOT NULL addition against null_fraction>0 is flagged.",
+            "A VALIDATE against orphan_fraction>0 is flagged as will-fail.",
+            "All RS-DATA findings carry depends_on + capped confidence."
+          ],
+          "verification": ["corpus RS-DATA cases green; capping suite (P2-T2) satisfied by RS-DATA-014"],
+          "artifacts": ["internal/findings/rsdata.go", "internal/findings/rsdata_test.go", "corpus/cases/rsdata-*/*"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 9
+        },
+        {
+          "id": "P2-T10",
+          "title": "RS-CONSTRAINT findings",
+          "description": "Detect constraint pathologies: adding/validating CHECK or FK constraints that conflict with existing data, NOT VALID constraint validated in the same transaction, constraint validation full-scan cost. Consume constraints (§6.4) and validated flags. Bucketed, capped, remediated.",
+          "depends_on": ["P2-T2", "P2-T7"],
+          "spec_refs": ["RFC §6.4", "RFC §9.1 (constraint validation O(n))", "PRD §10", "PRD §12"],
+          "acceptance_criteria": [
+            "Flags NOT VALID + VALIDATE in the same transaction.",
+            "Flags constraint additions that conflict with profiled data shape.",
+            "Reports validation scan cost as a bucket; remediation mandatory."
+          ],
+          "verification": ["corpus RS-CONSTRAINT cases green across matrix"],
+          "artifacts": ["internal/findings/rsconstraint.go", "internal/findings/rsconstraint_test.go", "corpus/cases/rsconstraint-*/*"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 10
+        },
+        {
+          "id": "P2-T11",
+          "title": "RS-INDEX findings",
+          "description": "Detect index pathologies: CREATE INDEX (non-concurrent) taking an exclusive lock, unique index that can't build on non-unique data, rebuild time driven by index bytes/bloat_estimate (§6.5). Recommend CREATE INDEX CONCURRENTLY where applicable. Bucketed via O(n log n) model, capped, remediated.",
+          "depends_on": ["P2-T2", "P2-T7"],
+          "spec_refs": ["RFC §6.5", "RFC §9.1 (b-tree O(n log n), CIC two-pass)", "PRD §10"],
+          "acceptance_criteria": [
+            "Flags non-concurrent index builds that lock; recommends CONCURRENTLY.",
+            "Flags a unique index that cannot build given profiled uniqueness.",
+            "Rebuild duration bucket uses index bytes/bloat as basis."
+          ],
+          "verification": ["corpus RS-INDEX cases green across matrix"],
+          "artifacts": ["internal/findings/rsindex.go", "internal/findings/rsindex_test.go", "corpus/cases/rsindex-*/*"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 11
+        },
+        {
+          "id": "P2-T12",
+          "title": "`rowshape explain <CODE>` (agent-readable remediation)",
+          "description": "Implement `explain <CODE>` returning docs + remediation for a finding code, agent-readable, no web search required. Every error finding's `explain` field points here. remediation is mandatory (a finding an agent can't act on is a bug).",
+          "depends_on": ["P2-T3"],
+          "spec_refs": ["PRD §8.1", "PRD §10 (remediation mandatory)"],
+          "acceptance_criteria": [
+            "explain RS-LOCK-001 (and every shipped code) returns structured remediation.",
+            "Content is data-driven from the same source the finding cites (no drift).",
+            "Every shipped finding code has an explain entry (test-enforced)."
+          ],
+          "verification": ["go test ./cmd/... (explain covers every registered finding code)"],
+          "artifacts": ["cmd/explain.go", "internal/findings/registry.go", "cmd/explain_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 12
+        },
+        {
+          "id": "P2-T13",
+          "title": "PG version matrix in corpus CI (11-17)",
+          "description": "Run the corpus (including capping and all finding classes) against every supported Postgres major, 11 through 17. A finding right on 16 can be wrong on 11; the matrix is what catches it (PRD §12). Extends the P0-T6 matrix-ready CI.",
+          "depends_on": ["P2-T1", "P0-T6"],
+          "spec_refs": ["PRD §12", "PRD §13 (11-17)", "RFC §9.1"],
+          "acceptance_criteria": [
+            "CI runs the corpus against PG 11,12,13,14,15,16,17.",
+            "Version-conditional cases assert different verdicts per major where expected.",
+            "A regression on any major fails CI."
+          ],
+          "verification": ["CI matrix green across all seven majors"],
+          "artifacts": [".github/workflows/corpus.yml"],
+          "type": "ops",
+          "passes": false,
+          "status": "todo",
+          "priority": 13
+        },
+        {
+          "id": "P2-T14",
+          "title": "`validate --calibrate` (upgrade estimate to measured)",
+          "description": "Implement --calibrate: hydrate at two scale factors, fit the actual cost curve, and upgrade the estimate confidence from `estimated` to `measured` for the migration you're genuinely nervous about. Slower and honest (RFC §9.2).",
+          "depends_on": ["P2-T5", "P2-T7"],
+          "spec_refs": ["RFC §9.2", "INV-DURATIONS-BUCKETS"],
+          "acceptance_criteria": [
+            "--calibrate hydrates at two scales and fits the curve.",
+            "Calibrated estimate is marked confidence `measured` with basis from the two points.",
+            "Without --calibrate, estimates remain `estimated` (no silent upgrade)."
+          ],
+          "verification": ["go test ./internal/estimate/... (two-point fit; confidence upgrade only under --calibrate)"],
+          "artifacts": ["internal/estimate/calibrate.go", "cmd/validate.go (flag)", "internal/estimate/calibrate_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 14
+        },
+        {
+          "id": "P2-T15",
+          "title": "`plan --against` and `verify --against` (read-only)",
+          "description": "Implement `plan --against prod` (dry-run diff vs a live target) and `verify --against prod` (post-deploy: does reality match intent). verify is read-only by definition. Validating against a live branch/target should upgrade the relevant facts to `exact` (PRD §15, Neon complementarity). These are the non-mutating live-target surfaces from §8.1.",
+          "depends_on": ["P2-T7"],
+          "spec_refs": ["PRD §8.1", "PRD §11 (verify read-only)", "PRD §15 (--target upgrades facts to exact)"],
+          "acceptance_criteria": [
+            "plan --against produces a dry-run diff without applying anything.",
+            "verify --against performs read-only checks only (no writes, enforced).",
+            "Validating against a provided live target upgrades the relevant facts to `exact`."
+          ],
+          "verification": ["go test ./cmd/... (plan diff; verify read-only enforcement; fact-upgrade on live target)"],
+          "artifacts": ["cmd/plan.go", "cmd/verify.go", "cmd/plan_verify_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 15
+        }
+      ]
+    },
+    { "id": "phase-3", "order": 4, "name": "MCP subcommand + init --agent + the agent rule", "weeks": "11", "source": "PRD §14 Phase 3, §8.2/§8.3", "status": "stub", "tasks": [] },
+    { "id": "phase-4", "order": 5, "name": "GitHub Action, docs site (Cloudflare Pages), the agent-loop demo", "weeks": "12", "source": "PRD §14 Phase 4, §9, §13", "status": "stub", "tasks": [] },
+    { "id": "phase-5", "order": 6, "name": "Findings breadth, version matrix depth, MySQL, then cloud only if pull-through is real", "weeks": "13+", "source": "PRD §14 Phase 5, §8.4/§9/§9.1", "status": "stub", "deferred": true, "tasks": [] }
+  ],
+
+  "milestones": {
+    "note": "To be finalized when phase-4 is built. The launch gate is PRD §13: a Claude Code session, given a repo and a fixture, told 'add a NOT NULL email column to users', produces a naive migration, watches it FAIL with RS-LOCK-001, rewrites it as a three-step backfill, and reaches PASS — with no human turn in between."
+  }
+}
