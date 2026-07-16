@@ -345,8 +345,8 @@
           "verification": ["go test ./internal/fixture/... (golden canonical-form + digest-stability tests, run on linux+darwin+windows in CI)"],
           "artifacts": ["internal/fixture/canonical.go", "internal/fixture/digest.go", "internal/fixture/testdata/*.golden"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 2
         },
         {

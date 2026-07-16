@@ -36,6 +36,27 @@ jobs:
           ROWSHAPE_PG_VERSION: ${{ matrix.pg }}
         run: go test ./...
 
+  canonical-cross-platform:
+    # RFC §11 / §13: the canonical form and digest MUST be byte-identical across
+    # platforms. The fixture package's golden + digest-stability tests therefore
+    # run on linux, darwin, and windows (P1-T2 verification). This job is scoped
+    # to ./internal/fixture/... — it needs no Postgres, so it stays cheap and
+    # independent of the phase-2 PG version matrix.
+    name: canonical form (cross-platform)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Test canonical form + digest
+        run: go test ./internal/fixture/...
+
   lint:
     name: lint
     runs-on: ubuntu-latest

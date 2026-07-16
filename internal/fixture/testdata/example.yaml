@@ -1,0 +1,77 @@
+rowshape_fixture: "1"
+
+meta:
+  id: prod@2026-07-14
+  generated_at: 2026-07-14T09:12:44Z
+  generator: rowshape/0.1.0
+  engine: { name: postgres, version: "16.3" }
+  privacy: standard
+  source: sha256:41b0
+  profile:
+    mode: fast
+    scanned_at: 2026-07-14T09:12:44Z
+    escalated: [public.users.email, public.orders.external_ref]
+  digest: sha256:PLACEHOLDER
+
+tables:
+  public.users:
+    rows: { value: 1200000, confidence: exact }
+    bytes: 890000000
+    columns:
+      id:
+        type: bigint
+        nullable: false
+        null_fraction: { value: 0.0, confidence: exact }
+        distinct: { value: 1200000, confidence: exact, via: unique_index }
+        unique: { value: true, confidence: exact, via: constraint }
+        generated: identity
+      email:
+        type: text
+        nullable: true
+        null_fraction: { value: 0.032, confidence: exact }
+        distinct: { value: 1161600, confidence: measured, via: hll, error: 0.02 }
+        unique: { value: false, confidence: exact, via: scan }
+        format: email
+        length: { min: 6, max: 254, mean: 24.1, p95: 38 }
+      status:
+        type: text
+        nullable: false
+        null_fraction: { value: 0.0, confidence: exact }
+        distinct: { value: 4, confidence: exact }
+        format: enum_like
+        values: [active, trialing, past_due, canceled]
+        frequencies: [0.71, 0.11, 0.06, 0.12]
+      created_at:
+        type: timestamptz
+        nullable: false
+        null_fraction: { value: 0.0, confidence: estimated }
+        distinct: { value: 1198412, confidence: estimated, via: pg_stats }
+        range: { min: 2021-03-01T00:00:00Z, max: 2026-07-14T08:59:12Z }
+    constraints:
+      - name: users_pkey
+        kind: primary_key
+        columns: [id]
+      - name: users_email_key
+        kind: unique
+        columns: [email]
+        nulls_distinct: true
+      - name: users_status_check
+        kind: check
+        expression: "status = ANY (ARRAY['active'::text])"
+        validated: true
+    indexes:
+      - name: users_email_idx
+        method: btree
+        columns: [email]
+        unique: true
+        partial: "WHERE deleted_at IS NULL"
+        bytes: 48000000
+        bloat_estimate: 0.12
+  public.orders:
+    rows: { value: 8400000, confidence: exact }
+    references:
+      - column: user_id
+        to: public.users.id
+        on_delete: cascade
+        fanout: { mean: 8.4, p50: 3, p95: 41, max: 12902, confidence: measured }
+        orphan_fraction: { value: 0.0, confidence: exact, via: scan }
