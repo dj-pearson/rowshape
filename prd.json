@@ -790,8 +790,8 @@
           "verification": ["go test ./internal/runner/... (detection fixtures per tool; shell-out invocation)"],
           "artifacts": ["internal/runner/detect.go", "internal/runner/{alembic,prisma,drizzle,rawsql}.go", "internal/runner/detect_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 6
         },
         {
