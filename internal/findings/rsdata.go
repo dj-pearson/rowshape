@@ -90,7 +90,7 @@ func uniqueFinding(f *fixture.Fixture, sql, upper string) (verdict.Finding, bool
 			Detail:      fmt.Sprintf("%s is proven non-unique (unique=false, exact); ADD CONSTRAINT UNIQUE cannot build.", target),
 			Evidence:    map[string]any{"unique": false},
 			DependsOn:   []string{dep},
-			Remediation: "De-duplicate the column before adding the constraint (remove or merge the duplicate rows).",
+			Remediation: remediation("RS-DATA-014"),
 			Explain:     "rowshape explain RS-DATA-014",
 		}, true
 	}
@@ -101,7 +101,7 @@ func uniqueFinding(f *fixture.Fixture, sql, upper string) (verdict.Finding, bool
 		Title:       fmt.Sprintf("Uniqueness of %s not confirmed for ADD UNIQUE", target),
 		Detail:      fmt.Sprintf("ADD CONSTRAINT UNIQUE on %s can only PASS if uniqueness is proven exact; a sample never establishes it (INV-UNIQUENESS).", target),
 		DependsOn:   []string{dep},
-		Remediation: "Prove uniqueness before adding the constraint.",
+		Remediation: remediation("RS-DATA-014"),
 		Explain:     "rowshape explain RS-DATA-014",
 	}, true
 }
@@ -160,7 +160,7 @@ func notNullFinding(f *fixture.Fixture, sql, upper string) (verdict.Finding, boo
 			Detail:      fmt.Sprintf("null_fraction is %.4g (%s); SET NOT NULL rejects the existing NULL rows.", nf.Value, nf.Confidence),
 			Evidence:    map[string]any{"null_fraction": nf.Value},
 			DependsOn:   []string{dep},
-			Remediation: "Backfill or delete the NULL rows first, or add a DEFAULT; then SET NOT NULL. Consider a validated CHECK (col IS NOT NULL) to avoid a full-table scan.",
+			Remediation: remediation("RS-DATA-001"),
 			Explain:     "rowshape explain RS-DATA-001",
 		}, true
 	}
@@ -173,7 +173,7 @@ func notNullFinding(f *fixture.Fixture, sql, upper string) (verdict.Finding, boo
 		Title:       fmt.Sprintf("SET NOT NULL on %s.%s not confirmed safe", shortTable(table), col),
 		Detail:      "SET NOT NULL can only PASS if the column is proven to contain no NULLs.",
 		DependsOn:   []string{dep},
-		Remediation: "Confirm the column has no NULLs.",
+		Remediation: remediation("RS-DATA-001"),
 		Explain:     "rowshape explain RS-DATA-001",
 	}, true
 }
@@ -199,7 +199,7 @@ func orphanFinding(f *fixture.Fixture, ref fkRef) (verdict.Finding, bool) {
 			Detail:      fmt.Sprintf("orphan_fraction is %.4g (%s); the FK validation scan trips on rows with no matching parent.", orphan.Value, orphan.Confidence),
 			Evidence:    map[string]any{"orphan_fraction": orphan.Value},
 			DependsOn:   []string{dep},
-			Remediation: "Delete or repair the orphaned rows before validating the constraint (ADD ... NOT VALID, clean up, then VALIDATE CONSTRAINT).",
+			Remediation: remediation("RS-DATA-020"),
 			Explain:     "rowshape explain RS-DATA-020",
 		}, true
 	}
@@ -210,7 +210,7 @@ func orphanFinding(f *fixture.Fixture, ref fkRef) (verdict.Finding, bool) {
 		Title:       fmt.Sprintf("FK validation on %s.%s not confirmed safe", shortTable(ref.table), ref.column),
 		Detail:      "Validating the FK can only PASS if no orphaned rows are proven to exist.",
 		DependsOn:   []string{dep},
-		Remediation: "Confirm there are no orphaned rows.",
+		Remediation: remediation("RS-DATA-020"),
 		Explain:     "rowshape explain RS-DATA-020",
 	}, true
 }

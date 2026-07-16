@@ -902,8 +902,8 @@
           "verification": ["go test ./cmd/... (explain covers every registered finding code)"],
           "artifacts": ["cmd/explain.go", "internal/findings/registry.go", "cmd/explain_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 12
         },
         {

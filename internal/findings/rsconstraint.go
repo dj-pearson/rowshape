@@ -80,7 +80,7 @@ func sameTxFinding(f *fixture.Fixture, c *validate.Capture, table, name string, 
 		Title:       fmt.Sprintf("Constraint %s on %s is validated in the same transaction it is added NOT VALID", name, shortTable(table)),
 		Detail:      "Adding a constraint NOT VALID and VALIDATE-ing it in one transaction still runs the full validating scan under the transaction's locks — the two-step split that avoids a long lock is defeated.",
 		DependsOn:   []string{table + ".rows"},
-		Remediation: "Split across transactions: ALTER TABLE ... ADD CONSTRAINT ... NOT VALID and COMMIT, then ALTER TABLE ... VALIDATE CONSTRAINT in a separate transaction. VALIDATE then takes only a SHARE UPDATE EXCLUSIVE lock and does not block reads or writes.",
+		Remediation: remediation("RS-CONSTRAINT-001"),
 		Explain:     "rowshape explain RS-CONSTRAINT-001",
 	}
 	if hasVersion {
@@ -134,7 +134,7 @@ func checkConflict(f *fixture.Fixture, table, expr string) (verdict.Finding, boo
 		Detail:      fmt.Sprintf("The column's profiled range [%s, %s] violates CHECK (%s %s %s); adding the constraint will fail on existing rows.", trimNum(lo), trimNum(hi), col, op, trimNum(k)),
 		Evidence:    map[string]any{"range_min": c.Range.Min, "range_max": c.Range.Max, "check": expr},
 		DependsOn:   []string{table + ".rows"},
-		Remediation: "Repair or exclude the rows that violate the predicate before adding the CHECK (or widen the predicate). Add the constraint NOT VALID, fix the data, then VALIDATE.",
+		Remediation: remediation("RS-CONSTRAINT-010"),
 		Explain:     "rowshape explain RS-CONSTRAINT-010",
 	}, true
 }

@@ -57,8 +57,9 @@ func (rsLock) finding(f *fixture.Fixture, c *validate.Capture, st validate.State
 		Evidence:  map[string]any{"lock_mode": lockMode, "rows_rewritten": declared},
 		DependsOn: []string{table + ".rows"},
 		// The rewrite recipe is mandatory on this finding (INV-VERDICT-STABLE): a
-		// finding an agent can't act on is a bug.
-		Remediation: rewriteRemediation(kind),
+		// finding an agent can't act on is a bug. It comes from the shared catalog
+		// so it never drifts from `rowshape explain RS-LOCK-001`.
+		Remediation: remediation("RS-LOCK-001"),
 		Explain:     "rowshape explain RS-LOCK-001",
 	}
 
@@ -176,14 +177,6 @@ func alterTableTarget(sql string) string {
 		return strings.Trim(fields[i], `"`)
 	}
 	return ""
-}
-
-// rewriteRemediation is the expand/backfill/contract recipe (PRD §10).
-func rewriteRemediation(kind string) string {
-	if strings.Contains(kind, "TYPE") {
-		return "Avoid the in-place type change: ADD a new column of the target type; backfill it in batches; swap reads/writes; drop the old column. Each step is online."
-	}
-	return "Split into: ADD COLUMN nullable (no default); backfill the value in batches; SET NOT NULL via a validated CHECK constraint; then attach the default. Each step avoids the full-table ACCESS EXCLUSIVE rewrite."
 }
 
 // humanLock renders a pg_locks mode ("AccessExclusiveLock") as the SQL lock name

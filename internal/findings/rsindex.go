@@ -59,7 +59,7 @@ func nonConcurrentFinding(f *fixture.Fixture, c *validate.Capture, table string,
 		Title:       fmt.Sprintf("Non-concurrent CREATE INDEX on %s locks out writes during the build", shortTable(table)),
 		Detail:      "A plain CREATE INDEX holds a SHARE lock that blocks writes for the whole build.",
 		DependsOn:   []string{table + ".rows"},
-		Remediation: "Use CREATE INDEX CONCURRENTLY: it builds in two passes without an exclusive lock, so writes continue. Run it outside a transaction block.",
+		Remediation: remediation("RS-INDEX-001"),
 		Explain:     "rowshape explain RS-INDEX-001",
 	}
 	if hasVersion {
@@ -86,7 +86,7 @@ func indexUniqueFinding(f *fixture.Fixture, table string, cols []string) verdict
 			Detail:      fmt.Sprintf("%s is proven non-unique (unique=false, exact); the unique index cannot build.", target),
 			Evidence:    map[string]any{"unique": false},
 			DependsOn:   []string{dep},
-			Remediation: "De-duplicate the column before creating the unique index (remove or merge the duplicate rows).",
+			Remediation: remediation("RS-INDEX-010"),
 			Explain:     "rowshape explain RS-INDEX-010",
 		}
 	}
@@ -96,7 +96,7 @@ func indexUniqueFinding(f *fixture.Fixture, table string, cols []string) verdict
 		Title:       fmt.Sprintf("Uniqueness of %s not confirmed for CREATE UNIQUE INDEX", target),
 		Detail:      fmt.Sprintf("A unique index on %s can only PASS if uniqueness is proven exact; a sample never establishes it (INV-UNIQUENESS).", target),
 		DependsOn:   []string{dep},
-		Remediation: "Prove uniqueness before creating the unique index.",
+		Remediation: remediation("RS-INDEX-010"),
 		Explain:     "rowshape explain RS-INDEX-010",
 	}
 }
@@ -121,7 +121,7 @@ func reindexFinding(f *fixture.Fixture, name string, isTable bool) (verdict.Find
 		Evidence:    map[string]any{"index_bytes": bytes, "bloat_estimate": bloat},
 		DependsOn:   []string{table + ".rows"},
 		Estimate:    &verdict.Estimate{Bucket: estimate.BucketFromBytes(bytes), Model: "reindex_bytes"},
-		Remediation: "Use REINDEX INDEX CONCURRENTLY (PG 12+) so the rebuild does not block writes.",
+		Remediation: remediation("RS-INDEX-020"),
 		Explain:     "rowshape explain RS-INDEX-020",
 	}
 	return fnd, true
