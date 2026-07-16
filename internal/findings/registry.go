@@ -94,6 +94,27 @@ var catalog = map[string]Explanation{
 		Remediation: "Add a WHERE clause to scope the change. For a genuine full-table update, run it in bounded batches (by primary-key range) and VACUUM afterward to reclaim the bloat.",
 		References:  []string{"PRD §10"},
 	},
+	"RS-REVERSE-001": {
+		Code:        "RS-REVERSE-001",
+		Title:       "DROP COLUMN loses its data irreversibly",
+		Summary:     "Dropping a column permanently removes its values across every row. A down-migration can recreate the column, but not what it held — the rollback is lossy.",
+		Remediation: "Drop in two phases across separate deploys: first stop writing and reading the column and ship that, then drop it in a later migration once you are sure it is unused. Take a backup (or snapshot the column into an archive table) before the drop so the data is recoverable.",
+		References:  []string{"PRD §10", "PRD §12"},
+	},
+	"RS-REVERSE-002": {
+		Code:        "RS-REVERSE-002",
+		Title:       "DROP TABLE loses every row irreversibly",
+		Summary:     "Dropping a table permanently removes every row. A down-migration can recreate the table structure, but not its data — the rollback cannot restore what was there.",
+		Remediation: "Drop in two phases across separate deploys: first stop using the table and ship that, then drop it in a later migration once you are sure it is unreferenced. Take a backup (or rename it aside — ALTER TABLE ... RENAME TO — rather than dropping) so the data is recoverable.",
+		References:  []string{"PRD §10", "PRD §12"},
+	},
+	"RS-REVERSE-003": {
+		Code:        "RS-REVERSE-003",
+		Title:       "Narrowing a column type can truncate data irreversibly",
+		Summary:     "Narrowing a column's type (a wider integer to a smaller one, an unbounded string to a length-limited one, or a fractional number to an integer) can truncate or round values. Widening back cannot restore the lost precision.",
+		Remediation: "Keep the wider type, or migrate without loss: add a new column of the target type, backfill it while checking every value fits, swap reads and writes over, then drop the old column in a later migration. Take a backup before any in-place narrowing.",
+		References:  []string{"PRD §10", "PRD §12"},
+	},
 }
 
 // Explain returns the documentation for a finding code.

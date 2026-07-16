@@ -1,0 +1,7 @@
+{
+  "description": "Narrowing amount bigint -> integer can truncate values with no lossless rollback — RS-REVERSE, a WARN with the add-column-and-backfill recipe.",
+  "verdict": "WARN",
+  "findings": [
+    {"code": "RS-REVERSE", "severity": "warn"}
+  ]
+}

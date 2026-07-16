@@ -1,0 +1,13 @@
+rowshape_fixture: "1"
+meta:
+  id: reverse-drop-table
+  engine: {name: postgres, version: "16"}
+  privacy: standard
+  profile: {mode: fast, escalated: []}
+tables:
+  public.audit_log:
+    rows: {value: 88000000, confidence: exact}
+    columns:
+      id: {type: bigint, nullable: false, unique: {value: true, confidence: exact, via: constraint}}
+      action: {type: text, nullable: false}
+    constraints: [{name: audit_log_pkey, kind: primary_key, columns: [id]}]

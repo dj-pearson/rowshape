@@ -1405,8 +1405,8 @@
           "verification": ["corpus harness green on RS-REVERSE cases; remediation present on every error"],
           "artifacts": ["corpus/cases/reverse-*/**", "internal/findings/reverse.go", "internal/findings/reverse_test.go"],
           "type": "code/asset",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 2
         },
         {
