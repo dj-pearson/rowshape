@@ -589,8 +589,8 @@
           "verification": ["go test ./internal/profile/... (probe correctness on unique + non-unique columns; omission path)"],
           "artifacts": ["internal/profile/uniqueness.go", "internal/profile/uniqueness_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 2
         },
         {
