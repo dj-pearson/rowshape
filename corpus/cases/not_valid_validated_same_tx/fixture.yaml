@@ -10,5 +10,5 @@ tables:
     bytes: 3200000000
     columns:
       id: {type: bigint, nullable: false, unique: {value: true, confidence: exact, via: constraint}, generated: identity}
-      amount_cents: {type: integer, nullable: false, distinct: 4000}
+      amount_cents: {type: integer, nullable: false, distinct: 4000, range: {min: 1, max: 50000}}
     constraints: [{name: orders_pkey, kind: primary_key, columns: [id]}]

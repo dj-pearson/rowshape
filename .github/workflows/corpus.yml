@@ -1,0 +1,55 @@
+name: Corpus
+
+# Runs the corpus — the (migration, fixture, expected verdict) triples — against
+# every supported Postgres major, 11 through 17 (PRD §12, §13). A finding that is
+# right on 16 can be wrong on 11; this matrix is what catches it. Each job
+# hydrates a disposable database, applies the migration through the real
+# `validate` capture path, runs every RS-* analyzer, and compares the verdict to
+# expected.json. A regression on any major fails CI.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.x"
+
+jobs:
+  corpus-matrix:
+    name: corpus (PG ${{ matrix.pg }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: ["11", "12", "13", "14", "15", "16", "17"]
+    services:
+      postgres:
+        image: postgres:${{ matrix.pg }}
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Run the corpus against Postgres ${{ matrix.pg }}
+        env:
+          # The pipeline validator overrides each fixture's engine version to the
+          # major under test, so the version-conditional finding rules (RFC §9.1)
+          # are exercised per major, and applies the migration on the real server.
+          ROWSHAPE_PG_VERSION: ${{ matrix.pg }}
+          ROWSHAPE_TEST_PG_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+        # -count=1 disables the test cache so every major genuinely runs.
+        run: go test ./corpus/... -count=1

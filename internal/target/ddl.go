@@ -35,7 +35,36 @@ func DDL(f *fixture.Fixture) []string {
 	for _, name := range sortedKeys(f.Tables) {
 		stmts = append(stmts, createTable(name, f.Tables[name]))
 	}
+	// Recreate the fixture's secondary indexes so a migration that reindexes or
+	// depends on them has them present. On hydrated (small) data these are cheap;
+	// their fixture-recorded bytes/bloat drive extrapolation, not the real build.
+	for _, name := range sortedKeys(f.Tables) {
+		for _, ix := range f.Tables[name].Indexes {
+			if stmt := createIndex(name, ix); stmt != "" {
+				stmts = append(stmts, stmt)
+			}
+		}
+	}
 	return stmts
+}
+
+// createIndex renders a secondary index. Partial and expression indexes are
+// skipped (their predicates/expressions may reference domain logic hydrated data
+// needn't satisfy); a plain column index is enough for a migration to reindex or
+// build against.
+func createIndex(table string, ix fixture.Index) string {
+	if ix.Name == "" || len(ix.Columns) == 0 || ix.Partial != "" {
+		return ""
+	}
+	unique := ""
+	if ix.Unique {
+		unique = "UNIQUE "
+	}
+	using := ""
+	if ix.Method != "" && !strings.EqualFold(ix.Method, "btree") {
+		using = " USING " + ix.Method
+	}
+	return fmt.Sprintf("CREATE %sINDEX %s ON %s%s (%s)", unique, quoteIdent(ix.Name), quoteTable(table), using, quoteCols(ix.Columns))
 }
 
 // createTable renders one CREATE TABLE statement.

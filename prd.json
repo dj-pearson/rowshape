@@ -920,8 +920,8 @@
           "verification": ["CI matrix green across all seven majors"],
           "artifacts": [".github/workflows/corpus.yml"],
           "type": "ops",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 13
         },
         {

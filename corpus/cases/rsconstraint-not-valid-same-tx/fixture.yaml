@@ -9,5 +9,5 @@ tables:
     rows: {value: 6000000, confidence: exact}
     columns:
       id: {type: bigint, nullable: false, unique: {value: true, confidence: exact, via: constraint}}
-      total_cents: {type: integer, nullable: false}
+      total_cents: {type: integer, nullable: false, range: {min: 1, max: 100000}}
     constraints: [{name: orders_pkey, kind: primary_key, columns: [id]}]

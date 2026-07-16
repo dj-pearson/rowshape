@@ -87,6 +87,15 @@ func Apply(ctx context.Context, conn *pgx.Conn, statements []string) *Capture {
 		if sql == "" {
 			continue
 		}
+		// Transaction-control statements (BEGIN/COMMIT/…) are recorded so the
+		// analyzers can see the transaction boundaries (RS-CONSTRAINT tracks
+		// NOT VALID + VALIDATE in one transaction), but they are not executed:
+		// each DDL statement is applied in its own transaction for lock
+		// inspection, so replaying the migration's own BEGIN/COMMIT would clash.
+		if isTxControl(sql) {
+			cap.Statements = append(cap.Statements, Statement{SQL: sql})
+			continue
+		}
 		st := applyOne(ctx, conn, sql)
 		cap.Statements = append(cap.Statements, st)
 		if st.ErrCode != "" {
@@ -174,6 +183,18 @@ func strongestLock(ctx context.Context, tx pgx.Tx) (mode, table string) {
 		return "", ""
 	}
 	return mode, table
+}
+
+// isTxControl reports whether a statement is transaction control (BEGIN, COMMIT,
+// ROLLBACK, START TRANSACTION, END, SAVEPOINT, RELEASE) rather than DDL/DML.
+func isTxControl(sql string) bool {
+	u := strings.ToUpper(strings.TrimSpace(sql))
+	for _, kw := range []string{"BEGIN", "COMMIT", "ROLLBACK", "START TRANSACTION", "END", "SAVEPOINT", "RELEASE"} {
+		if u == kw || strings.HasPrefix(u, kw+" ") || strings.HasPrefix(u, kw+";") {
+			return true
+		}
+	}
+	return false
 }
 
 // classifyIndexBuild reports whether sql builds an index and whether it does so

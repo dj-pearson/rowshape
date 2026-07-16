@@ -80,6 +80,13 @@ var catalog = map[string]Explanation{
 		Remediation: "Use REINDEX INDEX CONCURRENTLY (PG 12+) so the rebuild does not block writes.",
 		References:  []string{"RFC §6.5", "PRD §10"},
 	},
+	"RS-PERF-001": {
+		Code:        "RS-PERF-001",
+		Title:       "DELETE cascades through a long-tailed fan-out",
+		Summary:     "Deleting from a parent table referenced ON DELETE CASCADE cascades to its children. When the fan-out is long-tailed (the max dwarfs the mean), deleting the wrong parents cascades to a huge, slow, lock-holding delete — an outage a uniform mean hides.",
+		Remediation: "Delete in bounded batches (by primary-key range), and check the fan-out tail before deleting parents with many cascaded children. Consider detaching or soft-deleting children first so the cascade is bounded.",
+		References:  []string{"RFC §6.6", "PRD §10"},
+	},
 }
 
 // Explain returns the documentation for a finding code.
