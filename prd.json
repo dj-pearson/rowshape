@@ -956,8 +956,8 @@
           "verification": ["go test ./cmd/... (plan diff; verify read-only enforcement; fact-upgrade on live target)"],
           "artifacts": ["cmd/plan.go", "cmd/verify.go", "cmd/plan_verify_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 15
         },
         {

@@ -114,6 +114,40 @@ func wantFor(severity string) string {
 	}
 }
 
+// MarkExact upgrades every fact in f to `exact` confidence. It is used when the
+// facts come from a PROVIDED live target — a real database or a branch — where
+// the data is ground truth rather than a sample, so uniqueness, null fractions,
+// orphan fractions, and fan-outs read there are exact (PRD §15, the Neon
+// branching complementarity: `--target $NEON_BRANCH_URL` upgrades facts to exact).
+func MarkExact(f *fixture.Fixture) {
+	if f == nil {
+		return
+	}
+	for name, tbl := range f.Tables {
+		tbl.Rows.Confidence = fixture.Exact
+		f.Tables[name] = tbl
+		for _, col := range tbl.Columns {
+			if col.NullFraction != nil {
+				col.NullFraction.Confidence = fixture.Exact
+			}
+			if col.Distinct != nil {
+				col.Distinct.Confidence = fixture.Exact
+			}
+			if col.Unique != nil {
+				col.Unique.Confidence = fixture.Exact
+			}
+		}
+		for i := range tbl.References {
+			if tbl.References[i].OrphanFraction != nil {
+				tbl.References[i].OrphanFraction.Confidence = fixture.Exact
+			}
+			if tbl.References[i].Fanout != nil {
+				tbl.References[i].Fanout.Confidence = fixture.Exact
+			}
+		}
+	}
+}
+
 // SplitStatements splits a SQL script into individual statements on top-level
 // semicolons, skipping semicolons inside line/block comments, single- and
 // double-quoted strings, and dollar-quoted bodies ($$...$$, $tag$...$tag$). It
