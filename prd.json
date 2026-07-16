@@ -643,8 +643,8 @@
           "verification": ["go test ./internal/profile/... (exact-mode confidence levels; aggregate-only output)"],
           "artifacts": ["internal/profile/mode_exact.go", "internal/profile/mode_exact_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 5
         },
         {

@@ -30,6 +30,10 @@ type Options struct {
 	// MaxEscalationRows is the soft cost ceiling for auto-escalation (RFC §14.5).
 	// 0 uses DefaultMaxEscalationRows; a negative value disables the ceiling.
 	MaxEscalationRows int64
+	// Exact runs the full-pass `exact` profile mode (RFC §7.3): every column gets
+	// exact null counts and measured (HLL) distinct over the whole table, and
+	// uniqueness is probed exactly. Minutes to hours; opt-in via `pull --exact`.
+	Exact bool
 	// Warn, if set, receives operational warnings — notably a column whose
 	// uniqueness escalation was skipped because the table exceeds the cap. pull
 	// wires this to stderr; silent truncation is forbidden.
@@ -67,6 +71,7 @@ func read(ctx context.Context, conn *pgx.Conn, opts Options, profile bool) (*fix
 		privacy:           opts.Privacy,
 		maxEscalationRows: effectiveCap(opts.MaxEscalationRows),
 		warn:              opts.Warn,
+		exact:             opts.Exact,
 	}
 
 	f := &fixture.Fixture{
@@ -98,14 +103,17 @@ func read(ctx context.Context, conn *pgx.Conn, opts Options, profile bool) (*fix
 		f.Tables[t.qualified] = tbl
 	}
 
-	// Record the profile mode: `targeted` if any column was auto-escalated to a
-	// full pass, otherwise `fast` (RFC §7.3, P1b-T3).
+	// Record the profile mode (RFC §7.3): `exact` for a full pass, `targeted` when
+	// auto-escalation fired on a sample-based pass, otherwise `fast`.
 	if profile {
-		if len(r.escalated) > 0 {
+		switch {
+		case r.exact:
+			f.Meta.Profile.Mode = "exact"
+		case len(r.escalated) > 0:
 			sort.Strings(r.escalated)
 			f.Meta.Profile.Mode = "targeted"
 			f.Meta.Profile.Escalated = r.escalated
-		} else {
+		default:
 			f.Meta.Profile.Mode = "fast"
 		}
 	}
@@ -122,6 +130,7 @@ type reader struct {
 	escalated         []string // qualified columns auto-escalated to a full pass (P1b-T3)
 	maxEscalationRows int64    // soft cost ceiling for escalation (P1b-T4)
 	warn              func(string)
+	exact             bool // full-pass exact mode (P1b-T5)
 }
 
 // warnf emits an operational warning if a sink is configured.

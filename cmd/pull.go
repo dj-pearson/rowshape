@@ -21,6 +21,7 @@ type pullOptions struct {
 	schemas           []string
 	iKnow             bool
 	maxEscalationRows int64
+	exact             bool
 }
 
 // newPullCmd reads production shape read-only and emits a committable
@@ -55,6 +56,7 @@ func newPullCmd() *cobra.Command {
 	f.BoolVar(&opts.iKnow, "i-know", false, "override the refusal to run as a superuser")
 	f.Int64Var(&opts.maxEscalationRows, "max-escalation-rows", opts.maxEscalationRows,
 		"skip uniqueness escalation on tables larger than this (0 = default, negative = no cap)")
+	f.BoolVar(&opts.exact, "exact", false, "full streaming pass: exact null counts and measured (HLL) distinct for every column (minutes to hours)")
 	return cmd
 }
 
@@ -96,6 +98,7 @@ func runPull(ctx context.Context, opts *pullOptions) error {
 	f, err := profile.Fast(ctx, conn, profile.Options{
 		Schemas:           opts.schemas,
 		Privacy:           level,
+		Exact:             opts.exact,
 		MaxEscalationRows: opts.maxEscalationRows,
 		Warn: func(msg string) {
 			fmt.Fprintf(os.Stderr, "rowshape pull: warning: %s\n", msg)

@@ -39,13 +39,23 @@ func (r *reader) profileTable(ctx context.Context, t tableRef, tbl *fixture.Tabl
 	}
 	rows := tbl.Rows.Value
 
+	// In exact mode every stat is computed over the whole table; otherwise large
+	// tables are sampled deterministically.
 	from, _ := sampleClause(t.schema, t.name, t.reltuples)
+	if r.exact {
+		from = pgx.Identifier{t.schema, t.name}.Sanitize()
+	}
 
 	for name, col := range tbl.Columns {
 		category := categorize(col.Type)
 
-		// null_fraction and distinct come from the planner's stats (estimated).
-		if st, ok := stats[name]; ok {
+		// Exact mode: null counts are exact and distinct is measured via a full
+		// HLL pass. Fast mode: both come from the planner's stats (estimated).
+		if r.exact {
+			if err := r.exactColumn(ctx, t.schema, t.name, name, &col); err != nil {
+				return err
+			}
+		} else if st, ok := stats[name]; ok {
 			// null_fraction is emitted only for nullable columns: a NOT NULL column
 			// is structurally 0% null, while a *nullable* column at 0% null is the
 			// load-bearing case §6.1 warns about (passes staging, fails prod). This
@@ -115,14 +125,24 @@ func (r *reader) profileTable(ctx context.Context, t tableRef, tbl *fixture.Tabl
 			col.Format = fmtUUID
 		}
 
-		// Auto-escalate a dangerous column — looks unique but unproven — to a full
-		// pass: measured distinct (HLL) + exact uniqueness (probe). This is the
-		// interesting default: the cheap fast path stays cheap, but the columns
-		// where a wrong answer costs an outage get proven (RFC §7.3, P1b-T3).
-		if shouldEscalate(col, rows) {
+		switch {
+		case r.exact:
+			// Exact mode probes uniqueness for every column without a catalog proof
+			// — the full treatment (RFC §7.3). The existence probe short-circuits on
+			// the first duplicate, so a non-unique column is cheap; only a genuinely
+			// unique column pays for a full scan.
+			if col.Unique == nil {
+				uf, err := r.probeUniqueExistence(ctx, t.schema, t.name, name)
+				if err != nil {
+					return err
+				}
+				col.Unique = uf
+			}
+		case shouldEscalate(col, rows):
+			// Fast/targeted mode: auto-escalate a dangerous column — looks unique but
+			// unproven — to a full pass, unless it is over the cost ceiling (RFC
+			// §7.3 / §14.5, P1b-T3/T4).
 			if r.overEscalationCap(rows) {
-				// Over the soft cost ceiling (RFC §14.5): omit `unique` (safe, §7.4)
-				// rather than silently full-scanning a huge table, and say so.
 				r.warnf("skipped uniqueness escalation on %s.%s: table has ~%d rows, over the --max-escalation-rows cap of %d; leaving `unique` unproven (omitted) rather than full-scanning",
 					t.qualified, name, rows, r.maxEscalationRows)
 			} else {
