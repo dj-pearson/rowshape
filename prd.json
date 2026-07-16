@@ -884,8 +884,8 @@
           "verification": ["corpus RS-INDEX cases green across matrix"],
           "artifacts": ["internal/findings/rsindex.go", "internal/findings/rsindex_test.go", "corpus/cases/rsindex-*/*"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 11
         },
         {

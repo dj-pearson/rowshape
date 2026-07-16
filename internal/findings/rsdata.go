@@ -35,7 +35,9 @@ func (rsData) Analyze(f *fixture.Fixture, c *validate.Capture) []verdict.Finding
 		upper := strings.ToUpper(clean)
 
 		switch {
-		case strings.Contains(upper, "UNIQUE") && (strings.Contains(upper, "ADD") || strings.HasPrefix(upper, "CREATE UNIQUE INDEX")):
+		case strings.Contains(upper, "UNIQUE") && strings.Contains(upper, "ADD"):
+			// ADD CONSTRAINT UNIQUE (the constraint form). CREATE UNIQUE INDEX is
+			// RS-INDEX's, so the two families never double-flag one statement.
 			if fnd, ok := uniqueFinding(f, clean, upper); ok {
 				out = append(out, fnd)
 			}
@@ -72,21 +74,63 @@ func (rsData) Analyze(f *fixture.Fixture, c *validate.Capture) []verdict.Finding
 // (INV-UNIQUENESS). The finding wants PASS and rests on the column's `unique`
 // fact; capping downgrades it to a resolving WARN when uniqueness is unproven.
 func uniqueFinding(f *fixture.Fixture, sql, upper string) (verdict.Finding, bool) {
-	table := targetTableFor(sql, upper)
+	table := alterTableTarget(sql)
 	cols := colsAfter(sql, "UNIQUE")
 	if table == "" || len(cols) == 0 {
 		return verdict.Finding{}, false
 	}
 	dep, target := uniqueDependency(table, cols)
+
+	if uniquenessState(f, table, cols) == uniqViolated {
+		// Uniqueness is proven FALSE (exact): the constraint cannot be created.
+		return verdict.Finding{
+			Code:        "RS-DATA-014",
+			Severity:    verdict.SeverityError,
+			Title:       fmt.Sprintf("ADD UNIQUE on %s will fail: the column has duplicate values", target),
+			Detail:      fmt.Sprintf("%s is proven non-unique (unique=false, exact); ADD CONSTRAINT UNIQUE cannot build.", target),
+			Evidence:    map[string]any{"unique": false},
+			DependsOn:   []string{dep},
+			Remediation: "De-duplicate the column before adding the constraint (remove or merge the duplicate rows).",
+			Explain:     "rowshape explain RS-DATA-014",
+		}, true
+	}
+	// Proven-unique certifies PASS; unproven is capped to a resolving WARN.
 	return verdict.Finding{
 		Code:        "RS-DATA-014",
-		Severity:    verdict.SeverityInfo, // a clean PASS unless capping downgrades it
+		Severity:    verdict.SeverityInfo,
 		Title:       fmt.Sprintf("Uniqueness of %s not confirmed for ADD UNIQUE", target),
 		Detail:      fmt.Sprintf("ADD CONSTRAINT UNIQUE on %s can only PASS if uniqueness is proven exact; a sample never establishes it (INV-UNIQUENESS).", target),
 		DependsOn:   []string{dep},
 		Remediation: "Prove uniqueness before adding the constraint.",
 		Explain:     "rowshape explain RS-DATA-014",
 	}, true
+}
+
+// uniqState classifies whether a column can carry a UNIQUE constraint/index.
+type uniqState int
+
+const (
+	uniqProven   uniqState = iota // unique=true, exact → safe (PASS)
+	uniqViolated                  // unique=false, exact → duplicates exist (FAIL)
+	uniqUnproven                  // unique absent → cannot certify (WARN via capping)
+)
+
+// uniquenessState reads the profiled uniqueness of a single-column key. `unique`
+// is exact or absent (INV-UNIQUENESS): present-true is proven, present-false is a
+// proven violation, absent is unproven. A composite key cannot be certified from
+// per-column stats, so it is always unproven.
+func uniquenessState(f *fixture.Fixture, table string, cols []string) uniqState {
+	if len(cols) != 1 {
+		return uniqUnproven
+	}
+	c, ok := f.Tables[table].Columns[cols[0]]
+	if !ok || c.Unique == nil {
+		return uniqUnproven
+	}
+	if c.Unique.Value {
+		return uniqProven
+	}
+	return uniqViolated
 }
 
 // notNullFinding flags a SET NOT NULL. A nonzero null_fraction means the
@@ -199,20 +243,6 @@ func orphanFraction(f *fixture.Fixture, table, col string) *fixture.Fact[float64
 		}
 	}
 	return nil
-}
-
-// targetTableFor finds the table an ADD UNIQUE / CREATE UNIQUE INDEX applies to.
-func targetTableFor(sql, upper string) string {
-	if strings.HasPrefix(upper, "CREATE UNIQUE INDEX") {
-		if i := strings.Index(upper, " ON "); i >= 0 {
-			fields := strings.Fields(sql[i+4:])
-			if len(fields) > 0 {
-				return strings.Trim(strings.TrimRight(fields[0], "("), `"`)
-			}
-		}
-		return ""
-	}
-	return alterTableTarget(sql)
 }
 
 // colsAfter returns the column list of the first parenthesized group following

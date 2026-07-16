@@ -144,6 +144,22 @@ func predictMs(m Model, basisRows, basisMs, declaredRows int64) float64 {
 	}
 }
 
+// reindexBytesPerMs is a conservative index-rebuild throughput (~50 MB/s) used
+// to bucket a REINDEX from the index's on-disk size, since a rebuild's cost is
+// dominated by writing the index out (RFC §6.5). It is a defensible
+// order-of-magnitude constant, not a stopwatch.
+const reindexBytesPerMs = 50 * 1024 * 1024 / 1000
+
+// BucketFromBytes buckets an index rebuild by its on-disk size in bytes — the
+// basis for a REINDEX, whose work scales with the (possibly bloated) index size
+// rather than a row count.
+func BucketFromBytes(bytes int64) string {
+	if bytes <= 0 {
+		return verdict.BucketInstant
+	}
+	return Bucket(float64(bytes) / reindexBytesPerMs)
+}
+
 // Bucket classifies a predicted duration in milliseconds into the five verdict
 // duration buckets (RFC §9.2): instant <100ms, fast <1s, noticeable 1–10s,
 // slow 10–60s, outage >60s.

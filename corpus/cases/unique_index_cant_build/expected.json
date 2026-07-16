@@ -2,6 +2,9 @@
   "description": "CREATE UNIQUE INDEX on a column proven non-unique (exact, via probe) cannot build.",
   "verdict": "FAIL",
   "findings": [
-    {"code": "RS-DATA", "severity": "error"}
+    {
+      "code": "RS-INDEX",
+      "severity": "error"
+    }
   ]
 }
