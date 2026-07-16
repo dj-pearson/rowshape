@@ -6,9 +6,9 @@
     "RFC-0001-rowshape-fixture-spec.md (Draft v0.3)"
   ],
   "build_status": {
-    "note": "Built section by section. Foundation through phase-3 are filled with tasks; phase-4, phase-5, and milestones remain to be built out from the supporting documents.",
-    "sections_complete": ["meta", "project", "stack", "loop", "invariants", "kill_criteria", "phase-0", "phase-1", "phase-1b", "phase-2", "phase-3"],
-    "sections_pending": ["phase-4", "phase-5", "milestones"]
+    "note": "Built section by section. Foundation through phase-4 are filled with tasks; phase-5 and milestones remain to be built out from the supporting documents.",
+    "sections_complete": ["meta", "project", "stack", "loop", "invariants", "kill_criteria", "phase-0", "phase-1", "phase-1b", "phase-2", "phase-3", "phase-4"],
+    "sections_pending": ["phase-5", "milestones"]
   },
 
   "project": {
@@ -1118,7 +1118,149 @@
         }
       ]
     },
-    { "id": "phase-4", "order": 5, "name": "GitHub Action, docs site (Cloudflare Pages), the agent-loop demo", "weeks": "12", "source": "PRD §14 Phase 4, §9, §13", "status": "stub", "tasks": [] },
+    {
+      "id": "phase-4",
+      "order": 5,
+      "name": "GitHub Action, docs site (Cloudflare Pages), the agent-loop demo",
+      "weeks": "12",
+      "ships": "The three launch surfaces: a GitHub Action that runs `validate` in anyone's CI and renders the shared Verdict, the docs site (Astro Starlight on Cloudflare Pages), and the end-to-end agent-loop demo that is the launch and the week-12 kill-criterion gate.",
+      "source": "PRD §14 Phase 4, §8, §9 (docs), §10, §11, §13, §14.1 (week-12 kill criterion)",
+      "scope_note": "Nothing here adds finding logic or fixture facts — the Action and MCP tools all render the same Verdict struct built in phase 2 (PRD §10, one struct / two marshalers). This phase is distribution and proof: get `validate` into CI, publish honest docs (the narrow-and-true privacy claim, PRD §11/§8.1), and demonstrate the loop closes with no human turn. Per PRD §14.1, if the demo doesn't work end-to-end the wedge isn't real — this is a gate, not a polish pass.",
+      "definition_of_done": [
+        "A GitHub Action runs `rowshape validate` in CI, renders the same Verdict struct as the CLI and MCP (PRD §10), honors exit codes 0/1/2/3, and annotates the PR with findings at file/line.",
+        "The docs site is live on Cloudflare Pages (Astro Starlight, zero JS by default) covering install, the finding catalog, and the narrow-and-true privacy claim from PRD §8.1/§11 verbatim.",
+        "The agent-loop demo runs end-to-end with no human turn: naive migration -> FAIL RS-LOCK-001 -> three-step backfill rewrite -> PASS (PRD §13).",
+        "A CI regression job asserts the demo still reaches PASS, so the wedge can't silently rot (PRD §14.1)."
+      ],
+      "tasks": [
+        {
+          "id": "P4-T1",
+          "title": "GitHub Action: run `validate` in CI",
+          "description": "Ship a GitHub Action (thin wrapper over the signed binary from P0-T4, not a reimplementation) that runs `rowshape validate` in a consumer's CI. It renders the same Verdict struct as the CLI and MCP server — one struct, two marshalers (PRD §10) — and honors exit codes 0/1/2/3 so a FAIL fails the job and a WARN is configurable. This is the CI half of the agent loop from PRD §2.",
+          "depends_on": ["P2-T7", "P2-T3", "P0-T4"],
+          "spec_refs": ["PRD §13 (GitHub Action in scope)", "PRD §10 (same struct, honored exit codes)", "PRD §8 (Action renders the same struct as CLI/MCP)"],
+          "acceptance_criteria": [
+            "The Action runs `rowshape validate` using the released binary and exits non-zero on a FAIL verdict.",
+            "WARN-only behavior is configurable (fail vs pass) per PRD §10 exit-code rules.",
+            "The Action consumes a committed fixture and a migration set without requiring a production credential in CI."
+          ],
+          "verification": ["Action integration test: green run on a PASS case, red run on a seeded FAIL case, configurable WARN"],
+          "artifacts": ["action.yml", ".github/actions/rowshape/*", "docs/action.md"],
+          "type": "code/ops",
+          "passes": false,
+          "status": "todo",
+          "priority": 1
+        },
+        {
+          "id": "P4-T2",
+          "title": "GitHub Action: PR annotations + check summary from the Verdict",
+          "description": "Render findings into GitHub's PR surface: file/line annotations from each finding's `location` (PRD §10) and a check-run summary listing codes, severity, bucketed estimates, and remediation. Reuse the Verdict's fields directly — no separate formatting code path. This is what makes a FAIL loud in review before deploy (PRD §5, Dana's workflow).",
+          "depends_on": ["P4-T1"],
+          "spec_refs": ["PRD §10 (location, findings, remediation)", "PRD §5 (fail loudly before review)"],
+          "acceptance_criteria": [
+            "Each finding with a `location` produces a PR annotation at the correct file and line.",
+            "The check summary lists finding codes, severity, estimate bucket, and remediation.",
+            "Annotations are derived from the Verdict struct, not a bespoke formatter."
+          ],
+          "verification": ["Action integration test asserts annotations map finding.location -> file/line and summary contains codes + remediation"],
+          "artifacts": [".github/actions/rowshape/annotate.go", ".github/actions/rowshape/annotate_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 2
+        },
+        {
+          "id": "P4-T3",
+          "title": "Docs site scaffold — Astro Starlight on Cloudflare Pages",
+          "description": "Stand up the marketing + docs site per PRD §9: Astro Starlight, TypeScript, on Cloudflare Pages, shipping zero JS by default. This is explicitly the one place the stack is not Go — the Go decision was about the binary, not the website (PRD §9). Scaffold navigation, theme, and the deploy pipeline; content lands in P4-T4/T5.",
+          "depends_on": [],
+          "spec_refs": ["PRD §9 (Astro Starlight on Cloudflare Pages, TypeScript, zero JS by default)"],
+          "acceptance_criteria": [
+            "An Astro Starlight site builds and deploys to Cloudflare Pages.",
+            "The default build ships zero client JS (Starlight default) and passes a link/build check in CI.",
+            "Navigation scaffolds sections for install, findings, privacy, MCP/agent, and the fixture spec."
+          ],
+          "verification": ["site build + deploy preview succeeds; CI asserts zero-JS default and no broken internal links"],
+          "artifacts": ["docs-site/astro.config.mjs", "docs-site/src/content/**", "docs-site/package.json", ".github/workflows/docs-deploy.yml"],
+          "type": "code/ops",
+          "passes": false,
+          "status": "todo",
+          "priority": 3
+        },
+        {
+          "id": "P4-T4",
+          "title": "Docs content — install, finding catalog, the narrow-and-true privacy claim",
+          "description": "Write the load-bearing docs: install/quickstart across the five distribution channels (P0-T4), the finding catalog (one page per RS-* code sourced from `explain`, P2-T12), and the privacy page using the exact narrow-and-true claim from PRD §8.1 — 'a fixture contains no rows from your database; it contains statistics computed from them; at standard some reveal extremes; at strict none do.' The broader claim is false and will be caught (PRD §11).",
+          "depends_on": ["P4-T3", "P2-T12"],
+          "spec_refs": ["PRD §8.1 (install/quickstart)", "PRD §11 (narrow-and-true safety claim)", "PRD §8.1 fixture privacy README language", "RFC §8.1 (what actually leaks)"],
+          "acceptance_criteria": [
+            "The privacy page reproduces the PRD §8.1 defensible claim verbatim and does NOT make the broader 'no production values leave' claim.",
+            "Every shipped RS-* finding code has a catalog page whose remediation matches `rowshape explain <CODE>`.",
+            "Install docs cover all five distribution channels (brew, go install, npm wrapper, curl, Docker)."
+          ],
+          "verification": ["docs build; a check asserts each `explain` code has a matching catalog page; privacy-claim wording lint"],
+          "artifacts": ["docs-site/src/content/docs/privacy.md", "docs-site/src/content/docs/findings/*.md", "docs-site/src/content/docs/install.md"],
+          "type": "docs",
+          "passes": false,
+          "status": "todo",
+          "priority": 4
+        },
+        {
+          "id": "P4-T5",
+          "title": "Docs content — MCP / init --agent guide + fixture-spec cross-link",
+          "description": "Document the wedge: how to run `rowshape init --agent` and what it writes (MCP config, the versioned agent rule, the pre-commit hook — phase 3), and how the four MCP tools are used in an agent loop (PRD §8.2/§8.3). Cross-link the fixture-spec repo (P0-T2) and MCPFold, so the spec-as-position (PRD §3) is discoverable from the docs.",
+          "depends_on": ["P4-T3", "P3-T9", "P0-T2"],
+          "spec_refs": ["PRD §8.2 (MCP tools)", "PRD §8.3 (init --agent, agent rule)", "PRD §3 (spec is the position)", "PRD §16 (fixture spec own repo)"],
+          "acceptance_criteria": [
+            "A guide documents `init --agent` outputs and the agent-loop workflow with the four MCP tools.",
+            "The docs cross-link the fixture-spec repo and MCPFold.",
+            "The published agent rule text (P3-T9) is shown so users can see what gets written to CLAUDE.md/AGENTS.md."
+          ],
+          "verification": ["docs build; link check confirms fixture-spec + MCPFold cross-links resolve"],
+          "artifacts": ["docs-site/src/content/docs/mcp.md", "docs-site/src/content/docs/agent-setup.md"],
+          "type": "docs",
+          "passes": false,
+          "status": "todo",
+          "priority": 5
+        },
+        {
+          "id": "P4-T6",
+          "title": "The agent-loop demo (the launch gate)",
+          "description": "Build the demo that IS the launch (PRD §13): a Claude Code session, given a repo and a fixture, is told 'add a NOT NULL email column to users', produces a naive migration, watches it FAIL with RS-LOCK-001, rewrites it as a three-step backfill (ADD nullable; batched backfill; SET NOT NULL via validated CHECK), and reaches PASS — with no human turn in between. Assemble the demo repo, fixture, and the agent rule + MCP wiring that make the loop close unprompted.",
+          "depends_on": ["P4-T1", "P3-T4", "P3-T9"],
+          "spec_refs": ["PRD §13 (v1-done demo, record it before the README)", "PRD §2 (the agent loop)", "PRD §14.1 (week-12 kill criterion)"],
+          "acceptance_criteria": [
+            "A demo repo + committed fixture reproduce the naive migration -> FAIL RS-LOCK-001 path.",
+            "The rewrite to a three-step backfill reaches PASS.",
+            "The full loop runs with no human turn between the naive migration and the PASS, using the agent rule + MCP tools from phase 3."
+          ],
+          "verification": ["scripted end-to-end run: FAIL(RS-LOCK-001) then PASS on the rewrite, transcript captured"],
+          "artifacts": ["demo/repo/**", "demo/fixture.yaml", "demo/README.md", "demo/transcript.md"],
+          "type": "demo/product",
+          "passes": false,
+          "status": "todo",
+          "priority": 6
+        },
+        {
+          "id": "P4-T7",
+          "title": "Demo regression job (protect the wedge)",
+          "description": "Turn the demo into a regression guard so it can't silently rot: a CI job that runs the demo's naive migration and asserts FAIL RS-LOCK-001, then runs the three-step rewrite and asserts PASS. This makes the PRD §14.1 week-12 kill criterion continuously checkable instead of a one-time manual demo, and records the launch artifact deterministically.",
+          "depends_on": ["P4-T6"],
+          "spec_refs": ["PRD §14.1 (week-12 kill criterion)", "PRD §13 (record the demo)", "PRD §15 (a single wrong PASS is unrecoverable)"],
+          "acceptance_criteria": [
+            "A CI job runs the demo and asserts FAIL RS-LOCK-001 on the naive migration and PASS on the rewrite.",
+            "The job runs on every push and blocks merge if the loop stops closing.",
+            "The demo run is deterministic (seeded hydrate) so the assertion is stable."
+          ],
+          "verification": ["CI: demo-regression job green (asserts both the FAIL and the PASS); deterministic across reruns"],
+          "artifacts": [".github/workflows/demo-regression.yml", "demo/expected.json"],
+          "type": "code/ops",
+          "passes": false,
+          "status": "todo",
+          "priority": 7
+        }
+      ]
+    },
     { "id": "phase-5", "order": 6, "name": "Findings breadth, version matrix depth, MySQL, then cloud only if pull-through is real", "weeks": "13+", "source": "PRD §14 Phase 5, §8.4/§9/§9.1", "status": "stub", "deferred": true, "tasks": [] }
   ],
 
