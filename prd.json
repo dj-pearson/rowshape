@@ -232,8 +232,8 @@
           "verification": ["go build ./...", "go vet ./...", "rowshape --help lists all subcommands", "rowshape validate returns exit code 3"],
           "artifacts": ["go.mod", "main.go", "cmd/*", "internal/fixture/*", "internal/verdict/*", "LICENSE"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 3
         },
         {
