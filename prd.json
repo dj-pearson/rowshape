@@ -829,8 +829,8 @@
           "verification": ["corpus RS-LOCK cases green across PG matrix"],
           "artifacts": ["internal/findings/rslock.go", "internal/findings/rslock_test.go", "corpus/cases/rslock-*/*"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 8
         },
         {

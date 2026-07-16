@@ -102,6 +102,7 @@ func runValidate(opts *validateOptions) error {
 	// Prepare the target: a provided live branch is used as-is (ground truth); a
 	// disposable database is created and hydrated from the fixture.
 	var t target.Target
+	var hydrated map[string]int64
 	if groundTruth {
 		t = target.NewProvided(opts.target)
 	} else {
@@ -111,10 +112,12 @@ func runValidate(opts *validateOptions) error {
 			return toolError()
 		}
 		defer func() { _ = eph.Close(ctx) }()
-		if _, err := target.Load(ctx, eph, f, hydrate.Options{Seed: opts.seed, Scale: opts.scale, MaxRows: opts.maxRows}); err != nil {
+		report, err := target.Load(ctx, eph, f, hydrate.Options{Seed: opts.seed, Scale: opts.scale, MaxRows: opts.maxRows})
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "rowshape validate: hydration failed: %v\n", err)
 			return toolError()
 		}
+		hydrated = report.Tables
 		t = eph
 	}
 
@@ -123,6 +126,7 @@ func runValidate(opts *validateOptions) error {
 		fmt.Fprintf(os.Stderr, "rowshape validate: %v\n", err)
 		return toolError()
 	}
+	cap.TableRows = hydrated
 
 	result := validate.BuildResult(f, cap, validate.Registered(), groundTruth)
 	if err := result.Validate(); err != nil {

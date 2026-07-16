@@ -30,6 +30,11 @@ type Capture struct {
 	DurationMs int64
 	// Statements is the per-statement record, in application order.
 	Statements []Statement
+	// TableRows is the hydrated row count per qualified table — the basis an
+	// analyzer extrapolates from (declared rows drive the projection, RFC §9).
+	// Populated by the pipeline from the hydration report; empty for a provided
+	// (ground-truth) target, where the fixture's declared rows are already real.
+	TableRows map[string]int64
 }
 
 // Statement is the capture of one applied SQL statement.
