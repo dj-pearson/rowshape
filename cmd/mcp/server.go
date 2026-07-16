@@ -80,7 +80,7 @@ func NewServer() *sdk.Server {
 	sdk.AddTool(s, &sdk.Tool{
 		Name:        "validate_migration",
 		Description: "Validate a migration against production-shaped data and return the verdict — the loop-closer. Findings come back as compact codes; expand them with explain_finding.",
-	}, scaffold[validateMigrationInput]("validate_migration", "P3-T4"))
+	}, handleValidateMigration)
 
 	sdk.AddTool(s, &sdk.Tool{
 		Name:        "explain_finding",

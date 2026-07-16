@@ -1082,8 +1082,8 @@
           "verification": ["go test ./cmd/mcp/... (validate_migration returns the shared Verdict; compact codes; capping preserved end-to-end)"],
           "artifacts": ["cmd/mcp/tool_validate_migration.go", "cmd/mcp/tool_validate_migration_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 4
         },
         {
