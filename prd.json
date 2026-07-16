@@ -661,8 +661,8 @@
           "verification": ["go test ./cmd/... (inspect --leaks on a fixture with seeded value-derived fields lists exactly them)"],
           "artifacts": ["cmd/inspect.go", "internal/fixture/leaks.go", "cmd/inspect_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 6
         }
       ]

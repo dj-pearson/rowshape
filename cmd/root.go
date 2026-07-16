@@ -38,6 +38,7 @@ func NewRootCmd() *cobra.Command {
 		newExplainCmd(),
 		newPlanCmd(),
 		newVerifyCmd(),
+		newInspectCmd(),
 		newMCPCmd(),
 	)
 	return root
