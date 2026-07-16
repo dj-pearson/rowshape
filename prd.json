@@ -1064,8 +1064,8 @@
           "verification": ["go test ./cmd/mcp/... (describe_shape returns per-table shape + confidence; refuses to dump full fixture without a table target)"],
           "artifacts": ["cmd/mcp/tool_describe_shape.go", "cmd/mcp/tool_describe_shape_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 3
         },
         {

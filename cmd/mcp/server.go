@@ -75,7 +75,7 @@ func NewServer() *sdk.Server {
 	sdk.AddTool(s, &sdk.Tool{
 		Name:        "describe_shape",
 		Description: "Return the production shape (row counts, null fractions, cardinality, fan-out) an agent should read BEFORE writing a migration. Never returns a full fixture unless a specific table is asked for.",
-	}, scaffold[describeShapeInput]("describe_shape", "P3-T3"))
+	}, handleDescribeShape)
 
 	sdk.AddTool(s, &sdk.Tool{
 		Name:        "validate_migration",
