@@ -753,8 +753,8 @@
           "verification": ["go test ./internal/verdict/... + corpus capping suite green"],
           "artifacts": ["internal/verdict/capping.go", "internal/verdict/capping_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 4
         },
         {
