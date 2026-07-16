@@ -327,8 +327,8 @@
           "verification": ["go test ./internal/fixture/... (round-trip + confidence-ordering tests)"],
           "artifacts": ["internal/fixture/model.go", "internal/fixture/confidence.go", "internal/fixture/model_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 1
         },
         {
