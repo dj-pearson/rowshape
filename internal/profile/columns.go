@@ -46,12 +46,18 @@ func (r *reader) profileTable(ctx context.Context, t tableRef, tbl *fixture.Tabl
 
 		// null_fraction and distinct come from the planner's stats (estimated).
 		if st, ok := stats[name]; ok {
-			// pg_stats.null_frac is a float4; round away the float32 noise so the
-			// emitted file is clean (the canonical digest rounds anyway, §11).
-			nf := round6(st.nullFrac)
-			col.NullFraction = &fixture.Fact[float64]{Value: nf, Confidence: fixture.Estimated, Via: "pg_stats"}
+			// null_fraction is emitted only for nullable columns: a NOT NULL column
+			// is structurally 0% null, while a *nullable* column at 0% null is the
+			// load-bearing case §6.1 warns about (passes staging, fails prod). This
+			// keeps a 200-table fixture committable (§3.3) without losing the fact
+			// that matters. These facts carry no via — `estimated` already means
+			// "from the planner's stats" — so they emit as compact bare scalars.
+			if col.Nullable {
+				nf := round6(st.nullFrac)
+				col.NullFraction = &fixture.Fact[float64]{Value: nf, Confidence: fixture.Estimated}
+			}
 			if d, known := distinctFromStats(st.nDistinct, rows); known {
-				col.Distinct = &fixture.Fact[int64]{Value: d, Confidence: fixture.Estimated, Via: "pg_stats"}
+				col.Distinct = &fixture.Fact[int64]{Value: d, Confidence: fixture.Estimated}
 			}
 		}
 
@@ -145,7 +151,11 @@ func (r *reader) rangeStat(ctx context.Context, from, col, category string) (*fi
 		if lo == nil && hi == nil {
 			return nil, nil
 		}
-		rng := &fixture.Range{Mean: mean}
+		rng := &fixture.Range{}
+		if mean != nil {
+			m := round6(*mean)
+			rng.Mean = &m
+		}
 		if lo != nil {
 			rng.Min = *lo
 		}
@@ -309,7 +319,7 @@ func lengthStatsFromStrings(vals []string) *fixture.Length {
 	sort.Ints(lengths)
 	min64 := int64(lengths[0])
 	max64 := int64(lengths[len(lengths)-1])
-	mean := float64(sum) / float64(len(lengths))
+	mean := round6(float64(sum) / float64(len(lengths)))
 	p95 := int64(percentile(lengths, 0.95))
 	return &fixture.Length{Min: &min64, Max: &max64, Mean: &mean, P95: &p95}
 }

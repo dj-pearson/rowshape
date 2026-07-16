@@ -424,8 +424,8 @@
           "verification": ["rowshape pull --from $TEST_URL -> rowshape.yaml; rowshape (re)digest matches; yaml lint; size check on a synthetic 200-table schema"],
           "artifacts": ["internal/fixture/emit.go", "cmd/init.go", "cmd/pull.go (wiring)"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 6
         },
         {

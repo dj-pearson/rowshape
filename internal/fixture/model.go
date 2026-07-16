@@ -76,9 +76,11 @@ type Engine struct {
 
 // Profile records how the fixture was produced (RFC §7.3).
 type Profile struct {
-	Mode      string   `yaml:"mode"` // fast | exact | targeted
-	ScannedAt string   `yaml:"scanned_at,omitempty"`
-	Escalated []string `yaml:"escalated,omitempty"`
+	Mode      string `yaml:"mode"` // fast | exact | targeted
+	ScannedAt string `yaml:"scanned_at,omitempty"`
+	// Escalated always emits (even as an empty list) so the profile block is
+	// complete and self-describing (RFC §7.3).
+	Escalated []string `yaml:"escalated"`
 }
 
 // Table is one relation's structure and shape (RFC §5, §6).

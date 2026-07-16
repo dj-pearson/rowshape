@@ -212,7 +212,7 @@ func rowEstimate(reltuples float64) fixture.Fact[int64] {
 	if v < 0 {
 		v = 0
 	}
-	return fixture.Fact[int64]{Value: v, Confidence: fixture.Estimated, Via: "reltuples"}
+	return fixture.Fact[int64]{Value: v, Confidence: fixture.Estimated}
 }
 
 // columns reads column structure. It returns the column map plus the on-disk

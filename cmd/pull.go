@@ -102,14 +102,10 @@ func runPull(ctx context.Context, opts *pullOptions) error {
 	f.Meta.Source = profile.HashSource(host)
 
 	stampMeta(f, string(level))
-	if err := f.SetDigest(); err != nil {
-		fmt.Fprintf(os.Stderr, "rowshape pull: computing digest failed: %v\n", err)
-		return toolError()
-	}
 
-	out, err := fixture.Marshal(f)
+	out, err := fixture.Emit(f)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "rowshape pull: encoding fixture failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "rowshape pull: assembling fixture failed: %v\n", err)
 		return toolError()
 	}
 	if err := os.WriteFile(opts.out, out, 0o644); err != nil {
