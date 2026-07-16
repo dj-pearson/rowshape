@@ -516,8 +516,8 @@
           "verification": ["go test against a seeded skewed-fanout DB: p95/max recovered within tolerance; orphan_fraction exact on a DB with known orphans"],
           "artifacts": ["internal/engine/postgres/fanout.go", "internal/engine/postgres/fanout_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 11
         },
         {

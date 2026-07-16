@@ -108,6 +108,13 @@ func (r *reader) profileTable(ctx context.Context, t tableRef, tbl *fixture.Tabl
 
 		tbl.Columns[name] = col
 	}
+
+	// Measure the fan-out distribution and orphan_fraction for every FK — the
+	// moat fields that must be aggregated over data, not read from the catalog
+	// (RFC §6.6, P1-T11).
+	if err := r.measureReferences(ctx, t, tbl); err != nil {
+		return err
+	}
 	return nil
 }
 
