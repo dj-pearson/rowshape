@@ -734,8 +734,8 @@
           "verification": ["go test ./internal/verdict/... (JSON golden vs PRD §10; single-struct/two-marshaler test; exit-code table; DSSE predicate shape; remediation-required)"],
           "artifacts": ["internal/verdict/verdict.go", "internal/verdict/render_human.go", "internal/verdict/dsse.go", "internal/verdict/verdict_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 3
         },
         {
