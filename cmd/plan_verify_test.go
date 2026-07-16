@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/rowshape/rowshape/internal/fixture"
+	"github.com/rowshape/rowshape/internal/plan"
 	"github.com/rowshape/rowshape/internal/validate"
 )
 
@@ -64,7 +65,7 @@ func exec(t *testing.T, url, sql string) {
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, url)
 	if err != nil {
-		t.Fatalf("connect %s: %v", redactURL(url), err)
+		t.Fatalf("connect %s: %v", plan.RedactURL(url), err)
 	}
 	defer conn.Close(ctx)
 	if _, err := conn.Exec(ctx, sql); err != nil {

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/rowshape/rowshape/internal/fixture"
+	"github.com/rowshape/rowshape/internal/plan"
 	"github.com/rowshape/rowshape/internal/verdict"
 	"github.com/spf13/cobra"
 )
@@ -60,7 +61,7 @@ func runVerify(opts *verifyOptions) error {
 		return toolError()
 	}
 
-	actual, err := readLiveSchema(ctx, opts.against)
+	actual, err := plan.ReadLiveSchema(ctx, opts.against)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "rowshape verify: %v\n", err)
 		return toolError()
@@ -117,7 +118,7 @@ func compareSchema(expected, actual *fixture.Fixture) []drift {
 }
 
 func writeVerify(w io.Writer, against string, drifts []drift) {
-	fmt.Fprintf(w, "verify against %s (read-only)\n\n", redactURL(against))
+	fmt.Fprintf(w, "verify against %s (read-only)\n\n", plan.RedactURL(against))
 	if len(drifts) == 0 {
 		fmt.Fprintln(w, "  [OK] reality matches intent")
 		return

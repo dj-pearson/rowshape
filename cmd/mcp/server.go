@@ -4,11 +4,11 @@
 // artifact, built on the official Go SDK (modelcontextprotocol/go-sdk, past
 // v1.0.0 with a no-breaking-changes guarantee, PRD §7).
 //
-// This file is the server scaffold (P3-T2): it registers exactly the four tools
-// named in PRD §8.2 with brutally thin schemas (fat tool schemas cost tokens in
-// every session — the MCPFold discipline) and advertises the fixture format
-// major version it understands (RFC §12). The tool BEHAVIOR is filled in by
-// P3-T3..T6; here the handlers are scaffolds.
+// This file wires the server: it registers exactly the four tools named in
+// PRD §8.2 with brutally thin schemas (fat tool schemas cost tokens in every
+// session — the MCPFold discipline) and advertises the fixture format major
+// version it understands (RFC §12). Each tool's behavior lives in its own
+// tool_*.go file.
 package mcp
 
 import (
@@ -64,8 +64,7 @@ type planAgainstInput struct {
 	Target    string `json:"target" jsonschema:"a live database URL to diff against (read-only)"`
 }
 
-// NewServer builds the MCP server with the four tools registered. The handlers
-// are scaffolds until P3-T3..T6 fill them in.
+// NewServer builds the MCP server with the four PRD §8.2 tools registered.
 func NewServer() *sdk.Server {
 	s := sdk.NewServer(
 		&sdk.Implementation{Name: serverName, Version: serverVersion, Title: "rowshape"},
@@ -90,7 +89,7 @@ func NewServer() *sdk.Server {
 	sdk.AddTool(s, &sdk.Tool{
 		Name:        "plan_against",
 		Description: "Dry-run diff: what a migration would change on a live target (read-only, applies nothing).",
-	}, scaffold[planAgainstInput]("plan_against", "P3-T6"))
+	}, handlePlanAgainst)
 
 	return s
 }
@@ -99,18 +98,4 @@ func NewServer() *sdk.Server {
 // disconnects. This is what `rowshape mcp` invokes.
 func Serve(ctx context.Context) error {
 	return NewServer().Run(ctx, &sdk.StdioTransport{})
-}
-
-// scaffold returns a placeholder handler for a tool whose behavior lands in a
-// later task. It responds with a structured, honest "not yet implemented" rather
-// than a fabricated result, so the tool is discoverable now and wired later.
-func scaffold[In any](tool, task string) sdk.ToolHandlerFor[In, any] {
-	return func(_ context.Context, _ *sdk.CallToolRequest, _ In) (*sdk.CallToolResult, any, error) {
-		return &sdk.CallToolResult{
-			IsError: true,
-			Content: []sdk.Content{&sdk.TextContent{
-				Text: fmt.Sprintf("rowshape: the %q tool is registered but its handler is not yet implemented (lands in %s).", tool, task),
-			}},
-		}, nil, nil
-	}
 }

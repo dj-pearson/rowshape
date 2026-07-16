@@ -1118,8 +1118,8 @@
           "verification": ["go test ./cmd/mcp/... (plan_against returns dry-run diff; write-refusal enforced)"],
           "artifacts": ["cmd/mcp/tool_plan_against.go", "cmd/mcp/tool_plan_against_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 6
         },
         {
