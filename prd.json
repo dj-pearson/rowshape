@@ -1,14 +1,14 @@
 {
   "$schema": "rowshape/ralph-loop-prd/v1",
-  "version": "0.1.0-foundation",
+  "version": "0.2.0-full-buildout",
   "generated_from": [
     "PRD-rowshape-v1.md (Draft v0.6)",
     "RFC-0001-rowshape-fixture-spec.md (Draft v0.3)"
   ],
   "build_status": {
-    "note": "Built section by section. Foundation + Phase 0 are complete; later phases are titled stubs awaiting fill.",
-    "sections_complete": ["meta", "project", "stack", "loop", "invariants", "kill_criteria", "phase-0"],
-    "sections_pending": ["phase-1", "phase-1b", "phase-2", "phase-3", "phase-4", "phase-5", "milestones"]
+    "note": "Full A-to-Z build-out complete: every phase (0 through 5) carries tasks and milestones are finalized. Phase-5 remains deferred:true (recorded-now / built-later, cloud gated on traction per PRD §14). All stories are derived from PRD-rowshape-v1.md and RFC-0001.",
+    "sections_complete": ["meta", "project", "stack", "loop", "invariants", "kill_criteria", "phase-0", "phase-1", "phase-1b", "phase-2", "phase-3", "phase-4", "phase-5", "milestones"],
+    "sections_pending": []
   },
 
   "project": {
@@ -355,7 +355,8 @@
             "Produces the tables map with constraints, indexes, and references populated from the catalog.",
             "Unique constraint/index sets unique.confidence=exact via constraint (RFC §6.4).",
             "validated:false constraints are preserved (RFC §6.4).",
-            "Refuses to run as superuser without --i-know; uses a read-only path (no writes, no SELECT * on user tables)."
+            "Refuses to run as superuser without --i-know; uses a read-only path (no writes, no SELECT * on user tables).",
+            "The connection URL and any credentials are never logged, persisted, or written into the fixture (PRD §5, Priya is the buyer)."
           ],
           "verification": ["go test against a testcontainers Postgres with a seeded schema", "assert superuser refusal without --i-know"],
           "artifacts": ["cmd/pull.go", "internal/profile/catalog.go", "internal/profile/catalog_test.go"],
@@ -482,7 +483,7 @@
           "id": "P1-T10",
           "title": "Week-6 gate: reproduce a known pathology end-to-end",
           "description": "Kill-criteria checkpoint (Week 6). Using a small handcrafted pathology fixture (a precursor to the full phase-2 corpus) — e.g. `email` at 3.2% null and a fan-out column with a long tail (max >> mean) — prove pull->rowshape.yaml->hydrate produces a database where a direct query confirms the null ratio and the fan-out tail actually exist. If this fails, STOP and surface: the fixture premise is wrong and `validate` must not be built on it.",
-          "depends_on": ["P1-T7", "P1-T8", "P1-T9"],
+          "depends_on": ["P1-T7", "P1-T8", "P1-T9", "P1-T11"],
           "spec_refs": ["PRD §14.1 (Week 6 kill criteria)", "RFC §6.6", "kill_criteria[0]"],
           "acceptance_criteria": [
             "A checked-in pathology fixture hydrates into a DB where querying confirms null_fraction is within tolerance of 3.2%.",
@@ -496,6 +497,42 @@
           "passes": false,
           "status": "todo",
           "priority": 10
+        },
+        {
+          "id": "P1-T11",
+          "title": "Fan-out + orphan_fraction measurement (the moat field)",
+          "description": "Measure the reference fan-out distribution and orphan_fraction (RFC §6.6). The catalog (P1-T3) gives the FK edges and on_delete, but the DISTRIBUTION — children per parent as {mean, p50, p95, max} — and orphan_fraction must be measured by aggregate queries over data, not read from the catalog and not inferred from column stats. In fast mode fan-out is estimated from a sample; orphan_fraction reaches `exact` via a scan (aligns with the phase-1b probes). This is the field no other tool captures and what turns a cascade delete into an outage (RFC §6.6).",
+          "depends_on": ["P1-T3", "P1-T4"],
+          "spec_refs": ["RFC §6.6 (references, fanout distribution, orphan_fraction)", "PRD §6", "RFC §7 (confidence levels)"],
+          "acceptance_criteria": [
+            "Each FK reference carries a fanout distribution {mean, p50, p95, max} with a confidence (estimated in fast mode, measured on a full pass).",
+            "orphan_fraction is populated (exact via scan), and nonzero orphans are recorded so a VALIDATE finding can consume them (RFC §6.6, RS-DATA).",
+            "Fan-out is measured by aggregation over FK relationships, never inferred from column stats or the catalog alone."
+          ],
+          "verification": ["go test against a seeded skewed-fanout DB: p95/max recovered within tolerance; orphan_fraction exact on a DB with known orphans"],
+          "artifacts": ["internal/engine/postgres/fanout.go", "internal/engine/postgres/fanout_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 11
+        },
+        {
+          "id": "P1-T12",
+          "title": "Skew-aware histograms + partitioned-table shape",
+          "description": "Make histograms first-class for skewed columns and capture partitioned-table shape. RFC §6.2: a tenant_id where one tenant owns 80% of rows behaves completely differently under a partitioning migration, and no summary statistic captures that skew — so emit the histogram (standard+ privacy) and reproduce the skew in hydrate, not just the mean/range. RFC §14.2 (leaning): a partitioned table declares a `partitions: {count, strategy, skew}` block with no per-partition entries, so a partitioning migration is reasoned about from the fixture.",
+          "depends_on": ["P1-T4", "P1-T7"],
+          "spec_refs": ["RFC §6.2 (histograms exist for skew)", "RFC §14.2 (partitioned tables: parent declares partitions block)", "RFC §8.2 (histogram privacy)"],
+          "acceptance_criteria": [
+            "Skewed columns emit a histogram (bounds/buckets) at privacy standard+; hydrate reproduces the skew, not just the mean/range.",
+            "Partitioned tables emit a `partitions: {count, strategy, skew}` block (no per-partition entries).",
+            "Histogram bounds honor privacy — dropped under strict (RFC §8.2), since bounds are literally real values."
+          ],
+          "verification": ["go test: hydrated distribution reproduces an 80/20 skew within tolerance; a partitioned source emits the partitions block; strict drops histogram bounds"],
+          "artifacts": ["internal/engine/postgres/histogram.go", "internal/engine/postgres/partitions.go", "internal/engine/postgres/skew_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 12
         }
       ]
     },
@@ -763,7 +800,8 @@
             "validate hydrates, applies, captures the six signal classes, and returns a Verdict.",
             "--json emits the machine verdict; default emits the human rendering of the same struct.",
             "Refuses when target host == fixture source host; only operates on disposable/provided targets.",
-            "validate makes no network call to any cloud service."
+            "validate makes no network call to any cloud service.",
+            "When run against a provided live branch/target (e.g. --target $NEON_BRANCH_URL), the relevant facts are upgraded to `exact` (PRD §15, branching complementarity)."
           ],
           "verification": ["go test ./cmd/... (end-to-end validate on a corpus triple); assert host-match refusal; assert no cloud egress"],
           "artifacts": ["cmd/validate.go", "internal/validate/capture.go", "cmd/validate_test.go"],
@@ -917,15 +955,782 @@
           "passes": false,
           "status": "todo",
           "priority": 15
+        },
+        {
+          "id": "P2-T16",
+          "title": "Fixture-spec conformance suite + published JSON Schema",
+          "description": "The spec's strategic value is that others can emit it (PRD §3, §16). Ship, in rowshape/fixture-spec: (1) a published machine-readable JSON Schema for rowshape.yaml (format version \"1\"), and (2) a conformance test suite encoding the three RFC §13 profiles — a conformant emitter (read-only, strict on demand, never `range` on text, never `unique` from a sample, confidence on every fact, stable digest), a conformant hydrator (null_fraction ±0.5%, honor `unique`, reproduce fanout shape, deterministic), and a conformant validator (cap per §7.4, buckets per §9.2, never downgrade confidence). rowshape's own CLI must pass it and a third party can run it against their emitter — this is what makes the spec a position rather than an aspiration.",
+          "depends_on": ["P0-T2", "P1-T6", "P2-T7"],
+          "spec_refs": ["PRD §3 (spec is the position)", "PRD §16 (fixture spec own repo)", "RFC §13 (conformance: emitter/hydrator/validator)", "RFC §15 (JSON Schema conformance model)", "RFC §12"],
+          "acceptance_criteria": [
+            "A JSON Schema for rowshape.yaml (format version \"1\") is published in the fixture-spec repo and validates the reference fixtures.",
+            "A conformance suite encodes the RFC §13 emitter/hydrator/validator MUSTs and is runnable by third parties.",
+            "rowshape's own pull/hydrate/validate pass the suite in CI, and the suite REJECTS a deliberately non-conformant fixture (range on text, unique-from-sample)."
+          ],
+          "verification": ["conformance CI green against rowshape; suite rejects seeded non-conformant fixtures; JSON Schema validates all reference fixtures"],
+          "artifacts": ["fixture-spec/schema/rowshape.schema.json", "fixture-spec/conformance/**", "fixture-spec/conformance/README.md"],
+          "type": "code/asset",
+          "passes": false,
+          "status": "todo",
+          "priority": 16
+        },
+        {
+          "id": "P2-T17",
+          "title": "Tool-error (exit 3) taxonomy — broken tool vs unsafe migration",
+          "description": "An agent must never confuse 'the tool couldn't run' with 'the migration is unsafe.' Define and implement the exit-code-3 tool-error path for the operational failures that are neither PASS/FAIL/WARN: no Docker daemon / disposable target unavailable (PRD §17.2), can't connect to the target, runner not found or failed to invoke, fixture parse error, and an unknown fixture major version — which MUST refuse rather than best-effort (RFC §12). Each returns exit 3 with a structured, agent-readable reason clearly distinct from a verdict.",
+          "depends_on": ["P2-T7", "P1-T1"],
+          "spec_refs": ["PRD §10 (exit codes; 3 = tool error)", "RFC §12 (refuse unknown major version)", "PRD §17.2 (cold agent machine / no Docker)", "INV-VERDICT-STABLE"],
+          "acceptance_criteria": [
+            "All listed operational failures return exit code 3 with a structured reason, never a FAIL verdict.",
+            "An unknown fixture major version refuses with exit 3 (RFC §12) — never a partial-understanding PASS/FAIL.",
+            "The tool-error payload is machine-readable (an agent can branch on it) and its human rendering comes from the same shape."
+          ],
+          "verification": ["go test: each failure mode yields exit 3 + structured reason; unknown-major fixture refused; FAIL vs tool-error never conflated"],
+          "artifacts": ["internal/toolerror/toolerror.go", "cmd/validate_toolerror_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 17
         }
       ]
     },
-    { "id": "phase-3", "order": 4, "name": "MCP subcommand + init --agent + the agent rule", "weeks": "11", "source": "PRD §14 Phase 3, §8.2/§8.3", "status": "stub", "tasks": [] },
-    { "id": "phase-4", "order": 5, "name": "GitHub Action, docs site (Cloudflare Pages), the agent-loop demo", "weeks": "12", "source": "PRD §14 Phase 4, §9, §13", "status": "stub", "tasks": [] },
-    { "id": "phase-5", "order": 6, "name": "Findings breadth, version matrix depth, MySQL, then cloud only if pull-through is real", "weeks": "13+", "source": "PRD §14 Phase 5, §8.4/§9/§9.1", "status": "stub", "deferred": true, "tasks": [] }
+    {
+      "id": "phase-3",
+      "order": 4,
+      "name": "MCP subcommand + init --agent + the agent rule",
+      "weeks": "11",
+      "ships": "`rowshape mcp` (the wedge): a subcommand of the same binary exposing four brutally-thin tools on the official Go SDK, plus `rowshape init` / `init --agent` which writes MCP config, the versioned agent rule, and a pre-commit backstop so an agent actually reaches for rowshape unprompted.",
+      "source": "PRD §14 Phase 3, §8.1, §8.2, §8.3; RFC §12",
+      "scope_note": "This phase closes the loop that the whole bet rests on (PRD §2, §15): getting rowshape into the agent's context and turn. The MCP tools are thin wrappers over surfaces already built in phase 2 (validate, explain, plan) and phase 1 (the fixture) — no new finding logic here. The differentiator is discipline: compact codes over fat schemas (MCPFold), and treating the agent rule as a versioned product artifact, not a README snippet.",
+      "definition_of_done": [
+        "`rowshape init` detects the stack (engine + migration runner: Alembic, Prisma, Drizzle, raw-SQL dir) and scaffolds a committable config without touching a production database.",
+        "`rowshape mcp` serves the four tools (describe_shape, validate_migration, explain_finding, plan_against) over the official Go SDK as a subcommand of the single binary — not a separate artifact.",
+        "MCP schemas are thin: findings return compact codes with explain_finding as the only expansion path, and no tool returns a full fixture unless a specific table is requested (PRD §8.2).",
+        "`rowshape init --agent` writes MCP client config, a versioned agent rule into AGENTS.md / CLAUDE.md / .cursor/rules, and a pre-commit hook running `rowshape validate` — all idempotent and re-runnable.",
+        "The agent rule ships versioned in the repo so improvements reach existing users on upgrade (PRD §8.3)."
+      ],
+      "tasks": [
+        {
+          "id": "P3-T1",
+          "title": "`rowshape init` — detect stack, scaffold config",
+          "description": "Implement the base `rowshape init` from PRD §8.1: detect the database engine and the migration runner in use (Alembic, Prisma, Drizzle, or a plain SQL directory) and scaffold a committable rowshape config. Detection only — init never connects to a production database and never runs a migration. This is the foundation `init --agent` (P3-T8..T10) extends.",
+          "depends_on": ["P0-T3"],
+          "spec_refs": ["PRD §8.1", "PRD §8 (runner detection: Alembic, Prisma, Drizzle, raw SQL)"],
+          "acceptance_criteria": [
+            "`rowshape init` detects the migration runner from repo layout (alembic.ini, prisma/schema.prisma, drizzle config, or a SQL migrations directory).",
+            "It writes a committable config file recording engine + detected runner; no network or database access occurs.",
+            "Re-running init is idempotent — it does not clobber user edits to the config."
+          ],
+          "verification": ["go test ./cmd/... (runner detection across Alembic/Prisma/Drizzle/raw-SQL fixtures; idempotent re-run; no DB connection attempted)"],
+          "artifacts": ["cmd/init.go", "cmd/init_detect.go", "cmd/init_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 1
+        },
+        {
+          "id": "P3-T2",
+          "title": "`rowshape mcp` subcommand scaffold on the official Go SDK",
+          "description": "Wire `rowshape mcp` as a subcommand of the single binary (not a separate artifact) using modelcontextprotocol/go-sdk over stdio. Register the four tool handlers (filled by P3-T3..T6) and advertise `rowshape_fixture` major-version compatibility per RFC §12. This is the wedge surface from PRD §8.2; the SDK is past v1.0.0 with a no-breaking-changes guarantee (PRD §7).",
+          "depends_on": ["P0-T3"],
+          "spec_refs": ["PRD §8.2", "PRD §7 (official Go MCP SDK, past v1.0.0)", "RFC §12"],
+          "acceptance_criteria": [
+            "`rowshape mcp` starts a stdio MCP server built on modelcontextprotocol/go-sdk within the same binary.",
+            "The server registers exactly the four tools named in PRD §8.2 and no others.",
+            "Server initialization completes a handshake with a reference MCP client in a test."
+          ],
+          "verification": ["go test ./cmd/mcp/... (server boots, lists exactly four tools, completes initialize handshake against an in-process client)"],
+          "artifacts": ["cmd/mcp.go", "cmd/mcp/server.go", "cmd/mcp/server_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 2
+        },
+        {
+          "id": "P3-T3",
+          "title": "MCP tool: describe_shape",
+          "description": "Expose `describe_shape` — hand the agent the shape before it writes SQL (PRD §8.2). Reads a committed fixture and returns a compact view of a requested table's relevant facts (row count, null fractions, distinct/uniqueness confidence, fan-out, format classes). Never returns a full fixture unless a specific table is requested; the whole point is that the agent reasons over four kilobytes, not forty gigabytes (RFC §2).",
+          "depends_on": ["P3-T2", "P1-T6"],
+          "spec_refs": ["PRD §8.2 (describe_shape; never return a full fixture unless asked for a table)", "RFC §2", "RFC §6"],
+          "acceptance_criteria": [
+            "describe_shape returns the shape for a named table, including confidence on each fact (RFC §7).",
+            "With no table specified it returns a table index/summary, not the full fixture body.",
+            "Output is compact — value-derived facts are summarized, honoring the fixture's privacy level (RFC §8)."
+          ],
+          "verification": ["go test ./cmd/mcp/... (describe_shape returns per-table shape + confidence; refuses to dump full fixture without a table target)"],
+          "artifacts": ["cmd/mcp/tool_describe_shape.go", "cmd/mcp/tool_describe_shape_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 3
+        },
+        {
+          "id": "P3-T4",
+          "title": "MCP tool: validate_migration (the loop-closer)",
+          "description": "Expose `validate_migration` — the loop-closer from PRD §8.2. Wraps the phase-2 `validate` orchestration and returns the Verdict as compact findings codes (RS-LOCK-001, etc.) plus the overall verdict and exit-code-equivalent, not prose. This is the tool that lets an agent write → validate → read the failure → fix → re-validate inside its own turn (PRD §2).",
+          "depends_on": ["P3-T2", "P2-T7", "P2-T3"],
+          "spec_refs": ["PRD §8.2 (validate_migration)", "PRD §2 (the agent loop)", "PRD §10 (verdict contract)"],
+          "acceptance_criteria": [
+            "validate_migration invokes the same validate path as the CLI and returns the same Verdict struct (one struct, PRD §10).",
+            "Findings are returned as compact codes + minimal fields, with `explain_finding` as the expansion path (not full remediation prose inline).",
+            "The tool surfaces the PASS/FAIL/WARN verdict and honors confidence capping (RFC §7.4) — an estimated-dependency finding never reports PASS."
+          ],
+          "verification": ["go test ./cmd/mcp/... (validate_migration returns the shared Verdict; compact codes; capping preserved end-to-end)"],
+          "artifacts": ["cmd/mcp/tool_validate_migration.go", "cmd/mcp/tool_validate_migration_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 4
+        },
+        {
+          "id": "P3-T5",
+          "title": "MCP tool: explain_finding",
+          "description": "Expose `explain_finding` — remediation without a web search (PRD §8.2). Wraps `rowshape explain <CODE>` (P2-T12) so an agent that received a compact code from validate_migration can expand exactly the finding it hit. This is the deliberate expansion path that keeps validate_migration's schema thin (MCPFold discipline).",
+          "depends_on": ["P3-T2", "P2-T12"],
+          "spec_refs": ["PRD §8.2 (explain_finding)", "PRD §10 (remediation mandatory on every error)"],
+          "acceptance_criteria": [
+            "explain_finding returns the same remediation content as the `rowshape explain <CODE>` CLI path.",
+            "Every error-severity finding code resolves to actionable remediation (a finding an agent can't act on is a bug, PRD §10).",
+            "An unknown code returns a clean tool error, not a crash."
+          ],
+          "verification": ["go test ./cmd/mcp/... (explain_finding matches CLI explain output; unknown code handled gracefully)"],
+          "artifacts": ["cmd/mcp/tool_explain_finding.go", "cmd/mcp/tool_explain_finding_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 5
+        },
+        {
+          "id": "P3-T6",
+          "title": "MCP tool: plan_against",
+          "description": "Expose `plan_against` — what would change on target X (PRD §8.2). Wraps the phase-2 `plan --against` dry-run (P2-T15). Read-only: returns the diff a migration would produce against a live target without applying anything, and (per PRD §15) validating against a live target upgrades the relevant facts to `exact`.",
+          "depends_on": ["P3-T2", "P2-T15"],
+          "spec_refs": ["PRD §8.2 (plan_against)", "PRD §8.1 (plan --against)", "PRD §11 (non-mutating)"],
+          "acceptance_criteria": [
+            "plan_against returns a dry-run diff against a provided target and applies nothing.",
+            "It reuses the CLI `plan --against` path (no reimplementation).",
+            "Read-only is enforced — the tool never issues a write against the target."
+          ],
+          "verification": ["go test ./cmd/mcp/... (plan_against returns dry-run diff; write-refusal enforced)"],
+          "artifacts": ["cmd/mcp/tool_plan_against.go", "cmd/mcp/tool_plan_against_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 6
+        },
+        {
+          "id": "P3-T7",
+          "title": "Thin-schema / MCPFold discipline + cross-link",
+          "description": "Enforce the token-discipline PRD §8.2 demands: four fat tool schemas in every session costs tokens and earns resentment. Keep schemas brutally thin, return findings as compact codes with explain_finding as the expansion, and never return a full fixture unless a specific table is asked for. Add a schema-size guard test and cross-link MCPFold in both READMEs (rowshape as MCPFold's flagship consumer).",
+          "depends_on": ["P3-T3", "P3-T4", "P3-T5", "P3-T6"],
+          "spec_refs": ["PRD §8.2 (MCPFold-shaped discipline; thin schemas; compact codes)"],
+          "acceptance_criteria": [
+            "A guard test asserts each tool's advertised input/output schema stays under a fixed token/character budget.",
+            "No tool returns a full fixture body by default; describe_shape requires a table target for detail.",
+            "README (CLI repo) and MCPFold README cross-link, naming rowshape as a flagship MCPFold consumer."
+          ],
+          "verification": ["go test ./cmd/mcp/... (schema-budget guard passes for all four tools)", "manual: both READMEs cross-link"],
+          "artifacts": ["cmd/mcp/schema_budget_test.go", "README.md", "docs/mcp.md"],
+          "type": "code/docs",
+          "passes": false,
+          "status": "todo",
+          "priority": 7
+        },
+        {
+          "id": "P3-T8",
+          "title": "`init --agent` — write MCP client config",
+          "description": "First of the three things `init --agent` writes (PRD §8.3): MCP config for the detected client — `.mcp.json`, or the client's own config path (Claude Code, Cursor, etc.). Detect the client from the repo/environment and register `rowshape mcp` as a server. An MCP server the agent never calls is decoration (PRD §8.3); this is what actually wires it in.",
+          "depends_on": ["P3-T1", "P3-T2"],
+          "spec_refs": ["PRD §8.3 (init --agent item 1: MCP config for the detected client)"],
+          "acceptance_criteria": [
+            "`rowshape init --agent` writes a valid MCP config registering `rowshape mcp` for the detected client.",
+            "The correct path/format is chosen per client (.mcp.json or the client's own location).",
+            "Writing is idempotent — re-running merges rather than duplicating the server entry."
+          ],
+          "verification": ["go test ./cmd/... (MCP config written for each supported client; idempotent merge; valid JSON)"],
+          "artifacts": ["cmd/init_agent.go", "cmd/init_agent_mcp.go", "cmd/init_agent_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 8
+        },
+        {
+          "id": "P3-T9",
+          "title": "`init --agent` — the versioned agent rule",
+          "description": "Second thing `init --agent` writes (PRD §8.3): an agent rule into AGENTS.md / CLAUDE.md / .cursor/rules — before writing a migration call describe_shape; before opening a PR call validate_migration; never hand-wave a FAIL. The rule text is a product artifact iterated against real agent sessions like a prompt, and it ships versioned in the repo so improvements reach existing users on upgrade.",
+          "depends_on": ["P3-T1", "P3-T8"],
+          "spec_refs": ["PRD §8.3 (init --agent item 2: agent rule; versioned; reaches existing users on upgrade)", "RFC §12 (versioning)"],
+          "acceptance_criteria": [
+            "`init --agent` writes the rule into the detected agent-rule file(s) (AGENTS.md / CLAUDE.md / .cursor/rules).",
+            "The rule text is stored versioned in the repo and carries a version marker so `init` can update it in place on upgrade.",
+            "Re-running updates an outdated managed block without clobbering surrounding user content."
+          ],
+          "verification": ["go test ./cmd/... (rule written to each target file; versioned managed-block update replaces old rule, preserves user text)"],
+          "artifacts": ["cmd/init_agent_rule.go", "internal/agentrule/rule.md", "internal/agentrule/version.go", "cmd/init_agent_rule_test.go"],
+          "type": "code/product",
+          "passes": false,
+          "status": "todo",
+          "priority": 9
+        },
+        {
+          "id": "P3-T10",
+          "title": "`init --agent` — pre-commit hook backstop",
+          "description": "Third thing `init --agent` writes (PRD §8.3): a pre-commit hook running `rowshape validate` — the backstop for when the agent ignores the rule, which it sometimes will. Install a hook (or extend an existing pre-commit config) that blocks a commit on a FAIL verdict, so the guarantee doesn't depend solely on the agent honoring the rule.",
+          "depends_on": ["P3-T1", "P2-T7"],
+          "spec_refs": ["PRD §8.3 (init --agent item 3: pre-commit hook running rowshape validate)"],
+          "acceptance_criteria": [
+            "`init --agent` installs a pre-commit hook that runs `rowshape validate` and blocks the commit on a FAIL.",
+            "It integrates with an existing pre-commit framework if one is present, else installs a native git hook.",
+            "Installation is idempotent and clearly reversible (documented uninstall)."
+          ],
+          "verification": ["go test ./cmd/... (hook installed; blocks on FAIL verdict; idempotent; integrates with existing pre-commit config)"],
+          "artifacts": ["cmd/init_agent_hook.go", "cmd/init_agent_hook_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 10
+        }
+      ]
+    },
+    {
+      "id": "phase-4",
+      "order": 5,
+      "name": "GitHub Action, docs site (Cloudflare Pages), the agent-loop demo",
+      "weeks": "12",
+      "ships": "The three launch surfaces: a GitHub Action that runs `validate` in anyone's CI and renders the shared Verdict, the docs site (Astro Starlight on Cloudflare Pages), and the end-to-end agent-loop demo that is the launch and the week-12 kill-criterion gate.",
+      "source": "PRD §14 Phase 4, §8, §9 (docs), §10, §11, §13, §14.1 (week-12 kill criterion)",
+      "scope_note": "Nothing here adds finding logic or fixture facts — the Action and MCP tools all render the same Verdict struct built in phase 2 (PRD §10, one struct / two marshalers). This phase is distribution and proof: get `validate` into CI, publish honest docs (the narrow-and-true privacy claim, PRD §11/§8.1), and demonstrate the loop closes with no human turn. Per PRD §14.1, if the demo doesn't work end-to-end the wedge isn't real — this is a gate, not a polish pass.",
+      "definition_of_done": [
+        "A GitHub Action runs `rowshape validate` in CI, renders the same Verdict struct as the CLI and MCP (PRD §10), honors exit codes 0/1/2/3, and annotates the PR with findings at file/line.",
+        "The docs site is live on Cloudflare Pages (Astro Starlight, zero JS by default) covering install, the finding catalog, and the narrow-and-true privacy claim from PRD §8.1/§11 verbatim.",
+        "The agent-loop demo runs end-to-end with no human turn: naive migration -> FAIL RS-LOCK-001 -> three-step backfill rewrite -> PASS (PRD §13).",
+        "A CI regression job asserts the demo still reaches PASS, so the wedge can't silently rot (PRD §14.1)."
+      ],
+      "tasks": [
+        {
+          "id": "P4-T1",
+          "title": "GitHub Action: run `validate` in CI",
+          "description": "Ship a GitHub Action (thin wrapper over the signed binary from P0-T4, not a reimplementation) that runs `rowshape validate` in a consumer's CI. It renders the same Verdict struct as the CLI and MCP server — one struct, two marshalers (PRD §10) — and honors exit codes 0/1/2/3 so a FAIL fails the job and a WARN is configurable. This is the CI half of the agent loop from PRD §2.",
+          "depends_on": ["P2-T7", "P2-T3", "P0-T4"],
+          "spec_refs": ["PRD §13 (GitHub Action in scope)", "PRD §10 (same struct, honored exit codes)", "PRD §8 (Action renders the same struct as CLI/MCP)"],
+          "acceptance_criteria": [
+            "The Action runs `rowshape validate` using the released binary and exits non-zero on a FAIL verdict.",
+            "WARN-only behavior is configurable (fail vs pass) per PRD §10 exit-code rules.",
+            "The Action consumes a committed fixture and a migration set without requiring a production credential in CI."
+          ],
+          "verification": ["Action integration test: green run on a PASS case, red run on a seeded FAIL case, configurable WARN"],
+          "artifacts": ["action.yml", ".github/actions/rowshape/*", "docs/action.md"],
+          "type": "code/ops",
+          "passes": false,
+          "status": "todo",
+          "priority": 1
+        },
+        {
+          "id": "P4-T2",
+          "title": "GitHub Action: PR annotations + check summary from the Verdict",
+          "description": "Render findings into GitHub's PR surface: file/line annotations from each finding's `location` (PRD §10) and a check-run summary listing codes, severity, bucketed estimates, and remediation. Reuse the Verdict's fields directly — no separate formatting code path. This is what makes a FAIL loud in review before deploy (PRD §5, Dana's workflow).",
+          "depends_on": ["P4-T1"],
+          "spec_refs": ["PRD §10 (location, findings, remediation)", "PRD §5 (fail loudly before review)"],
+          "acceptance_criteria": [
+            "Each finding with a `location` produces a PR annotation at the correct file and line.",
+            "The check summary lists finding codes, severity, estimate bucket, and remediation.",
+            "Annotations are derived from the Verdict struct, not a bespoke formatter."
+          ],
+          "verification": ["Action integration test asserts annotations map finding.location -> file/line and summary contains codes + remediation"],
+          "artifacts": [".github/actions/rowshape/annotate.go", ".github/actions/rowshape/annotate_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 2
+        },
+        {
+          "id": "P4-T3",
+          "title": "Docs site scaffold — Astro Starlight on Cloudflare Pages",
+          "description": "Stand up the marketing + docs site per PRD §9: Astro Starlight, TypeScript, on Cloudflare Pages, shipping zero JS by default. This is explicitly the one place the stack is not Go — the Go decision was about the binary, not the website (PRD §9). Scaffold navigation, theme, and the deploy pipeline; content lands in P4-T4/T5.",
+          "depends_on": [],
+          "spec_refs": ["PRD §9 (Astro Starlight on Cloudflare Pages, TypeScript, zero JS by default)"],
+          "acceptance_criteria": [
+            "An Astro Starlight site builds and deploys to Cloudflare Pages.",
+            "The default build ships zero client JS (Starlight default) and passes a link/build check in CI.",
+            "Navigation scaffolds sections for install, findings, privacy, MCP/agent, and the fixture spec."
+          ],
+          "verification": ["site build + deploy preview succeeds; CI asserts zero-JS default and no broken internal links"],
+          "artifacts": ["docs-site/astro.config.mjs", "docs-site/src/content/**", "docs-site/package.json", ".github/workflows/docs-deploy.yml"],
+          "type": "code/ops",
+          "passes": false,
+          "status": "todo",
+          "priority": 3
+        },
+        {
+          "id": "P4-T4",
+          "title": "Docs content — install, finding catalog, the narrow-and-true privacy claim",
+          "description": "Write the load-bearing docs: install/quickstart across the five distribution channels (P0-T4), the finding catalog (one page per RS-* code sourced from `explain`, P2-T12), and the privacy page using the exact narrow-and-true claim from PRD §8.1 — 'a fixture contains no rows from your database; it contains statistics computed from them; at standard some reveal extremes; at strict none do.' The broader claim is false and will be caught (PRD §11).",
+          "depends_on": ["P4-T3", "P2-T12"],
+          "spec_refs": ["PRD §8.1 (install/quickstart)", "PRD §11 (narrow-and-true safety claim)", "PRD §8.1 fixture privacy README language", "RFC §8.1 (what actually leaks)"],
+          "acceptance_criteria": [
+            "The privacy page reproduces the PRD §8.1 defensible claim verbatim and does NOT make the broader 'no production values leave' claim.",
+            "Every shipped RS-* finding code has a catalog page whose remediation matches `rowshape explain <CODE>`.",
+            "Install docs cover all five distribution channels (brew, go install, npm wrapper, curl, Docker)."
+          ],
+          "verification": ["docs build; a check asserts each `explain` code has a matching catalog page; privacy-claim wording lint"],
+          "artifacts": ["docs-site/src/content/docs/privacy.md", "docs-site/src/content/docs/findings/*.md", "docs-site/src/content/docs/install.md"],
+          "type": "docs",
+          "passes": false,
+          "status": "todo",
+          "priority": 4
+        },
+        {
+          "id": "P4-T5",
+          "title": "Docs content — MCP / init --agent guide + fixture-spec cross-link",
+          "description": "Document the wedge: how to run `rowshape init --agent` and what it writes (MCP config, the versioned agent rule, the pre-commit hook — phase 3), and how the four MCP tools are used in an agent loop (PRD §8.2/§8.3). Cross-link the fixture-spec repo (P0-T2) and MCPFold, so the spec-as-position (PRD §3) is discoverable from the docs.",
+          "depends_on": ["P4-T3", "P3-T9", "P0-T2"],
+          "spec_refs": ["PRD §8.2 (MCP tools)", "PRD §8.3 (init --agent, agent rule)", "PRD §3 (spec is the position)", "PRD §16 (fixture spec own repo)"],
+          "acceptance_criteria": [
+            "A guide documents `init --agent` outputs and the agent-loop workflow with the four MCP tools.",
+            "The docs cross-link the fixture-spec repo and MCPFold.",
+            "The published agent rule text (P3-T9) is shown so users can see what gets written to CLAUDE.md/AGENTS.md."
+          ],
+          "verification": ["docs build; link check confirms fixture-spec + MCPFold cross-links resolve"],
+          "artifacts": ["docs-site/src/content/docs/mcp.md", "docs-site/src/content/docs/agent-setup.md"],
+          "type": "docs",
+          "passes": false,
+          "status": "todo",
+          "priority": 5
+        },
+        {
+          "id": "P4-T6",
+          "title": "The agent-loop demo (the launch gate)",
+          "description": "Build the demo that IS the launch (PRD §13): a Claude Code session, given a repo and a fixture, is told 'add a NOT NULL email column to users', produces a naive migration, watches it FAIL with RS-LOCK-001, rewrites it as a three-step backfill (ADD nullable; batched backfill; SET NOT NULL via validated CHECK), and reaches PASS — with no human turn in between. Assemble the demo repo, fixture, and the agent rule + MCP wiring that make the loop close unprompted.",
+          "depends_on": ["P4-T1", "P3-T4", "P3-T9"],
+          "spec_refs": ["PRD §13 (v1-done demo, record it before the README)", "PRD §2 (the agent loop)", "PRD §14.1 (week-12 kill criterion)"],
+          "acceptance_criteria": [
+            "A demo repo + committed fixture reproduce the naive migration -> FAIL RS-LOCK-001 path.",
+            "The rewrite to a three-step backfill reaches PASS.",
+            "The full loop runs with no human turn between the naive migration and the PASS, using the agent rule + MCP tools from phase 3."
+          ],
+          "verification": ["scripted end-to-end run: FAIL(RS-LOCK-001) then PASS on the rewrite, transcript captured"],
+          "artifacts": ["demo/repo/**", "demo/fixture.yaml", "demo/README.md", "demo/transcript.md"],
+          "type": "demo/product",
+          "passes": false,
+          "status": "todo",
+          "priority": 6
+        },
+        {
+          "id": "P4-T7",
+          "title": "Demo regression job (protect the wedge)",
+          "description": "Turn the demo into a regression guard so it can't silently rot: a CI job that runs the demo's naive migration and asserts FAIL RS-LOCK-001, then runs the three-step rewrite and asserts PASS. This makes the PRD §14.1 week-12 kill criterion continuously checkable instead of a one-time manual demo, and records the launch artifact deterministically.",
+          "depends_on": ["P4-T6"],
+          "spec_refs": ["PRD §14.1 (week-12 kill criterion)", "PRD §13 (record the demo)", "PRD §15 (a single wrong PASS is unrecoverable)"],
+          "acceptance_criteria": [
+            "A CI job runs the demo and asserts FAIL RS-LOCK-001 on the naive migration and PASS on the rewrite.",
+            "The job runs on every push and blocks merge if the loop stops closing.",
+            "The demo run is deterministic (seeded hydrate) so the assertion is stable."
+          ],
+          "verification": ["CI: demo-regression job green (asserts both the FAIL and the PASS); deterministic across reruns"],
+          "artifacts": [".github/workflows/demo-regression.yml", "demo/expected.json"],
+          "type": "code/ops",
+          "passes": false,
+          "status": "todo",
+          "priority": 7
+        },
+        {
+          "id": "P4-T8",
+          "title": "Agent-rule evaluation harness (measure the loop)",
+          "description": "PRD §8.3 says the agent rule is 'iterated against real agent sessions the way a prompt does,' and PRD §15 says 'the bet is the loop, not the tool.' Build the harness that MEASURES whether the versioned rule (P3-T9) actually changes agent behavior: does the agent call describe_shape before writing SQL, call validate_migration before opening a PR, and stop hand-waving a FAIL? Run scripted agent sessions against the demo repo and score rule adherence and loop-closure rate, so rule changes are evaluated, not guessed.",
+          "depends_on": ["P3-T9", "P4-T6"],
+          "spec_refs": ["PRD §8.3 (rule iterated like a prompt, versioned)", "PRD §15 (the bet is the loop, not the tool)", "PRD §2 (the agent loop)"],
+          "acceptance_criteria": [
+            "A harness runs scripted agent sessions and scores: describe_shape-before-SQL, validate-before-PR, and no-hand-waved-FAIL.",
+            "It reports a loop-closure rate (naive -> FAIL -> rewrite -> PASS with no human turn) as a tracked metric across rule versions.",
+            "A rule change can be A/B compared on these metrics before shipping (a deliberately weakened rule scores lower)."
+          ],
+          "verification": ["harness runs the demo scenario end-to-end and emits adherence + closure metrics; a weakened rule scores measurably lower"],
+          "artifacts": ["eval/agent-rule/**", "eval/agent-rule/README.md"],
+          "type": "eval/product",
+          "passes": false,
+          "status": "todo",
+          "priority": 8
+        }
+      ]
+    },
+    {
+      "id": "phase-5",
+      "order": 6,
+      "name": "Findings breadth, version matrix depth, MySQL, then cloud only if pull-through is real",
+      "weeks": "13+",
+      "deferred": true,
+      "ships": "Everything after v1, in strict priority order: the remaining finding classes (RS-PERF, RS-REVERSE), deeper version-matrix coverage, MySQL as the second engine, and — only once the CLI has organic users — the commercial cloud (registry, audit, drift, attestation, billing).",
+      "source": "PRD §14 Phase 5, §4, §8.4, §9, §9.1, §10, §12, §14.1 (week-20 kill criterion); RFC §4, §12, §14",
+      "gating_rule": "Cloud (P5-T7..T14) does not start until the traction gate passes (PRD §14, §14.1): without a few hundred stars and unsolicited issues/PRs, the cloud has no distribution and should not be built. Findings/matrix/MySQL (P5-T1..T6) are ungated post-v1 work; the cloud tasks are recorded now and built later, and only if pull-through is real.",
+      "definition_of_done": [
+        "RS-PERF and RS-REVERSE finding classes exist, each landing its corpus triples BEFORE the finding (same capping discipline as phase 2, PRD §12/§14).",
+        "MySQL is a working second engine: the fixture spec vocabulary covers it (additive, RFC §12) and pull/hydrate/validate run against it (PRD §4).",
+        "If and only if the traction gate passes, the cloud ships: fixture registry, audit trail, approval gates, customer-side drift detection, and CI-OIDC-bound agent attestation — with `validate` never gated (PRD §8.4).",
+        "The cloud API imports the CLI's own `fixture` and `verdict` packages so canonical form and verdicts have exactly one implementation (PRD §9)."
+      ],
+      "tasks": [
+        {
+          "id": "P5-T1",
+          "title": "RS-PERF finding class (corpus-first)",
+          "description": "Add the RS-PERF finding class from the permanent namespace in PRD §10. Query-plan/perf regression is explicitly OUT of v1 (PRD §13), so this is post-v1 breadth. Land the corpus triples that exercise the pathology BEFORE the finding, per the phase-2 ordering discipline (PRD §12, §14) — writing the finding first means discovering later which cases were wrong.",
+          "depends_on": ["P2-T1", "P2-T7"],
+          "spec_refs": ["PRD §10 (RS-PERF namespace)", "PRD §13 (query-plan regression is out of v1 -> phase 5)", "PRD §12 (corpus before findings)"],
+          "acceptance_criteria": [
+            "Corpus triples for the RS-PERF pathology land before the finding and assert the expected verdict.",
+            "RS-PERF findings carry depends_on + confidence and are capped per RFC §7.4.",
+            "Codes are permanent and namespaced (RS-PERF-NNN) per PRD §10."
+          ],
+          "verification": ["corpus harness green on RS-PERF cases across the PG matrix; capping preserved"],
+          "artifacts": ["corpus/cases/perf-*/**", "internal/findings/perf.go", "internal/findings/perf_test.go"],
+          "type": "code/asset",
+          "passes": false,
+          "status": "todo",
+          "priority": 1
+        },
+        {
+          "id": "P5-T2",
+          "title": "RS-REVERSE finding class (reversibility, corpus-first)",
+          "description": "Add the RS-REVERSE finding class (PRD §10) covering down-migration / reversibility hazards — e.g. a migration whose rollback loses data or cannot execute. Corpus triples first (PRD §12/§14). Findings declare their fixture dependencies and are capped by confidence like every other class (RFC §7.4).",
+          "depends_on": ["P2-T1", "P2-T7"],
+          "spec_refs": ["PRD §10 (RS-REVERSE namespace)", "PRD §12 (corpus before findings)", "RFC §7.4 (capping)"],
+          "acceptance_criteria": [
+            "Corpus triples for reversibility hazards land before the finding.",
+            "RS-REVERSE findings carry mandatory remediation (PRD §10) and depends_on + confidence.",
+            "Codes are permanent and namespaced (RS-REVERSE-NNN)."
+          ],
+          "verification": ["corpus harness green on RS-REVERSE cases; remediation present on every error"],
+          "artifacts": ["corpus/cases/reverse-*/**", "internal/findings/reverse.go", "internal/findings/reverse_test.go"],
+          "type": "code/asset",
+          "passes": false,
+          "status": "todo",
+          "priority": 2
+        },
+        {
+          "id": "P5-T3",
+          "title": "Version-matrix depth beyond the v1 capping cases",
+          "description": "Deepen the version-conditional cost models (P2-T5) and expand corpus coverage across the full PG 11-17 matrix (P2-T13) beyond the v1 capping set — the documented cases where a finding right on 16 is wrong on 11 (PRD §12). A validator applying one table of models across all versions is confidently wrong on the older databases most likely to hold the scary migrations (RFC §9.1).",
+          "depends_on": ["P2-T5", "P2-T13"],
+          "spec_refs": ["PRD §12 (version-conditional findings multiply the matrix)", "RFC §9.1 (engine-version-conditional cost models)"],
+          "acceptance_criteria": [
+            "New corpus triples cover version-divergent behaviors not in the v1 capping set, across PG 11-17.",
+            "Cost models consume engine.version and produce version-correct buckets on each major.",
+            "The matrix CI runs the expanded corpus on every supported major."
+          ],
+          "verification": ["corpus matrix CI green across PG 11-17 on the expanded case set"],
+          "artifacts": ["corpus/cases/version-*/**", "internal/extrapolate/models.go"],
+          "type": "code/asset",
+          "passes": false,
+          "status": "todo",
+          "priority": 3
+        },
+        {
+          "id": "P5-T4",
+          "title": "MySQL: extend the fixture-spec vocabulary",
+          "description": "Extend the Rowshape Fixture Spec to cover MySQL. RFC §4 notes the structure anticipates other engines but the vocabulary does not yet cover them — so this adds MySQL engine facts additively (new fields, no reinterpretation) per the RFC §12 compatibility rules, keeping `rowshape_fixture: \"1\"` where possible. MySQL is the second engine (PRD §4).",
+          "depends_on": ["P0-T2"],
+          "spec_refs": ["PRD §4 (MySQL second)", "RFC §4 (vocabulary does not yet cover other engines)", "RFC §12 (additive fields ship without a major bump)"],
+          "acceptance_criteria": [
+            "The fixture-spec RFC documents MySQL engine coverage additively (no reinterpretation of existing fields).",
+            "engine.name = mysql is representable with its version, feeding version-conditional models.",
+            "Compatibility rules (RFC §12) are respected: unknown fields ignored, additive-only within major 1."
+          ],
+          "verification": ["spec review; a MySQL fixture validates against the schema and round-trips a stable digest"],
+          "artifacts": ["fixture-spec/RFC-0001.md", "fixture-spec/examples/mysql.yaml"],
+          "type": "docs/spec",
+          "passes": false,
+          "status": "todo",
+          "priority": 4
+        },
+        {
+          "id": "P5-T5",
+          "title": "MySQL: pull / hydrate",
+          "description": "Implement `pull` and `hydrate` for MySQL — the second engine (PRD §4). Read production shape read-only via the catalog + sampling, emit a MySQL fixture, and deterministically hydrate a disposable MySQL target. Reuse the confidence model and synthesis engine built for Postgres; only the catalog access and engine specifics differ.",
+          "depends_on": ["P5-T4", "P1-T9"],
+          "spec_refs": ["PRD §4 (MySQL second)", "PRD §6 (pull/hydrate pipeline)", "RFC §7 (confidence), §10 (determinism)"],
+          "acceptance_criteria": [
+            "`pull` produces a valid MySQL fixture read-only, with confidence on every fact and privacy enforced.",
+            "`hydrate --seed N` deterministically reconstructs a disposable MySQL database honoring null_fraction, unique, and fan-out shape.",
+            "The synthesis engine and confidence model are shared with Postgres, not forked."
+          ],
+          "verification": ["go test ./... against a disposable MySQL; digest-stable pull; deterministic hydrate"],
+          "artifacts": ["internal/engine/mysql/pull.go", "internal/engine/mysql/hydrate.go", "internal/engine/mysql/*_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 5
+        },
+        {
+          "id": "P5-T6",
+          "title": "MySQL: validate + MySQL-specific findings + corpus",
+          "description": "Bring `validate` to MySQL with a MySQL corpus and MySQL-specific finding rules (online DDL semantics differ materially from Postgres). Corpus triples first (PRD §12). Findings render the same Verdict struct (PRD §10) — one contract across engines.",
+          "depends_on": ["P5-T5", "P2-T7"],
+          "spec_refs": ["PRD §4 (MySQL)", "PRD §10 (same verdict contract)", "PRD §12 (corpus before findings)"],
+          "acceptance_criteria": [
+            "A MySQL corpus runs (migration, fixture, expected verdict) triples against supported MySQL majors.",
+            "`validate` returns MySQL-appropriate findings via the shared Verdict struct.",
+            "Capping and bucketed estimates apply identically to MySQL (RFC §7.4, §9.2)."
+          ],
+          "verification": ["MySQL corpus harness green; validate returns shared Verdict on MySQL targets"],
+          "artifacts": ["corpus/mysql/**", "internal/engine/mysql/findings.go", "internal/engine/mysql/findings_test.go"],
+          "type": "code/asset",
+          "passes": false,
+          "status": "todo",
+          "priority": 6
+        },
+        {
+          "id": "P5-T7",
+          "title": "Cloud traction gate (build only if pull-through is real)",
+          "description": "A decision checkpoint, not code: cloud does not start until the CLI has organic users (PRD §14 — a few hundred stars and unsolicited issues/PRs; PRD §14.1 week-20 kill criterion). Record the gate criteria, measure them, and only unblock P5-T8..T14 when they pass. Zero unsolicited issues/PRs is information, not a reason to push harder (PRD §14.1).",
+          "depends_on": [],
+          "spec_refs": ["PRD §14 (cloud does not start until organic users)", "PRD §14.1 (week-20 kill criterion)", "PRD §9 (none of this gets built until §13 says so)"],
+          "acceptance_criteria": [
+            "The gate criteria (star threshold, unsolicited issues/PRs) are written down and measurable.",
+            "Cloud tasks P5-T8..T14 remain blocked until the gate is explicitly marked passed.",
+            "A negative gate result is recorded as a stop/reassess decision, not silently ignored."
+          ],
+          "verification": ["manual: gate criteria documented; cloud tasks reference this gate as a blocker"],
+          "artifacts": ["docs/DECISIONS.md"],
+          "type": "decision/gate",
+          "passes": false,
+          "status": "todo",
+          "priority": 7
+        },
+        {
+          "id": "P5-T8",
+          "title": "Cloud API — Go on Coolify + self-hosted Supabase, importing the CLI packages",
+          "description": "Stand up the commercial API per PRD §9: Go, on Coolify, alongside self-hosted Supabase, importing the CLI's own `fixture` and `verdict` packages so canonical form, digesting, and verdict structs have exactly one implementation. A second (TypeScript) implementation would eventually disagree on float formatting or key ordering and attestations would silently stop verifying (PRD §9).",
+          "depends_on": ["P5-T7", "P2-T3"],
+          "spec_refs": ["PRD §9 (Go API on Coolify + self-hosted Supabase; imports CLI fixture/verdict packages)", "RFC §11 (canonical form, one implementation)"],
+          "acceptance_criteria": [
+            "The API is a Go service importing the CLI's `fixture` and `verdict` packages (no reimplemented canonicalization).",
+            "Deployed on Coolify with self-hosted Supabase (Postgres metadata, Storage for blobs, GoTrue auth).",
+            "`validate` never calls the cloud — the critical path never touches this infra (PRD §8.4/§9)."
+          ],
+          "verification": ["API integration test: digest computed by API matches CLI digest for the same fixture"],
+          "artifacts": ["cloud/api/**", "cloud/deploy/coolify.md"],
+          "type": "code/ops",
+          "passes": false,
+          "status": "todo",
+          "priority": 8
+        },
+        {
+          "id": "P5-T9",
+          "title": "Fixture registry (the killer cloud feature)",
+          "description": "Hosted, versioned, access-controlled fixtures (PRD §8.4): Dana pulls `prod@2026-07-14` without ever holding a prod credential — this is what gets `$PROD_URL` off her laptop. Fixtures are value-free by design (RFC §8), so a breach exposes statistics, not customer data, and they remain committed to git so the registry is a convenience, not a dependency (PRD §9).",
+          "depends_on": ["P5-T8"],
+          "spec_refs": ["PRD §8.4 (fixture registry, the killer feature)", "PRD §9 (registry is a convenience, not a dependency)", "RFC §8 (value-free fixtures)"],
+          "acceptance_criteria": [
+            "Fixtures can be pushed, versioned, and pulled by id (e.g. prod@2026-07-14) with access control.",
+            "A developer can pull a fixture without holding a production credential.",
+            "Registry downtime never breaks anyone's CI (fixtures still resolve from git)."
+          ],
+          "verification": ["registry integration test: push/version/pull by id; access control enforced; git fallback works"],
+          "artifacts": ["cloud/api/registry/**", "cloud/api/registry/*_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 9
+        },
+        {
+          "id": "P5-T10",
+          "title": "Audit trail + approval gates",
+          "description": "The compliance surface Priya writes the check for (PRD §8.4): an immutable audit trail of every validate — who, when, which fixture, what verdict — plus approval gates where a FAIL blocks the deploy and a WARN requires a named human override that is recorded. Never gate `validate` itself (PRD §8.4) — the moment validate is gated the agent loop breaks and the wedge dies.",
+          "depends_on": ["P5-T8"],
+          "spec_refs": ["PRD §8.4 (audit trail, approval gates; never gate validate)"],
+          "acceptance_criteria": [
+            "Every validate submitted to the cloud is recorded immutably (who/when/fixture/verdict).",
+            "Approval gates block a deploy on FAIL and require a recorded named override on WARN.",
+            "`validate` itself remains free and ungated — gating lives in the deploy gate, not the command."
+          ],
+          "verification": ["integration test: audit record immutable; FAIL blocks, WARN override recorded; validate never blocked"],
+          "artifacts": ["cloud/api/audit/**", "cloud/api/gates/**", "cloud/api/*_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 10
+        },
+        {
+          "id": "P5-T11",
+          "title": "Drift detection (customer-side, signed results)",
+          "description": "Scheduled `verify` against every environment, alerting when prod diverges from what the migration history claims (PRD §8.4). It MUST be customer-side (PRD §9): the customer runs a runner in their own infra that posts signed results — we never hold their production credentials, which would make us a breach target and kill the deal with the exact buyer we're chasing. The backend only receives and stores signed JSON.",
+          "depends_on": ["P5-T8", "P2-T15"],
+          "spec_refs": ["PRD §8.4 (drift detection)", "PRD §9 (drift must be customer-side; receive and store signed JSON)"],
+          "acceptance_criteria": [
+            "A customer-side runner performs scheduled read-only `verify` and posts signed results.",
+            "The backend never holds production credentials — it only receives and stores signed JSON.",
+            "Divergence from the declared migration history raises an alert."
+          ],
+          "verification": ["integration test: signed verify result accepted and stored; unsigned/invalid rejected; no cred storage path exists"],
+          "artifacts": ["cloud/runner/**", "cloud/api/drift/**"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 11
+        },
+        {
+          "id": "P5-T12",
+          "title": "Agent attestation bound to CI workload identity",
+          "description": "The differentiated feature (PRD §8.4): when an agent validated a migration, record which agent, which model, which fixture version, what verdict at the moment the PR opened. Self-reported identity is worthless — a `--agent=claude-code` flag is trivially spoofed — so attestation binds to a CI OIDC workload identity (GitHub Actions' token), signing verdict + fixture digest server-side. This makes attestation a CI product, not a laptop product; laptop validation stays useful and stays unattested.",
+          "depends_on": ["P5-T8", "P4-T1"],
+          "spec_refs": ["PRD §8.4 (agent attestation; bind to CI OIDC, don't trust a flag)", "PRD §9.1 (subject = fixture + migration digests; predicateType URI)", "RFC §11 (digest binds the claim)"],
+          "acceptance_criteria": [
+            "Attestation binds to a CI OIDC workload identity, not a self-reported flag.",
+            "The signed predicate follows the PRD §9.1 shape (subject = fixture + migration digests, predicateType URI, verdict body as predicate).",
+            "Laptop validation is explicitly unattested and documented as such (the two are not blurred)."
+          ],
+          "verification": ["integration test in CI: OIDC-bound attestation produced and verifies; spoofed flag alone yields no attestation"],
+          "artifacts": ["cloud/api/attest/**", "cloud/api/attest/*_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 12
+        },
+        {
+          "id": "P5-T13",
+          "title": "Attestation signing modes (Sigstore: public Rekor vs detached)",
+          "description": "Resolve where signatures go (PRD §9.1 — decide in phase 5, not v1). Public Rekor makes immutability a property of the artifact, but keyless signing publishes repo identity + timing — free marketing for OSS, an unacceptable leak for a private enterprise monorepo. Ship two modes: public Rekor for OSS repos, and detached signatures held in the registry (or a private log) for enterprise. Don't be the root of trust — the artifact carries its own proof (PRD §9).",
+          "depends_on": ["P5-T12"],
+          "spec_refs": ["PRD §9.1 (two modes: public Rekor for OSS, detached/private for enterprise)", "PRD §9 (don't be the root of trust)"],
+          "acceptance_criteria": [
+            "OSS mode publishes attestations to public Rekor, verifiable by anyone offline.",
+            "Enterprise mode uses detached signatures (registry or private log), leaking neither repo identity nor timing.",
+            "Verification works with zero trust in our server in both modes."
+          ],
+          "verification": ["test: OSS attestation verifies via Rekor; enterprise detached signature verifies offline without our server"],
+          "artifacts": ["cloud/api/attest/sigstore.go", "cloud/api/attest/detached.go", "cloud/api/attest/verify_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 13
+        },
+        {
+          "id": "P5-T14",
+          "title": "Billing (Stripe) + pricing tiers — never gate validate",
+          "description": "Wire billing per PRD §8.4/§9: Stripe, with the pricing shape ~$29/dev/mo or ~$99/connected-database/mo for registry + audit, enterprise for SSO/on-prem. The hard invariant: `validate` is free forever and never gated — the moment it's gated the agent loop breaks and the wedge dies (PRD §8.4). Cloud sells what only exists when there's more than one of you.",
+          "depends_on": ["P5-T9", "P5-T10"],
+          "spec_refs": ["PRD §8.4 (pricing shape; never gate validate; MIT CLI, closed cloud)", "PRD §9 (Billing: Stripe)"],
+          "acceptance_criteria": [
+            "Stripe billing supports the per-dev and per-connected-database tiers plus an enterprise path.",
+            "`validate` (CLI + Action + MCP) remains free and ungated regardless of billing state.",
+            "The free CLI is complete on its own — a solo dev never hits a paywall (PRD §8.4)."
+          ],
+          "verification": ["integration test: subscription lifecycle via Stripe test mode; validate works with no active subscription"],
+          "artifacts": ["cloud/api/billing/**", "cloud/api/billing/*_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 14
+        }
+      ]
+    }
   ],
 
   "milestones": {
-    "note": "To be finalized when phase-4 is built. The launch gate is PRD §13: a Claude Code session, given a repo and a fixture, told 'add a NOT NULL email column to users', produces a naive migration, watches it FAIL with RS-LOCK-001, rewrites it as a three-step backfill, and reaches PASS — with no human turn in between."
-  }
+    "note": "Milestones map the PRD §14 sequence to shippable gates. The launch gate is the PRD §13 v1-done demo: a Claude Code session, given a repo and a fixture, told 'add a NOT NULL email column to users', produces a naive migration, watches it FAIL with RS-LOCK-001, rewrites it as a three-step backfill, and reaches PASS — with no human turn in between. Record it before writing the README.",
+    "launch_gate": "PRD §13: the agent-loop demo closes with no human turn (naive migration -> FAIL RS-LOCK-001 -> three-step backfill -> PASS). That demo is the launch.",
+    "list": [
+      {
+        "id": "M0",
+        "name": "Foundation reserved, spec public, skeleton builds",
+        "target_week": "1",
+        "phase": "phase-0",
+        "definition": "Namespaces + Go module path fixed; rowshape/fixture-spec public (RFC-0001 v1, MIT); single binary with stub subcommands; goreleaser signed + SBOM on five platforms; CI green.",
+        "source": "PRD §14 (phase 0)"
+      },
+      {
+        "id": "M1",
+        "name": "pull + hydrate reproduce a corpus pathology (Week-6 gate)",
+        "target_week": "6",
+        "phase": "phase-1 / phase-1b",
+        "definition": "A read-only fast-mode `pull` emits a digest-stable <100KB fixture with confidence on every fact; `hydrate --seed N` deterministically reconstructs a disposable Postgres reproducing a known corpus pathology. The confidence engine (HLL, uniqueness probes, auto-escalation, inspect --leaks) is in.",
+        "kill_checkpoint": "Week 6 (PRD §14.1): if pull + hydrate don't reproduce a known corpus pathology, the fixture premise is wrong — stop before building validate.",
+        "source": "PRD §14 (phases 1, 1b), §14.1"
+      },
+      {
+        "id": "M2",
+        "name": "validate + verdict contract green across the PG matrix",
+        "target_week": "10",
+        "phase": "phase-2",
+        "definition": "Corpus + capping tests land before the findings; one Verdict struct with two marshalers (DSSE-signable); `validate` returns RS-LOCK / RS-DATA / RS-CONSTRAINT / RS-INDEX with bucketed, version-conditional estimates and mandatory remediation, capped by confidence (RFC §7.4), across PG 11-17.",
+        "source": "PRD §14 (phase 2), §10, §12"
+      },
+      {
+        "id": "M3",
+        "name": "MCP server + init --agent wire the loop into the agent's turn",
+        "target_week": "11",
+        "phase": "phase-3",
+        "definition": "`rowshape mcp` serves the four thin tools; `rowshape init --agent` writes MCP config, the versioned agent rule, and the pre-commit backstop so an agent reaches for rowshape unprompted.",
+        "source": "PRD §14 (phase 3), §8.2, §8.3"
+      },
+      {
+        "id": "M4",
+        "name": "Launch: agent-loop demo closes with no human turn (Week-12 gate)",
+        "target_week": "12",
+        "phase": "phase-4",
+        "definition": "GitHub Action runs `validate` in CI rendering the shared Verdict; docs site live on Cloudflare Pages with the narrow-and-true privacy claim; the agent-loop demo runs end-to-end (naive migration -> FAIL RS-LOCK-001 -> three-step backfill -> PASS) with no human turn, guarded by a CI regression job. This is v1-done and the launch.",
+        "kill_checkpoint": "Week 12 (PRD §14.1): if the demo doesn't work end-to-end without a human turn, the wedge isn't real — reassess.",
+        "source": "PRD §13, §14 (phase 4), §14.1"
+      },
+      {
+        "id": "M5",
+        "name": "Post-launch traction gate (Week-20) unlocks cloud",
+        "target_week": "20",
+        "phase": "phase-5",
+        "definition": "Findings breadth (RS-PERF, RS-REVERSE), version-matrix depth, and MySQL proceed ungated. The cloud (registry, audit, drift, attestation, billing) is built only if the traction gate passes; `validate` is never gated.",
+        "kill_checkpoint": "Week 20 (PRD §14.1): zero unsolicited issues/PRs is information, not a reason to push harder — cloud does not start without organic pull-through.",
+        "source": "PRD §14 (phase 5), §14.1, §8.4"
+      }
+    ]
+  },
+  "open_decisions": [
+    {
+      "id": "OQ-PGSS",
+      "question": "Capture pg_stat_statements in v1 fixtures without acting on it, or omit it entirely?",
+      "leaning": "Capture, don't act (schema-additive; decide early because retrofitting the fixture schema is costly).",
+      "resolve_by": "phase-1 (fixture schema / P1-T1)",
+      "source": "PRD §17.1"
+    },
+    {
+      "id": "OQ-TARGET",
+      "question": "Disposable target: testcontainers-go (needs a Docker daemon, awkward on a cold agent machine) or embedded/pg_tmp (fewer prerequisites, more fragile)?",
+      "leaning": "Unresolved — decides how frictionless the agent loop feels on first run; couples to the exit-3 tool-error path (P2-T17).",
+      "resolve_by": "phase-1 (P1-T9)",
+      "source": "PRD §17.2"
+    },
+    {
+      "id": "OQ-ESCALATION-CEILING",
+      "question": "Does auto-escalation need a cost ceiling, and of what shape (--max-escalation-rows, timeout-degrades-to-omit, or prompt)?",
+      "leaning": "Soft cap with a WARN naming what was skipped and why (implemented in P1b-T4).",
+      "resolve_by": "phase-1b (P1b-T4 — resolved)",
+      "source": "PRD §17.3, RFC §14.5"
+    },
+    {
+      "id": "OQ-HLL-PRECISION",
+      "question": "HyperLogLog precision 14 (~1.6% error, 16KB state) vs 16 (~0.4%, 64KB)? The error rate is published in distinct.error and feeds §7.4 capping.",
+      "leaning": "14 — `measured` only needs to beat `estimated`, not approach `exact` (confirm in P1b-T1).",
+      "resolve_by": "phase-1b (P1b-T1)",
+      "source": "RFC §14.4"
+    },
+    {
+      "id": "OQ-PARTITIONS",
+      "question": "Partitioned tables: parent only, or every partition? Partition count and per-partition skew change lock behavior materially.",
+      "leaning": "Parent declares partitions: {count, strategy, skew}; no per-partition entries (implemented in P1-T12).",
+      "resolve_by": "phase-1 (P1-T12)",
+      "source": "RFC §14.2"
+    },
+    {
+      "id": "OQ-BLOAT",
+      "question": "Does bloat_estimate belong in a portable spec, or is it Postgres trivia that will embarrass us at MySQL?",
+      "leaning": "Unresolved — revisit when MySQL vocabulary lands.",
+      "resolve_by": "phase-5 (MySQL / P5-T4)",
+      "source": "RFC §14.3"
+    },
+    {
+      "id": "OQ-CORRELATION",
+      "question": "Multi-column correlation (country/phone_prefix; composite unique collisions understated by independent generation) — add a correlations block now or defer?",
+      "leaning": "Defer to v2 — nonsense is usually fine (RFC §13); revisit only for composite unique constraints.",
+      "resolve_by": "v2 (out of v1 scope)",
+      "source": "RFC §14.1"
+    }
+  ]
 }
