@@ -1,0 +1,13 @@
+rowshape_fixture: "1"
+meta:
+  id: rsconstraint-check-conflict
+  engine: {name: postgres, version: "16"}
+  privacy: standard
+  profile: {mode: exact, escalated: []}
+tables:
+  public.accounts:
+    rows: {value: 250000, confidence: exact}
+    columns:
+      id: {type: bigint, nullable: false, unique: {value: true, confidence: exact, via: constraint}}
+      balance_cents: {type: integer, nullable: false, range: {min: -4500, max: 980000}}
+    constraints: [{name: accounts_pkey, kind: primary_key, columns: [id]}]

@@ -866,8 +866,8 @@
           "verification": ["corpus RS-CONSTRAINT cases green across matrix"],
           "artifacts": ["internal/findings/rsconstraint.go", "internal/findings/rsconstraint_test.go", "corpus/cases/rsconstraint-*/*"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 10
         },
         {
