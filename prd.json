@@ -992,8 +992,8 @@
           "verification": ["go test: each failure mode yields exit 3 + structured reason; unknown-major fixture refused; FAIL vs tool-error never conflated"],
           "artifacts": ["internal/toolerror/toolerror.go", "cmd/validate_toolerror_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 17
         }
       ]

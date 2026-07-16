@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/rowshape/rowshape/internal/hydrate"
 	"github.com/rowshape/rowshape/internal/runner"
 	"github.com/rowshape/rowshape/internal/target"
+	"github.com/rowshape/rowshape/internal/toolerror"
 	"github.com/rowshape/rowshape/internal/validate"
 	"github.com/rowshape/rowshape/internal/verdict"
 	"github.com/spf13/cobra"
@@ -75,13 +77,11 @@ func runValidate(opts *validateOptions) error {
 
 	data, err := os.ReadFile(opts.fixturePath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "rowshape validate: reading %s failed: %v\n", opts.fixturePath, err)
-		return toolError()
+		return emitToolError(opts.asJSON, toolerror.New(toolerror.FixtureParse, fmt.Sprintf("reading %s failed: %v", opts.fixturePath, err), "check the fixture path"))
 	}
 	f, err := fixture.Parse(data)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "rowshape validate: %v\n", err)
-		return toolError()
+		return emitToolError(opts.asJSON, fixtureParseError(err))
 	}
 
 	// Resolve the target and enforce the host-match refusal BEFORE touching it.
@@ -91,13 +91,11 @@ func runValidate(opts *validateOptions) error {
 		adminOrTarget = opts.ephemeral
 	}
 	if adminOrTarget == "" {
-		fmt.Fprintln(os.Stderr, "rowshape validate: provide a disposable target (--ephemeral <admin-url>) or a live target (--target <url>)")
-		return toolError()
+		return emitToolError(opts.asJSON, toolerror.New(toolerror.BadUsage, "no target given", "provide a disposable target (--ephemeral <admin-url>) or a live target (--target <url>)"))
 	}
 	if host := hostOf(adminOrTarget); host != "" {
 		if err := validate.CheckHost(f.Meta.Source, host); err != nil {
-			fmt.Fprintf(os.Stderr, "rowshape validate: %v\n", err)
-			return toolError()
+			return emitToolError(opts.asJSON, toolerror.New(toolerror.BadUsage, err.Error(), "point --target/--ephemeral at a disposable or non-production host"))
 		}
 	}
 
@@ -106,19 +104,16 @@ func runValidate(opts *validateOptions) error {
 	var cap *validate.Capture
 	if groundTruth {
 		if opts.calibrate {
-			fmt.Fprintln(os.Stderr, "rowshape validate: --calibrate applies only to a disposable target; a provided branch's data is already ground truth")
-			return toolError()
+			return emitToolError(opts.asJSON, toolerror.New(toolerror.BadUsage, "--calibrate applies only to a disposable target", "a provided branch's data is already ground truth"))
 		}
 		cap, err = applyAndCapture(ctx, target.NewProvided(opts.target), opts)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "rowshape validate: %v\n", err)
-			return toolError()
+			return emitToolError(opts.asJSON, asToolError(err))
 		}
 	} else {
 		cap, err = hydrateApplyEphemeral(ctx, f, opts, opts.scale)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "rowshape validate: %v\n", err)
-			return toolError()
+			return emitToolError(opts.asJSON, asToolError(err))
 		}
 		// --calibrate fits the cost curve to a SECOND run at half scale, upgrading
 		// duration estimates from `estimated` to `measured` (RFC §9.2). Slower and
@@ -126,8 +121,7 @@ func runValidate(opts *validateOptions) error {
 		if opts.calibrate {
 			cap2, err := hydrateApplyEphemeral(ctx, f, opts, opts.scale/2)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "rowshape validate: calibration run failed: %v\n", err)
-				return toolError()
+				return emitToolError(opts.asJSON, asToolError(err))
 			}
 			cap.Calibration = &validate.Calibration{
 				TableRows:    cap2.TableRows,
@@ -138,15 +132,14 @@ func runValidate(opts *validateOptions) error {
 
 	result := validate.BuildResult(f, cap, validate.Registered(), groundTruth)
 	if err := result.Validate(); err != nil {
-		fmt.Fprintf(os.Stderr, "rowshape validate: produced verdict is malformed: %v\n", err)
-		return toolError()
+		return emitToolError(opts.asJSON, toolerror.New(toolerror.Internal, "produced verdict is malformed: "+err.Error(), ""))
 	}
 	if fs := cap.FailedStatement(); fs != nil {
 		fmt.Fprintf(os.Stderr, "rowshape validate: migration did not apply cleanly: %s (%s)\n", fs.ErrMsg, fs.ErrCode)
 	}
 
 	if err := emitResult(os.Stdout, result, opts.asJSON); err != nil {
-		return toolError()
+		return emitToolError(opts.asJSON, toolerror.New(toolerror.Internal, "emitting the verdict failed: "+err.Error(), ""))
 	}
 	if code := result.ExitCode(opts.warnFail); code != verdict.ExitPass {
 		return &ExitError{Code: code}
@@ -160,13 +153,13 @@ func runValidate(opts *validateOptions) error {
 func hydrateApplyEphemeral(ctx context.Context, f *fixture.Fixture, opts *validateOptions, scale float64) (*validate.Capture, error) {
 	eph, err := target.NewEphemeral(ctx, opts.ephemeral)
 	if err != nil {
-		return nil, fmt.Errorf("could not create a disposable database (check the admin connection): %w", err)
+		return nil, toolerror.New(toolerror.TargetUnavailable, "could not create a disposable database", "check the admin connection (--ephemeral); a disposable Postgres must be reachable (PRD §17.2)")
 	}
 	defer func() { _ = eph.Close(ctx) }()
 
 	report, err := target.Load(ctx, eph, f, hydrate.Options{Seed: opts.seed, Scale: scale, MaxRows: opts.maxRows})
 	if err != nil {
-		return nil, fmt.Errorf("hydration failed: %w", err)
+		return nil, toolerror.New(toolerror.TargetUnavailable, "hydration into the disposable database failed: "+err.Error(), "")
 	}
 	cap, err := applyAndCapture(ctx, eph, opts)
 	if err != nil {
@@ -196,24 +189,24 @@ func applyAndCapture(ctx context.Context, t target.Target, opts *validateOptions
 	if isSQLFile(opts.migrations) {
 		stmts, err := readSQLFile(opts.migrations)
 		if err != nil {
-			return nil, err
+			return nil, toolerror.New(toolerror.BadUsage, err.Error(), "check the --migrations path")
 		}
 		return applyStatements(ctx, t, stmts)
 	}
 
 	r, err := detectValidateRunner(opts)
 	if err != nil {
-		return nil, err
+		return nil, toolerror.New(toolerror.RunnerNotFound, err.Error(), "select a runner with --runner, or point --migrations at a raw-SQL file/directory")
 	}
 	raw, ok := r.(interface{ Files() []string })
 	if r.Kind() != runner.RawSQL || !ok {
-		return nil, fmt.Errorf("capturing %s migrations is not yet supported; point --migrations at a raw-SQL file or directory", r.Kind())
+		return nil, toolerror.New(toolerror.RunnerNotFound, fmt.Sprintf("capturing %s migrations is not yet supported", r.Kind()), "point --migrations at a raw-SQL file or directory")
 	}
 	var stmts []string
 	for _, name := range raw.Files() {
 		s, err := readSQLFile(filepath.Join(opts.migrations, name))
 		if err != nil {
-			return nil, err
+			return nil, toolerror.New(toolerror.BadUsage, err.Error(), "check the --migrations path")
 		}
 		stmts = append(stmts, s...)
 	}
@@ -224,7 +217,7 @@ func applyAndCapture(ctx context.Context, t target.Target, opts *validateOptions
 func applyStatements(ctx context.Context, t target.Target, stmts []string) (*validate.Capture, error) {
 	conn, err := t.Connect(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("connect to target: %w", err)
+		return nil, toolerror.New(toolerror.ConnectFailed, "could not connect to the target", "check the target is reachable and the credentials are valid")
 	}
 	defer conn.Close(ctx)
 	return validate.Apply(ctx, conn, stmts), nil
@@ -235,6 +228,41 @@ func detectValidateRunner(opts *validateOptions) (runner.Runner, error) {
 		return runner.ForKind(opts.migrations, runner.Kind(opts.runnerKind))
 	}
 	return runner.Detect(opts.migrations)
+}
+
+// emitToolError renders an operational failure as exit code 3 — clearly distinct
+// from a verdict (PRD §10, INV-VERDICT-STABLE). --json writes the machine-readable
+// payload to stdout (so an agent branches on `"error":"tool_error"` where a
+// verdict has `"verdict"`); otherwise the same struct is rendered for a human on
+// stderr. It never emits a PASS/FAIL/WARN.
+func emitToolError(asJSON bool, te *toolerror.ToolError) error {
+	if asJSON {
+		_ = te.WriteJSON(os.Stdout)
+	} else {
+		te.WriteHuman(os.Stderr)
+	}
+	return &ExitError{Code: te.ExitCode()}
+}
+
+// asToolError coerces an error to a *toolerror.ToolError: those returned by the
+// capture helpers pass through with their category; anything else is an Internal
+// tool error (still exit 3, never a verdict).
+func asToolError(err error) *toolerror.ToolError {
+	var te *toolerror.ToolError
+	if errors.As(err, &te) {
+		return te
+	}
+	return toolerror.New(toolerror.Internal, err.Error(), "")
+}
+
+// fixtureParseError maps a fixture parse failure to a category: an unknown format
+// major is a distinct refusal (RFC §12), never a partial-understanding verdict.
+func fixtureParseError(err error) *toolerror.ToolError {
+	var ve *fixture.VersionError
+	if errors.As(err, &ve) {
+		return toolerror.New(toolerror.UnknownVersion, ve.Error(), "this build understands fixture format version \""+fixture.FormatVersion+"\"")
+	}
+	return toolerror.New(toolerror.FixtureParse, err.Error(), "the fixture is not valid rowshape.yaml")
 }
 
 // emitResult writes the verdict: JSON (the machine contract, PRD §10) or the

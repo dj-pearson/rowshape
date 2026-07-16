@@ -305,14 +305,27 @@ func Marshal(f *Fixture) ([]byte, error) {
 	return yaml.Marshal(f)
 }
 
+// VersionError is returned when a fixture's format major is missing or unknown.
+// It is a distinct type so a caller can tell "refused an unknown major version"
+// (RFC §12) apart from an ordinary parse error and map it to the right tool-error
+// category (never a partial-understanding verdict).
+type VersionError struct {
+	Got  string // the major found ("" if missing)
+	Want string // the major this build understands
+}
+
+func (e *VersionError) Error() string {
+	if e.Got == "" {
+		return "fixture: missing rowshape_fixture version; refusing to read (RFC §12)"
+	}
+	return fmt.Sprintf("fixture: unknown major rowshape_fixture version %q (this build understands %q); refusing rather than best-effort (RFC §12)", e.Got, e.Want)
+}
+
 // checkVersion enforces the major-version compatibility rule (RFC §12).
 func (f *Fixture) checkVersion() error {
 	got := majorOf(f.RowshapeFixture)
-	if got == "" {
-		return fmt.Errorf("fixture: missing rowshape_fixture version; refusing to read (RFC §12)")
-	}
 	if got != FormatVersion {
-		return fmt.Errorf("fixture: unknown major rowshape_fixture version %q (this build understands %q); refusing rather than best-effort (RFC §12)", got, FormatVersion)
+		return &VersionError{Got: got, Want: FormatVersion}
 	}
 	return nil
 }
