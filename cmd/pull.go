@@ -63,7 +63,20 @@ func runPull(ctx context.Context, opts *pullOptions) error {
 		ctx = context.Background()
 	}
 
-	conn, err := connect(ctx, opts.dsn)
+	level, err := profile.ParsePrivacy(opts.privacy)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "rowshape pull: %v\n", err)
+		return toolError()
+	}
+
+	cfg, err := pgx.ParseConfig(opts.dsn)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "rowshape pull: could not parse the connection settings")
+		return toolError()
+	}
+	host := cfg.Host
+
+	conn, err := pgx.ConnectConfig(ctx, cfg)
 	if err != nil {
 		// Never surface the DSN — it may carry a password. Report only that the
 		// connection failed.
@@ -77,13 +90,18 @@ func runPull(ctx context.Context, opts *pullOptions) error {
 		return toolError()
 	}
 
-	f, err := profile.Fast(ctx, conn, profile.Options{Schemas: opts.schemas})
+	f, err := profile.Fast(ctx, conn, profile.Options{Schemas: opts.schemas, Privacy: level})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "rowshape pull: profiling failed: %v\n", err)
 		return toolError()
 	}
 
-	stampMeta(f, opts.privacy)
+	// Enforce the privacy level before anything is written (RFC §8.2), and record
+	// the source host only as a salted hash, never verbatim (RFC §8.4).
+	profile.ApplyPrivacy(f, level, 0)
+	f.Meta.Source = profile.HashSource(host)
+
+	stampMeta(f, string(level))
 	if err := f.SetDigest(); err != nil {
 		fmt.Fprintf(os.Stderr, "rowshape pull: computing digest failed: %v\n", err)
 		return toolError()
@@ -100,16 +118,6 @@ func runPull(ctx context.Context, opts *pullOptions) error {
 	}
 	fmt.Fprintf(os.Stderr, "rowshape pull: wrote %s (%d tables)\n", opts.out, len(f.Tables))
 	return nil
-}
-
-// connect opens a single connection. An empty dsn lets pgx fall back to the
-// standard libpq environment variables.
-func connect(ctx context.Context, dsn string) (*pgx.Conn, error) {
-	cfg, err := pgx.ParseConfig(dsn)
-	if err != nil {
-		return nil, err
-	}
-	return pgx.ConnectConfig(ctx, cfg)
 }
 
 // stampMeta fills the meta fields the reader doesn't know: id, timestamps, the

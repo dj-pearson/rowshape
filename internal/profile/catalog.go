@@ -23,6 +23,10 @@ type Options struct {
 	// Schemas restricts the read to these schemas. Empty means every non-system
 	// schema (everything but pg_catalog, information_schema, and pg_toast*).
 	Schemas []string
+	// Privacy is the level the profiler targets. It governs whether candidate
+	// value sets are even gathered (only under permissive); the final emit-time
+	// gate is ApplyPrivacy. Empty is treated as standard (never permissive).
+	Privacy Privacy
 }
 
 // querier is the subset of pgx used here, satisfied by both *pgx.Conn and
@@ -50,7 +54,7 @@ func read(ctx context.Context, conn *pgx.Conn, opts Options, profile bool) (*fix
 	// cheap close whether or not an error occurred.
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	r := &reader{tx: tx, attNames: map[uint32]map[int16]string{}}
+	r := &reader{tx: tx, attNames: map[uint32]map[int16]string{}, privacy: opts.Privacy}
 
 	f := &fixture.Fixture{
 		RowshapeFixture: fixture.FormatVersion,
@@ -88,7 +92,8 @@ func read(ctx context.Context, conn *pgx.Conn, opts Options, profile bool) (*fix
 type reader struct {
 	tx          querier
 	attNames    map[uint32]map[int16]string
-	serverMajor int // major server version, gating version-specific catalog columns
+	serverMajor int     // major server version, gating version-specific catalog columns
+	privacy     Privacy // target level; gates whether value sets are gathered
 }
 
 // majorVersion parses the leading integer of a Postgres server_version string

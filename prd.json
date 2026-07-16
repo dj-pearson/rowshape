@@ -405,8 +405,8 @@
           "verification": ["go test ./internal/profile/... (per-level field matrix from RFC §8.2, k-threshold, redact overrides, source-hash)"],
           "artifacts": ["internal/profile/privacy.go", "internal/profile/privacy_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 5
         },
         {

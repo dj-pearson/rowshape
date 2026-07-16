@@ -72,6 +72,12 @@ func (r *reader) profileTable(ctx context.Context, t tableRef, tbl *fixture.Tabl
 			col.Length = lengthStatsFromStrings(samples)
 			d, known := distinctValue(col.Distinct)
 			col.Format = inferTextFormat(samples, d, known)
+			// Under permissive, gather a candidate value set + frequencies from
+			// the sample. ApplyPrivacy makes the final call (k-threshold, §8.2);
+			// nothing is gathered under standard/strict, so values can't leak.
+			if r.privacy == PrivacyPermissive {
+				col.Values, col.Frequencies = valueSetFromSample(samples)
+			}
 		case "bytea":
 			// bytea gets length stats only, never a range (§6.1). opaque is the
 			// honest format for opaque bytes.
@@ -256,6 +262,35 @@ func distinctValue(f *fixture.Fact[int64]) (int64, bool) {
 		return 0, false
 	}
 	return f.Value, true
+}
+
+// valueSetFromSample derives a candidate value set and parallel frequencies from
+// a sample, for low-cardinality columns under permissive privacy. Values are
+// sorted for a deterministic, stable digest (RFC §11). Frequencies are the
+// sample proportions (estimates of the true frequency). It returns nil when the
+// column has too many distinct values to be a value set — the k-threshold and
+// the distinct<=50 gate are enforced later by ApplyPrivacy.
+func valueSetFromSample(samples []string) ([]string, []float64) {
+	if len(samples) == 0 {
+		return nil, nil
+	}
+	counts := map[string]int{}
+	for _, v := range samples {
+		counts[v]++
+	}
+	if len(counts) > permissiveMaxDistinct {
+		return nil, nil
+	}
+	values := make([]string, 0, len(counts))
+	for v := range counts {
+		values = append(values, v)
+	}
+	sort.Strings(values)
+	freqs := make([]float64, len(values))
+	for i, v := range values {
+		freqs[i] = round6(float64(counts[v]) / float64(len(samples)))
+	}
+	return values, freqs
 }
 
 // lengthStatsFromStrings computes character-length min/max/mean/p95 over a
