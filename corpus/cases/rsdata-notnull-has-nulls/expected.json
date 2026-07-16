@@ -1,0 +1,7 @@
+{
+  "description": "SET NOT NULL against a proven-nonzero null_fraction (2%, exact) will fail — RS-DATA error/FAIL.",
+  "verdict": "FAIL",
+  "findings": [
+    {"code": "RS-DATA", "severity": "error"}
+  ]
+}

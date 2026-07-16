@@ -128,6 +128,17 @@ func (e *Engine) factConfidence(path string) fixture.Confidence {
 	if !ok {
 		return absent
 	}
+	// orphan_fraction lives on a reference (keyed by local column), not on the
+	// column profile, so it resolves even when the FK column has no column entry
+	// (RFC §6.6).
+	if fact == "orphan_fraction" {
+		for _, ref := range tbl.References {
+			if ref.Column == col && ref.OrphanFraction != nil {
+				return ref.OrphanFraction.Confidence
+			}
+		}
+		return absent
+	}
 	c, ok := tbl.Columns[col]
 	if !ok {
 		return absent

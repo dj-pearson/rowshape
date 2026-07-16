@@ -848,8 +848,8 @@
           "verification": ["corpus RS-DATA cases green; capping suite (P2-T2) satisfied by RS-DATA-014"],
           "artifacts": ["internal/findings/rsdata.go", "internal/findings/rsdata_test.go", "corpus/cases/rsdata-*/*"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 9
         },
         {
