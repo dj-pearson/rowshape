@@ -85,7 +85,7 @@ func NewServer() *sdk.Server {
 	sdk.AddTool(s, &sdk.Tool{
 		Name:        "explain_finding",
 		Description: "Return the documentation and remediation for a finding code — remediation without a web search.",
-	}, scaffold[explainFindingInput]("explain_finding", "P3-T5"))
+	}, handleExplainFinding)
 
 	sdk.AddTool(s, &sdk.Tool{
 		Name:        "plan_against",

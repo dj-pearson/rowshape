@@ -1100,8 +1100,8 @@
           "verification": ["go test ./cmd/mcp/... (explain_finding matches CLI explain output; unknown code handled gracefully)"],
           "artifacts": ["cmd/mcp/tool_explain_finding.go", "cmd/mcp/tool_explain_finding_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 5
         },
         {
