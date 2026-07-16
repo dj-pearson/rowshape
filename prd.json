@@ -1046,8 +1046,8 @@
           "verification": ["go test ./cmd/mcp/... (server boots, lists exactly four tools, completes initialize handshake against an in-process client)"],
           "artifacts": ["cmd/mcp.go", "cmd/mcp/server.go", "cmd/mcp/server_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 2
         },
         {
