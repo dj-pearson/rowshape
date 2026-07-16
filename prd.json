@@ -1028,8 +1028,8 @@
           "verification": ["go test ./cmd/... (runner detection across Alembic/Prisma/Drizzle/raw-SQL fixtures; idempotent re-run; no DB connection attempted)"],
           "artifacts": ["cmd/init.go", "cmd/init_detect.go", "cmd/init_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 1
         },
         {
