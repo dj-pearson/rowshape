@@ -6,9 +6,9 @@
     "RFC-0001-rowshape-fixture-spec.md (Draft v0.3)"
   ],
   "build_status": {
-    "note": "Built section by section. Foundation + Phase 0 are complete; later phases are titled stubs awaiting fill.",
-    "sections_complete": ["meta", "project", "stack", "loop", "invariants", "kill_criteria", "phase-0"],
-    "sections_pending": ["phase-1", "phase-1b", "phase-2", "phase-3", "phase-4", "phase-5", "milestones"]
+    "note": "Built section by section. Foundation through phase-3 are filled with tasks; phase-4, phase-5, and milestones remain to be built out from the supporting documents.",
+    "sections_complete": ["meta", "project", "stack", "loop", "invariants", "kill_criteria", "phase-0", "phase-1", "phase-1b", "phase-2", "phase-3"],
+    "sections_pending": ["phase-4", "phase-5", "milestones"]
   },
 
   "project": {
@@ -920,7 +920,204 @@
         }
       ]
     },
-    { "id": "phase-3", "order": 4, "name": "MCP subcommand + init --agent + the agent rule", "weeks": "11", "source": "PRD §14 Phase 3, §8.2/§8.3", "status": "stub", "tasks": [] },
+    {
+      "id": "phase-3",
+      "order": 4,
+      "name": "MCP subcommand + init --agent + the agent rule",
+      "weeks": "11",
+      "ships": "`rowshape mcp` (the wedge): a subcommand of the same binary exposing four brutally-thin tools on the official Go SDK, plus `rowshape init` / `init --agent` which writes MCP config, the versioned agent rule, and a pre-commit backstop so an agent actually reaches for rowshape unprompted.",
+      "source": "PRD §14 Phase 3, §8.1, §8.2, §8.3; RFC §12",
+      "scope_note": "This phase closes the loop that the whole bet rests on (PRD §2, §15): getting rowshape into the agent's context and turn. The MCP tools are thin wrappers over surfaces already built in phase 2 (validate, explain, plan) and phase 1 (the fixture) — no new finding logic here. The differentiator is discipline: compact codes over fat schemas (MCPFold), and treating the agent rule as a versioned product artifact, not a README snippet.",
+      "definition_of_done": [
+        "`rowshape init` detects the stack (engine + migration runner: Alembic, Prisma, Drizzle, raw-SQL dir) and scaffolds a committable config without touching a production database.",
+        "`rowshape mcp` serves the four tools (describe_shape, validate_migration, explain_finding, plan_against) over the official Go SDK as a subcommand of the single binary — not a separate artifact.",
+        "MCP schemas are thin: findings return compact codes with explain_finding as the only expansion path, and no tool returns a full fixture unless a specific table is requested (PRD §8.2).",
+        "`rowshape init --agent` writes MCP client config, a versioned agent rule into AGENTS.md / CLAUDE.md / .cursor/rules, and a pre-commit hook running `rowshape validate` — all idempotent and re-runnable.",
+        "The agent rule ships versioned in the repo so improvements reach existing users on upgrade (PRD §8.3)."
+      ],
+      "tasks": [
+        {
+          "id": "P3-T1",
+          "title": "`rowshape init` — detect stack, scaffold config",
+          "description": "Implement the base `rowshape init` from PRD §8.1: detect the database engine and the migration runner in use (Alembic, Prisma, Drizzle, or a plain SQL directory) and scaffold a committable rowshape config. Detection only — init never connects to a production database and never runs a migration. This is the foundation `init --agent` (P3-T8..T10) extends.",
+          "depends_on": ["P0-T3"],
+          "spec_refs": ["PRD §8.1", "PRD §8 (runner detection: Alembic, Prisma, Drizzle, raw SQL)"],
+          "acceptance_criteria": [
+            "`rowshape init` detects the migration runner from repo layout (alembic.ini, prisma/schema.prisma, drizzle config, or a SQL migrations directory).",
+            "It writes a committable config file recording engine + detected runner; no network or database access occurs.",
+            "Re-running init is idempotent — it does not clobber user edits to the config."
+          ],
+          "verification": ["go test ./cmd/... (runner detection across Alembic/Prisma/Drizzle/raw-SQL fixtures; idempotent re-run; no DB connection attempted)"],
+          "artifacts": ["cmd/init.go", "cmd/init_detect.go", "cmd/init_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 1
+        },
+        {
+          "id": "P3-T2",
+          "title": "`rowshape mcp` subcommand scaffold on the official Go SDK",
+          "description": "Wire `rowshape mcp` as a subcommand of the single binary (not a separate artifact) using modelcontextprotocol/go-sdk over stdio. Register the four tool handlers (filled by P3-T3..T6) and advertise `rowshape_fixture` major-version compatibility per RFC §12. This is the wedge surface from PRD §8.2; the SDK is past v1.0.0 with a no-breaking-changes guarantee (PRD §7).",
+          "depends_on": ["P0-T3"],
+          "spec_refs": ["PRD §8.2", "PRD §7 (official Go MCP SDK, past v1.0.0)", "RFC §12"],
+          "acceptance_criteria": [
+            "`rowshape mcp` starts a stdio MCP server built on modelcontextprotocol/go-sdk within the same binary.",
+            "The server registers exactly the four tools named in PRD §8.2 and no others.",
+            "Server initialization completes a handshake with a reference MCP client in a test."
+          ],
+          "verification": ["go test ./cmd/mcp/... (server boots, lists exactly four tools, completes initialize handshake against an in-process client)"],
+          "artifacts": ["cmd/mcp.go", "cmd/mcp/server.go", "cmd/mcp/server_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 2
+        },
+        {
+          "id": "P3-T3",
+          "title": "MCP tool: describe_shape",
+          "description": "Expose `describe_shape` — hand the agent the shape before it writes SQL (PRD §8.2). Reads a committed fixture and returns a compact view of a requested table's relevant facts (row count, null fractions, distinct/uniqueness confidence, fan-out, format classes). Never returns a full fixture unless a specific table is requested; the whole point is that the agent reasons over four kilobytes, not forty gigabytes (RFC §2).",
+          "depends_on": ["P3-T2", "P1-T6"],
+          "spec_refs": ["PRD §8.2 (describe_shape; never return a full fixture unless asked for a table)", "RFC §2", "RFC §6"],
+          "acceptance_criteria": [
+            "describe_shape returns the shape for a named table, including confidence on each fact (RFC §7).",
+            "With no table specified it returns a table index/summary, not the full fixture body.",
+            "Output is compact — value-derived facts are summarized, honoring the fixture's privacy level (RFC §8)."
+          ],
+          "verification": ["go test ./cmd/mcp/... (describe_shape returns per-table shape + confidence; refuses to dump full fixture without a table target)"],
+          "artifacts": ["cmd/mcp/tool_describe_shape.go", "cmd/mcp/tool_describe_shape_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 3
+        },
+        {
+          "id": "P3-T4",
+          "title": "MCP tool: validate_migration (the loop-closer)",
+          "description": "Expose `validate_migration` — the loop-closer from PRD §8.2. Wraps the phase-2 `validate` orchestration and returns the Verdict as compact findings codes (RS-LOCK-001, etc.) plus the overall verdict and exit-code-equivalent, not prose. This is the tool that lets an agent write → validate → read the failure → fix → re-validate inside its own turn (PRD §2).",
+          "depends_on": ["P3-T2", "P2-T7", "P2-T3"],
+          "spec_refs": ["PRD §8.2 (validate_migration)", "PRD §2 (the agent loop)", "PRD §10 (verdict contract)"],
+          "acceptance_criteria": [
+            "validate_migration invokes the same validate path as the CLI and returns the same Verdict struct (one struct, PRD §10).",
+            "Findings are returned as compact codes + minimal fields, with `explain_finding` as the expansion path (not full remediation prose inline).",
+            "The tool surfaces the PASS/FAIL/WARN verdict and honors confidence capping (RFC §7.4) — an estimated-dependency finding never reports PASS."
+          ],
+          "verification": ["go test ./cmd/mcp/... (validate_migration returns the shared Verdict; compact codes; capping preserved end-to-end)"],
+          "artifacts": ["cmd/mcp/tool_validate_migration.go", "cmd/mcp/tool_validate_migration_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 4
+        },
+        {
+          "id": "P3-T5",
+          "title": "MCP tool: explain_finding",
+          "description": "Expose `explain_finding` — remediation without a web search (PRD §8.2). Wraps `rowshape explain <CODE>` (P2-T12) so an agent that received a compact code from validate_migration can expand exactly the finding it hit. This is the deliberate expansion path that keeps validate_migration's schema thin (MCPFold discipline).",
+          "depends_on": ["P3-T2", "P2-T12"],
+          "spec_refs": ["PRD §8.2 (explain_finding)", "PRD §10 (remediation mandatory on every error)"],
+          "acceptance_criteria": [
+            "explain_finding returns the same remediation content as the `rowshape explain <CODE>` CLI path.",
+            "Every error-severity finding code resolves to actionable remediation (a finding an agent can't act on is a bug, PRD §10).",
+            "An unknown code returns a clean tool error, not a crash."
+          ],
+          "verification": ["go test ./cmd/mcp/... (explain_finding matches CLI explain output; unknown code handled gracefully)"],
+          "artifacts": ["cmd/mcp/tool_explain_finding.go", "cmd/mcp/tool_explain_finding_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 5
+        },
+        {
+          "id": "P3-T6",
+          "title": "MCP tool: plan_against",
+          "description": "Expose `plan_against` — what would change on target X (PRD §8.2). Wraps the phase-2 `plan --against` dry-run (P2-T15). Read-only: returns the diff a migration would produce against a live target without applying anything, and (per PRD §15) validating against a live target upgrades the relevant facts to `exact`.",
+          "depends_on": ["P3-T2", "P2-T15"],
+          "spec_refs": ["PRD §8.2 (plan_against)", "PRD §8.1 (plan --against)", "PRD §11 (non-mutating)"],
+          "acceptance_criteria": [
+            "plan_against returns a dry-run diff against a provided target and applies nothing.",
+            "It reuses the CLI `plan --against` path (no reimplementation).",
+            "Read-only is enforced — the tool never issues a write against the target."
+          ],
+          "verification": ["go test ./cmd/mcp/... (plan_against returns dry-run diff; write-refusal enforced)"],
+          "artifacts": ["cmd/mcp/tool_plan_against.go", "cmd/mcp/tool_plan_against_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 6
+        },
+        {
+          "id": "P3-T7",
+          "title": "Thin-schema / MCPFold discipline + cross-link",
+          "description": "Enforce the token-discipline PRD §8.2 demands: four fat tool schemas in every session costs tokens and earns resentment. Keep schemas brutally thin, return findings as compact codes with explain_finding as the expansion, and never return a full fixture unless a specific table is asked for. Add a schema-size guard test and cross-link MCPFold in both READMEs (rowshape as MCPFold's flagship consumer).",
+          "depends_on": ["P3-T3", "P3-T4", "P3-T5", "P3-T6"],
+          "spec_refs": ["PRD §8.2 (MCPFold-shaped discipline; thin schemas; compact codes)"],
+          "acceptance_criteria": [
+            "A guard test asserts each tool's advertised input/output schema stays under a fixed token/character budget.",
+            "No tool returns a full fixture body by default; describe_shape requires a table target for detail.",
+            "README (CLI repo) and MCPFold README cross-link, naming rowshape as a flagship MCPFold consumer."
+          ],
+          "verification": ["go test ./cmd/mcp/... (schema-budget guard passes for all four tools)", "manual: both READMEs cross-link"],
+          "artifacts": ["cmd/mcp/schema_budget_test.go", "README.md", "docs/mcp.md"],
+          "type": "code/docs",
+          "passes": false,
+          "status": "todo",
+          "priority": 7
+        },
+        {
+          "id": "P3-T8",
+          "title": "`init --agent` — write MCP client config",
+          "description": "First of the three things `init --agent` writes (PRD §8.3): MCP config for the detected client — `.mcp.json`, or the client's own config path (Claude Code, Cursor, etc.). Detect the client from the repo/environment and register `rowshape mcp` as a server. An MCP server the agent never calls is decoration (PRD §8.3); this is what actually wires it in.",
+          "depends_on": ["P3-T1", "P3-T2"],
+          "spec_refs": ["PRD §8.3 (init --agent item 1: MCP config for the detected client)"],
+          "acceptance_criteria": [
+            "`rowshape init --agent` writes a valid MCP config registering `rowshape mcp` for the detected client.",
+            "The correct path/format is chosen per client (.mcp.json or the client's own location).",
+            "Writing is idempotent — re-running merges rather than duplicating the server entry."
+          ],
+          "verification": ["go test ./cmd/... (MCP config written for each supported client; idempotent merge; valid JSON)"],
+          "artifacts": ["cmd/init_agent.go", "cmd/init_agent_mcp.go", "cmd/init_agent_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 8
+        },
+        {
+          "id": "P3-T9",
+          "title": "`init --agent` — the versioned agent rule",
+          "description": "Second thing `init --agent` writes (PRD §8.3): an agent rule into AGENTS.md / CLAUDE.md / .cursor/rules — before writing a migration call describe_shape; before opening a PR call validate_migration; never hand-wave a FAIL. The rule text is a product artifact iterated against real agent sessions like a prompt, and it ships versioned in the repo so improvements reach existing users on upgrade.",
+          "depends_on": ["P3-T1", "P3-T8"],
+          "spec_refs": ["PRD §8.3 (init --agent item 2: agent rule; versioned; reaches existing users on upgrade)", "RFC §12 (versioning)"],
+          "acceptance_criteria": [
+            "`init --agent` writes the rule into the detected agent-rule file(s) (AGENTS.md / CLAUDE.md / .cursor/rules).",
+            "The rule text is stored versioned in the repo and carries a version marker so `init` can update it in place on upgrade.",
+            "Re-running updates an outdated managed block without clobbering surrounding user content."
+          ],
+          "verification": ["go test ./cmd/... (rule written to each target file; versioned managed-block update replaces old rule, preserves user text)"],
+          "artifacts": ["cmd/init_agent_rule.go", "internal/agentrule/rule.md", "internal/agentrule/version.go", "cmd/init_agent_rule_test.go"],
+          "type": "code/product",
+          "passes": false,
+          "status": "todo",
+          "priority": 9
+        },
+        {
+          "id": "P3-T10",
+          "title": "`init --agent` — pre-commit hook backstop",
+          "description": "Third thing `init --agent` writes (PRD §8.3): a pre-commit hook running `rowshape validate` — the backstop for when the agent ignores the rule, which it sometimes will. Install a hook (or extend an existing pre-commit config) that blocks a commit on a FAIL verdict, so the guarantee doesn't depend solely on the agent honoring the rule.",
+          "depends_on": ["P3-T1", "P2-T7"],
+          "spec_refs": ["PRD §8.3 (init --agent item 3: pre-commit hook running rowshape validate)"],
+          "acceptance_criteria": [
+            "`init --agent` installs a pre-commit hook that runs `rowshape validate` and blocks the commit on a FAIL.",
+            "It integrates with an existing pre-commit framework if one is present, else installs a native git hook.",
+            "Installation is idempotent and clearly reversible (documented uninstall)."
+          ],
+          "verification": ["go test ./cmd/... (hook installed; blocks on FAIL verdict; idempotent; integrates with existing pre-commit config)"],
+          "artifacts": ["cmd/init_agent_hook.go", "cmd/init_agent_hook_test.go"],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 10
+        }
+      ]
+    },
     { "id": "phase-4", "order": 5, "name": "GitHub Action, docs site (Cloudflare Pages), the agent-loop demo", "weeks": "12", "source": "PRD §14 Phase 4, §9, §13", "status": "stub", "tasks": [] },
     { "id": "phase-5", "order": 6, "name": "Findings breadth, version matrix depth, MySQL, then cloud only if pull-through is real", "weeks": "13+", "source": "PRD §14 Phase 5, §8.4/§9/§9.1", "status": "stub", "deferred": true, "tasks": [] }
   ],
