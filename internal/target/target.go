@@ -8,6 +8,7 @@ package target
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync/atomic"
 
@@ -76,7 +77,12 @@ func NewEphemeral(ctx context.Context, adminDSN string) (*Ephemeral, error) {
 	defer admin.Close(ctx)
 
 	name := ephemeralName(ephemeralCounter.Add(1))
-	// CREATE DATABASE cannot run inside a transaction; a plain Exec is correct.
+	// Drop any stale database of the same name left by a crashed prior run of
+	// this process, then create fresh. DROP/CREATE DATABASE cannot run in a
+	// transaction, so these are plain Execs.
+	if _, err := admin.Exec(ctx, "DROP DATABASE IF EXISTS "+quoteIdent(name)+" WITH (FORCE)"); err != nil {
+		return nil, fmt.Errorf("reset disposable database: %w", err)
+	}
 	if _, err := admin.Exec(ctx, "CREATE DATABASE "+quoteIdent(name)); err != nil {
 		return nil, fmt.Errorf("create disposable database: %w", err)
 	}
@@ -114,9 +120,11 @@ func (e *Ephemeral) Close(ctx context.Context) error {
 	return nil
 }
 
-// ephemeralName builds a unique, valid database name for a disposable target.
+// ephemeralName builds a process-unique, valid database name for a disposable
+// target. The PID keeps names distinct across the parallel test processes (and
+// concurrent CLI runs); the counter keeps them distinct within a process.
 func ephemeralName(n uint64) string {
-	return fmt.Sprintf("rowshape_hydrate_%d", n)
+	return fmt.Sprintf("rowshape_hydrate_%d_%d", os.Getpid(), n)
 }
 
 // quoteIdent double-quotes a SQL identifier, escaping embedded quotes.

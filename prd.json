@@ -498,8 +498,8 @@
           "artifacts": ["test/pathology/email_null.yaml", "test/pathology/fanout_tail.yaml", "test/pathology/pathology_test.go"],
           "type": "code/gate",
           "gate": "kill_criteria Week 6",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 10
         },
         {

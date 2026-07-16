@@ -269,11 +269,12 @@ func fakeUUID(n int64) string {
 	return fmt.Sprintf("00000000-0000-4000-8000-%012d", n)
 }
 
-// parentIDValue maps a parent ordinal to the id value the parent table would
-// have generated for a unique identity column (ordinal-derived, see
-// generateValue). Parent identity ids conventionally start at 1.
+// parentIDValue maps a parent ordinal to the id value the parent table generated
+// for it. A unique numeric id with no range is generated as its ordinal (see
+// generateValue -> fakeValue -> numericInRange), so a foreign key referencing it
+// uses the same ordinal — keeping child references consistent with parent keys.
 func parentIDValue(parentOrdinal int64) int64 {
-	return parentOrdinal + 1
+	return parentOrdinal
 }
 
 // parentTable extracts schema.table from a reference target schema.table.column.
