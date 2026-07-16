@@ -52,12 +52,12 @@ jobs:
         run: go test ./...
 
   canonical-cross-platform:
-    # RFC §11 / §13: the canonical form and digest MUST be byte-identical across
-    # platforms. The fixture package's golden + digest-stability tests therefore
-    # run on linux, darwin, and windows (P1-T2 verification). This job is scoped
-    # to ./internal/fixture/... — it needs no Postgres, so it stays cheap and
-    # independent of the phase-2 PG version matrix.
-    name: canonical form (cross-platform)
+    # RFC §11 / §13: the canonical form, digest, and hydrate output MUST be
+    # byte-identical across platforms. The fixture and hydrate packages' golden,
+    # digest-stability, and determinism tests therefore run on linux, darwin, and
+    # windows (P1-T2 / P1-T7 verification). These need no Postgres, so the job
+    # stays cheap and independent of the phase-2 PG version matrix.
+    name: canonical form + hydrate (cross-platform)
     strategy:
       fail-fast: false
       matrix:
@@ -69,8 +69,8 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
-      - name: Test canonical form + digest
-        run: go test ./internal/fixture/...
+      - name: Test canonical form, digest, and hydrate determinism
+        run: go test ./internal/fixture/... ./internal/hydrate/...
 
   lint:
     name: lint

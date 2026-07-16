@@ -444,8 +444,8 @@
           "verification": ["go test ./internal/hydrate/... (determinism across platforms in CI matrix, null_fraction tolerance, fan-out distribution assertion, scale-prefix stability)"],
           "artifacts": ["cmd/hydrate.go", "internal/hydrate/engine.go", "internal/hydrate/prng.go", "internal/hydrate/engine_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 7
         },
         {
