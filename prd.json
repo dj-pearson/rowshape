@@ -625,8 +625,8 @@
           "verification": ["go test ./internal/profile/... (cap triggers omission + WARN; no silent skip)"],
           "artifacts": ["internal/profile/escalation.go (cap)", "internal/profile/escalation_cap_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 4
         },
         {

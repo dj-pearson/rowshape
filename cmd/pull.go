@@ -15,11 +15,12 @@ import (
 
 // pullOptions holds the flags for `rowshape pull`.
 type pullOptions struct {
-	dsn     string
-	out     string
-	privacy string
-	schemas []string
-	iKnow   bool
+	dsn               string
+	out               string
+	privacy           string
+	schemas           []string
+	iKnow             bool
+	maxEscalationRows int64
 }
 
 // newPullCmd reads production shape read-only and emits a committable
@@ -29,7 +30,7 @@ type pullOptions struct {
 // profiling (P1-T4), privacy redaction (P1-T5), and the assembled emitter
 // (P1-T6) layer on top.
 func newPullCmd() *cobra.Command {
-	opts := &pullOptions{out: "rowshape.yaml", privacy: "standard"}
+	opts := &pullOptions{out: "rowshape.yaml", privacy: "standard", maxEscalationRows: profile.DefaultMaxEscalationRows}
 	cmd := &cobra.Command{
 		Use:   "pull [connection-url]",
 		Short: "Read a database's shape (read-only) and emit rowshape.yaml",
@@ -52,6 +53,8 @@ func newPullCmd() *cobra.Command {
 	f.StringVar(&opts.privacy, "privacy", opts.privacy, "privacy level: strict | standard | permissive")
 	f.StringSliceVar(&opts.schemas, "schema", nil, "restrict to these schemas (default: all non-system)")
 	f.BoolVar(&opts.iKnow, "i-know", false, "override the refusal to run as a superuser")
+	f.Int64Var(&opts.maxEscalationRows, "max-escalation-rows", opts.maxEscalationRows,
+		"skip uniqueness escalation on tables larger than this (0 = default, negative = no cap)")
 	return cmd
 }
 
@@ -90,7 +93,14 @@ func runPull(ctx context.Context, opts *pullOptions) error {
 		return toolError()
 	}
 
-	f, err := profile.Fast(ctx, conn, profile.Options{Schemas: opts.schemas, Privacy: level})
+	f, err := profile.Fast(ctx, conn, profile.Options{
+		Schemas:           opts.schemas,
+		Privacy:           level,
+		MaxEscalationRows: opts.maxEscalationRows,
+		Warn: func(msg string) {
+			fmt.Fprintf(os.Stderr, "rowshape pull: warning: %s\n", msg)
+		},
+	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "rowshape pull: profiling failed: %v\n", err)
 		return toolError()

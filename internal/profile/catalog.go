@@ -27,6 +27,13 @@ type Options struct {
 	// value sets are even gathered (only under permissive); the final emit-time
 	// gate is ApplyPrivacy. Empty is treated as standard (never permissive).
 	Privacy Privacy
+	// MaxEscalationRows is the soft cost ceiling for auto-escalation (RFC §14.5).
+	// 0 uses DefaultMaxEscalationRows; a negative value disables the ceiling.
+	MaxEscalationRows int64
+	// Warn, if set, receives operational warnings — notably a column whose
+	// uniqueness escalation was skipped because the table exceeds the cap. pull
+	// wires this to stderr; silent truncation is forbidden.
+	Warn func(string)
 }
 
 // querier is the subset of pgx used here, satisfied by both *pgx.Conn and
@@ -54,7 +61,13 @@ func read(ctx context.Context, conn *pgx.Conn, opts Options, profile bool) (*fix
 	// cheap close whether or not an error occurred.
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	r := &reader{tx: tx, attNames: map[uint32]map[int16]string{}, privacy: opts.Privacy}
+	r := &reader{
+		tx:                tx,
+		attNames:          map[uint32]map[int16]string{},
+		privacy:           opts.Privacy,
+		maxEscalationRows: effectiveCap(opts.MaxEscalationRows),
+		warn:              opts.Warn,
+	}
 
 	f := &fixture.Fixture{
 		RowshapeFixture: fixture.FormatVersion,
@@ -102,11 +115,20 @@ func read(ctx context.Context, conn *pgx.Conn, opts Options, profile bool) (*fix
 // reader holds a read transaction and a per-relation attribute-name cache so
 // column numbers in constraints and indexes resolve to names cheaply.
 type reader struct {
-	tx          querier
-	attNames    map[uint32]map[int16]string
-	serverMajor int      // major server version, gating version-specific catalog columns
-	privacy     Privacy  // target level; gates whether value sets are gathered
-	escalated   []string // qualified columns auto-escalated to a full pass (P1b-T3)
+	tx                querier
+	attNames          map[uint32]map[int16]string
+	serverMajor       int      // major server version, gating version-specific catalog columns
+	privacy           Privacy  // target level; gates whether value sets are gathered
+	escalated         []string // qualified columns auto-escalated to a full pass (P1b-T3)
+	maxEscalationRows int64    // soft cost ceiling for escalation (P1b-T4)
+	warn              func(string)
+}
+
+// warnf emits an operational warning if a sink is configured.
+func (r *reader) warnf(format string, args ...any) {
+	if r.warn != nil {
+		r.warn(fmt.Sprintf(format, args...))
+	}
 }
 
 // majorVersion parses the leading integer of a Postgres server_version string

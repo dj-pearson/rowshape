@@ -13,6 +13,28 @@ import (
 // the columns where a wrong answer costs an outage get the expensive treatment.
 const escalationThreshold = 0.95
 
+// DefaultMaxEscalationRows is the soft cost ceiling for auto-escalation (RFC
+// §14.5 / OQ-ESCALATION-CEILING). A fast pull that quietly full-scans a
+// 400M-row table because one column looked unique is a bad surprise, so above
+// this row count escalation is skipped — `unique` is omitted (safe, §7.4) — and
+// a WARN names exactly what was skipped and why. Silent truncation is forbidden.
+const DefaultMaxEscalationRows = 50_000_000
+
+// effectiveCap resolves the configured cap: 0 means the default, a negative
+// value means no cap (unlimited).
+func effectiveCap(configured int64) int64 {
+	if configured == 0 {
+		return DefaultMaxEscalationRows
+	}
+	return configured
+}
+
+// overEscalationCap reports whether a table is too large to escalate under the
+// active cap. A non-positive cap disables the ceiling.
+func (r *reader) overEscalationCap(rows int64) bool {
+	return r.maxEscalationRows > 0 && rows > r.maxEscalationRows
+}
+
 // shouldEscalate reports whether a column is dangerous enough to pay for a full
 // pass: it looks nearly unique (estimated distinct/rows > 0.95) yet has no
 // catalog proof of uniqueness. A column already proven unique by a constraint has

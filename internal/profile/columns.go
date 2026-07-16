@@ -120,10 +120,17 @@ func (r *reader) profileTable(ctx context.Context, t tableRef, tbl *fixture.Tabl
 		// interesting default: the cheap fast path stays cheap, but the columns
 		// where a wrong answer costs an outage get proven (RFC §7.3, P1b-T3).
 		if shouldEscalate(col, rows) {
-			if err := r.escalateColumn(ctx, t.schema, t.name, name, &col); err != nil {
-				return err
+			if r.overEscalationCap(rows) {
+				// Over the soft cost ceiling (RFC §14.5): omit `unique` (safe, §7.4)
+				// rather than silently full-scanning a huge table, and say so.
+				r.warnf("skipped uniqueness escalation on %s.%s: table has ~%d rows, over the --max-escalation-rows cap of %d; leaving `unique` unproven (omitted) rather than full-scanning",
+					t.qualified, name, rows, r.maxEscalationRows)
+			} else {
+				if err := r.escalateColumn(ctx, t.schema, t.name, name, &col); err != nil {
+					return err
+				}
+				r.escalated = append(r.escalated, t.qualified+"."+name)
 			}
-			r.escalated = append(r.escalated, t.qualified+"."+name)
 		}
 
 		tbl.Columns[name] = col
