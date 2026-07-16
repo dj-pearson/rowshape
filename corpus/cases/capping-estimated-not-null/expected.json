@@ -1,0 +1,7 @@
+{
+  "description": "SET NOT NULL against an ESTIMATED null_fraction cannot PASS (§7.4) — it WARNs and names the resolving command.",
+  "verdict": "WARN",
+  "findings": [
+    {"code": "RS-DATA", "severity": "warn", "resolve_contains": "pull --exact"}
+  ]
+}

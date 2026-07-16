@@ -1,0 +1,14 @@
+rowshape_fixture: "1"
+meta:
+  id: capping-proven-unique-ok
+  engine: {name: postgres, version: "16"}
+  privacy: standard
+  profile: {mode: targeted, escalated: [public.users.email]}
+tables:
+  public.users:
+    rows: {value: 1200000, confidence: exact}
+    columns:
+      id: {type: bigint, nullable: false, unique: {value: true, confidence: exact, via: constraint}, generated: identity}
+      # uniqueness PROVEN exact via a probe on a full pass — ADD UNIQUE is safe.
+      email: {type: text, nullable: false, distinct: {value: 1200000, confidence: measured, via: hll, error: 0.008}, unique: {value: true, confidence: exact, via: probe}, format: email}
+    constraints: [{name: users_pkey, kind: primary_key, columns: [id]}]

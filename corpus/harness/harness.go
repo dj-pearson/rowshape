@@ -35,6 +35,10 @@ var KnownVerdicts = map[string]bool{"PASS": true, "WARN": true, "FAIL": true}
 type ExpectedFinding struct {
 	Code     string `json:"code"`
 	Severity string `json:"severity"`
+	// ResolveContains, when set, requires the finding's remediation to name a
+	// resolving command containing this substring — the "here is how to turn this
+	// WARN into a PASS" contract of confidence capping (RFC §7.4).
+	ResolveContains string `json:"resolve_contains,omitempty"`
 }
 
 // Expected is the expected verdict for a case.
@@ -136,9 +140,17 @@ func (c Case) Validate() error {
 	return nil
 }
 
+// ProducedFinding is a finding a validator actually emitted, enough to check
+// both the code and the capping contract (that the remediation names a command).
+type ProducedFinding struct {
+	Code        string
+	Severity    string
+	Remediation string
+}
+
 // Validator runs a migration against a fixture and returns the verdict and the
-// finding codes it produced. `validate` implements this in P2-T7; until then the
-// harness runs only the well-formedness and coverage checks.
+// findings it produced. `validate` implements this in P2-T7; until then the
+// harness runs only the well-formedness, coverage, and capping-contract checks.
 type Validator interface {
-	Validate(c Case) (verdict string, codes []string, err error)
+	Validate(c Case) (verdict string, findings []ProducedFinding, err error)
 }

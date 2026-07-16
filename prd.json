@@ -714,8 +714,8 @@
           "verification": ["corpus capping suite present; goes GREEN only once P2-T4 lands"],
           "artifacts": ["corpus/cases/capping-*/*"],
           "type": "test",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 2
         },
         {
