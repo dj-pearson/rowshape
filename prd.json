@@ -772,8 +772,8 @@
           "verification": ["go test ./internal/estimate/... (model table; version-conditional divergence; no-version refusal; bucket output)"],
           "artifacts": ["internal/estimate/models.go", "internal/estimate/versioned.go", "internal/estimate/estimate_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 5
         },
         {

@@ -102,3 +102,30 @@ CLI shows organic pull-through (PRD §14 / §14.1 week-20 kill criterion).
 A negative gate result is recorded as an explicit **stop / reassess** decision —
 not silently ignored, not a reason to push harder on momentum alone. Cloud tasks
 P5-T8..P5-T14 stay `blocked` until this gate is explicitly marked passed here.
+
+---
+
+## D-006 — Version-conditional extrapolation boundary is PG 11, not 11↔16 (P2-T5)
+
+**Context:** P2-T5 acceptance criterion 4 asks for "a version-conditional case
+[that] differs correctly between PG 11 and PG 16." Per RFC §9.1 the operation
+whose cost is version-conditional is `ADD COLUMN ... DEFAULT`: PG **11+**
+fast-paths a *non-volatile* default into the catalog (O(1), instant) instead of
+rewriting the table; a *volatile* default rewrites on every version, and
+`SET NOT NULL` full-scans on every version.
+
+**Decision:** The catalog fast-path landed in PG 11, so PG 11 and PG 16 behave
+**identically** for this operation — correctly, not by omission. The genuine
+divergence is at the **10 → 11** boundary: PG 10 rewrites the whole table (a
+heavy, user-visible bucket) while PG 11 and PG 16 are a catalog-only instant.
+
+`internal/estimate` therefore asserts version-conditional divergence across the
+**real** boundary (PG 10 vs 11 vs 16 in `TestVersionConditionalDivergence`),
+including that PG 11 == PG 16. Fabricating a false 11-vs-16 difference — or
+modeling the PG 12 `SET NOT NULL`/`CHECK` scan-skip, which the P2-T5 description
+explicitly excludes ("SET NOT NULL still full-scans") — would contradict the
+spec, so neither was done (loop rule: spec wins; never fake a pass).
+
+The corpus PG-version matrix (P2-T13, `ROWSHAPE_PG_VERSION` 11–17) is where
+version-conditioned corpus *runs* live; the model's version-conditionality is
+proven here in the estimate unit tests named by P2-T5's verification.
