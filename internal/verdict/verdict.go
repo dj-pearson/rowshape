@@ -25,11 +25,11 @@ const (
 // (INV-VERDICT-SHAPE); human output is always a rendering of this struct, never
 // a separate code path.
 type Result struct {
-	Rowshape   string      `json:"rowshape"`    // format/contract version tag
-	Verdict    string      `json:"verdict"`     // PASS | FAIL | WARN
-	Fixture    FixtureRef  `json:"fixture"`     // subject of the verdict
-	DurationMs int64       `json:"duration_ms"` // wall time of the run
-	Findings   []Finding   `json:"findings"`    // zero or more findings
+	Rowshape   string     `json:"rowshape"`    // format/contract version tag
+	Verdict    string     `json:"verdict"`     // PASS | FAIL | WARN
+	Fixture    FixtureRef `json:"fixture"`     // subject of the verdict
+	DurationMs int64      `json:"duration_ms"` // wall time of the run
+	Findings   []Finding  `json:"findings"`    // zero or more findings
 }
 
 // FixtureRef identifies the fixture a verdict was computed against.
