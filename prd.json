@@ -195,7 +195,8 @@
           "artifacts": ["docs/DECISIONS.md"],
           "type": "ops",
           "passes": false,
-          "status": "todo",
+          "status": "blocked",
+          "blocked_reason": "Automatable part done: canonical Go module path github.com/rowshape/rowshape decided and recorded in docs/DECISIONS.md (D-001). The three external reservations (register rowshape.com, create the `rowshape` GitHub org, reserve the `rowshape` npm name) require owner action and cannot be performed from this environment; tracked as a checklist in docs/DECISIONS.md D-002. Module path is settled, so downstream code tasks (P0-T3+) are unblocked.",
           "priority": 1
         },
         {
