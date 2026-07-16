@@ -1,0 +1,7 @@
+{
+  "description": "SET NOT NULL on a column that is 3.2% NULL (exact) fails on the existing NULL rows.",
+  "verdict": "FAIL",
+  "findings": [
+    {"code": "RS-DATA", "severity": "error"}
+  ]
+}

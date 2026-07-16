@@ -1,0 +1,25 @@
+rowshape_fixture: "1"
+meta:
+  id: corpus-cascade-fanout
+  engine: {name: postgres, version: "16"}
+  privacy: standard
+  profile: {mode: fast, escalated: []}
+tables:
+  public.users:
+    rows: {value: 1200000, confidence: exact}
+    columns:
+      id: {type: bigint, nullable: false, unique: {value: true, confidence: exact, via: constraint}, generated: identity}
+      last_seen_at: {type: timestamp with time zone, nullable: true, null_fraction: {value: 0.01, confidence: exact}}
+    constraints: [{name: users_pkey, kind: primary_key, columns: [id]}]
+  public.orders:
+    rows: {value: 10000000, confidence: exact}
+    columns:
+      id: {type: bigint, nullable: false, unique: {value: true, confidence: exact, via: constraint}, generated: identity}
+      user_id: {type: bigint, nullable: false, distinct: 1198000}
+    constraints: [{name: orders_pkey, kind: primary_key, columns: [id]}]
+    references:
+      - column: user_id
+        to: public.users.id
+        on_delete: cascade
+        fanout: {mean: 8.4, p50: 3, p95: 41, max: 12902, confidence: measured}
+        orphan_fraction: {value: 0, confidence: exact, via: constraint}

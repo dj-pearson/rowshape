@@ -696,8 +696,8 @@
           "verification": ["corpus test harness runs green on the seeded triples (against PG 16 initially)"],
           "artifacts": ["corpus/README.md", "corpus/cases/*/{migration,fixture.yaml,expected.json}", "corpus/harness/*"],
           "type": "code/asset",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 1
         },
         {
