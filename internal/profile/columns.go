@@ -115,6 +115,17 @@ func (r *reader) profileTable(ctx context.Context, t tableRef, tbl *fixture.Tabl
 			col.Format = fmtUUID
 		}
 
+		// Auto-escalate a dangerous column — looks unique but unproven — to a full
+		// pass: measured distinct (HLL) + exact uniqueness (probe). This is the
+		// interesting default: the cheap fast path stays cheap, but the columns
+		// where a wrong answer costs an outage get proven (RFC §7.3, P1b-T3).
+		if shouldEscalate(col, rows) {
+			if err := r.escalateColumn(ctx, t.schema, t.name, name, &col); err != nil {
+				return err
+			}
+			r.escalated = append(r.escalated, t.qualified+"."+name)
+		}
+
 		tbl.Columns[name] = col
 	}
 

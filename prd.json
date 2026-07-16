@@ -607,8 +607,8 @@
           "verification": ["go test ./internal/profile/... (escalation predicate selects the right column set; escalated list + mode recorded)"],
           "artifacts": ["internal/profile/escalation.go", "internal/profile/escalation_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 3
         },
         {

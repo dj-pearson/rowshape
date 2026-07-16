@@ -208,13 +208,15 @@ func TestFastProfiling(t *testing.T) {
 		t.Fatalf("no columns profiled")
 	}
 
-	// Sample-derived scalar facts are estimated (RFC §7.1).
+	// Sample-derived null fractions are estimated (RFC §7.1). Distinct is
+	// estimated too, EXCEPT on columns auto-escalation upgrades to a measured HLL
+	// count (the look-unique-but-unproven columns, P1b-T3) — both are valid.
 	for name, col := range tbl.Columns {
 		if col.NullFraction != nil && col.NullFraction.Confidence != "estimated" {
 			t.Errorf("%s null_fraction confidence = %q, want estimated", name, col.NullFraction.Confidence)
 		}
-		if col.Distinct != nil && col.Distinct.Confidence != "estimated" {
-			t.Errorf("%s distinct confidence = %q, want estimated", name, col.Distinct.Confidence)
+		if col.Distinct != nil && col.Distinct.Confidence != "estimated" && col.Distinct.Confidence != "measured" {
+			t.Errorf("%s distinct confidence = %q, want estimated or measured", name, col.Distinct.Confidence)
 		}
 	}
 

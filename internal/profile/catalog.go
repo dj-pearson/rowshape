@@ -84,6 +84,18 @@ func read(ctx context.Context, conn *pgx.Conn, opts Options, profile bool) (*fix
 		}
 		f.Tables[t.qualified] = tbl
 	}
+
+	// Record the profile mode: `targeted` if any column was auto-escalated to a
+	// full pass, otherwise `fast` (RFC §7.3, P1b-T3).
+	if profile {
+		if len(r.escalated) > 0 {
+			sort.Strings(r.escalated)
+			f.Meta.Profile.Mode = "targeted"
+			f.Meta.Profile.Escalated = r.escalated
+		} else {
+			f.Meta.Profile.Mode = "fast"
+		}
+	}
 	return f, nil
 }
 
@@ -92,8 +104,9 @@ func read(ctx context.Context, conn *pgx.Conn, opts Options, profile bool) (*fix
 type reader struct {
 	tx          querier
 	attNames    map[uint32]map[int16]string
-	serverMajor int     // major server version, gating version-specific catalog columns
-	privacy     Privacy // target level; gates whether value sets are gathered
+	serverMajor int      // major server version, gating version-specific catalog columns
+	privacy     Privacy  // target level; gates whether value sets are gathered
+	escalated   []string // qualified columns auto-escalated to a full pass (P1b-T3)
 }
 
 // majorVersion parses the leading integer of a Postgres server_version string

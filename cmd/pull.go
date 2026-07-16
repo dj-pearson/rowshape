@@ -128,7 +128,8 @@ func stampMeta(f *fixture.Fixture, privacy string) {
 	f.Meta.GeneratedAt = now
 	f.Meta.Generator = "rowshape/" + version
 	f.Meta.Privacy = privacy
-	f.Meta.Profile.Mode = "fast"
+	// Profile.Mode is set by the profiler (fast, or targeted when auto-escalation
+	// fires — P1b-T3); don't override it here.
 	f.Meta.Profile.ScannedAt = now
 }
 
