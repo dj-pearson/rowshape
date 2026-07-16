@@ -129,3 +129,39 @@ spec, so neither was done (loop rule: spec wins; never fake a pass).
 The corpus PG-version matrix (P2-T13, `ROWSHAPE_PG_VERSION` 11–17) is where
 version-conditioned corpus *runs* live; the model's version-conditionality is
 proven here in the estimate unit tests named by P2-T5's verification.
+
+## D-007 — Corpus version matrix extended to PG 10 to exercise the real boundary (P5-T3)
+
+**Context:** P5-T3 asks for corpus cases that "cover version-divergent behaviors
+… across PG 11-17" and cost models that "produce version-correct buckets on each
+major." But D-006 established that within PG **11–17** the operations rowshape
+models do **not** diverge: the non-volatile-`DEFAULT` catalog fast-path landed in
+PG 11, so PG 11 == PG 17 for `ADD COLUMN … DEFAULT`; a volatile default rewrites
+on every version; `SET NOT NULL` full-scans on every version; a bare (non-`CHECK`
+-assisted) `SET NOT NULL` gains nothing from the PG 12 optimization. Fabricating a
+false 11-vs-17 divergence would contradict the spec (loop rule: spec wins; never
+fake a pass).
+
+**Decision:** The genuine version boundary is **10 → 11**, so the version matrix
+is extended down to PG **10** (`.github/workflows/corpus.yml` now runs 10–17). A
+single new corpus case, `version-add-column-default`, carries the same migration
+across that boundary: `ADD COLUMN … DEFAULT '<const>'` is a catalog-only instant
+(PASS) on PG 11+ but a full-table `ACCESS EXCLUSIVE` rewrite (RS-LOCK WARN) on PG
+10. This is the RFC §9.1 point made executable — the older databases most likely
+to hold scary migrations are exactly where the model must not be confidently
+wrong.
+
+To express "right on one major, wrong on another" the corpus format gains an
+optional per-major override: `expected.json` may carry a `version_verdicts` map
+(keyed by the major the matrix drives, e.g. `"10"`) that overrides the default
+verdict/findings for that major only. `Expected.ForMajor(major)` resolves it, and
+`TestCorpusVerdicts` compares against the resolved expectation for the major under
+test. Every other case keeps a single verdict that holds across the whole matrix.
+
+The model's per-major verdict is also proven **offline** (no live server) in
+`internal/findings/version_matrix_test.go`, which drives the case through
+`BuildResult` for PG 10–17 and asserts WARN on 10, PASS on 11–17. Deepening the
+model further (e.g. modeling the PG 12 `CHECK`-assisted `SET NOT NULL` scan-skip)
+would require a new duration finding for a *different* migration shape (a
+pre-existing validated `CHECK (col IS NOT NULL)`); it is deliberately left for a
+follow-up rather than bolted onto this boundary case.

@@ -41,11 +41,35 @@ type ExpectedFinding struct {
 	ResolveContains string `json:"resolve_contains,omitempty"`
 }
 
-// Expected is the expected verdict for a case.
+// VersionExpectation overrides the expected verdict and findings for a specific
+// Postgres major. A version-conditional migration is right on one major and wrong
+// on another (RFC §9.1) — e.g. ADD COLUMN ... DEFAULT <const> rewrites the whole
+// table on PG 10 (a WARN) but is a catalog-only instant on PG 11+ (a PASS). A
+// single expected verdict cannot express that; this does.
+type VersionExpectation struct {
+	Verdict  string            `json:"verdict"`
+	Findings []ExpectedFinding `json:"findings"`
+}
+
+// Expected is the expected verdict for a case. Verdict/Findings are the default
+// that holds on every major unless overridden by an entry in VersionVerdicts.
 type Expected struct {
 	Description string            `json:"description"`
 	Verdict     string            `json:"verdict"`
 	Findings    []ExpectedFinding `json:"findings"`
+	// VersionVerdicts overrides the default for specific PG majors (keyed by the
+	// major string the matrix drives, e.g. "10"). This is how a case declares that
+	// it differs correctly across the version matrix (RFC §9.1, PRD §12).
+	VersionVerdicts map[string]VersionExpectation `json:"version_verdicts,omitempty"`
+}
+
+// ForMajor resolves the expected verdict and findings for a Postgres major: the
+// per-version override when one is declared, else the case default.
+func (e Expected) ForMajor(major string) (verdict string, findings []ExpectedFinding) {
+	if o, ok := e.VersionVerdicts[major]; ok {
+		return o.Verdict, o.Findings
+	}
+	return e.Verdict, e.Findings
 }
 
 // Case is one corpus triple.
@@ -135,6 +159,19 @@ func (c Case) Validate() error {
 	for _, f := range c.Expected.Findings {
 		if !KnownCodes[f.Code] {
 			return fmt.Errorf("unknown finding code %q", f.Code)
+		}
+	}
+	for major, ov := range c.Expected.VersionVerdicts {
+		if !KnownVerdicts[ov.Verdict] {
+			return fmt.Errorf("version_verdicts[%s]: unknown expected verdict %q", major, ov.Verdict)
+		}
+		if ov.Verdict != "PASS" && len(ov.Findings) == 0 {
+			return fmt.Errorf("version_verdicts[%s] expects %s but names no findings", major, ov.Verdict)
+		}
+		for _, f := range ov.Findings {
+			if !KnownCodes[f.Code] {
+				return fmt.Errorf("version_verdicts[%s]: unknown finding code %q", major, f.Code)
+			}
 		}
 	}
 	return nil

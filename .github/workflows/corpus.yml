@@ -1,11 +1,14 @@
 name: Corpus
 
 # Runs the corpus — the (migration, fixture, expected verdict) triples — against
-# every supported Postgres major, 11 through 17 (PRD §12, §13). A finding that is
-# right on 16 can be wrong on 11; this matrix is what catches it. Each job
-# hydrates a disposable database, applies the migration through the real
-# `validate` capture path, runs every RS-* analyzer, and compares the verdict to
-# expected.json. A regression on any major fails CI.
+# every supported Postgres major, 10 through 17 (PRD §12, §13). A finding that is
+# right on 16 can be wrong on 10; this matrix is what catches it. PG 10 is where
+# the real version boundary lives (the non-volatile-DEFAULT catalog fast-path
+# landed in PG 11 — D-006/D-007), so the version-conditional cases are only
+# exercised as divergent when 10 is in the matrix. Each job hydrates a disposable
+# database, applies the migration through the real `validate` capture path, runs
+# every RS-* analyzer, and compares the verdict to expected.json (resolving any
+# per-major override). A regression on any major fails CI.
 
 on:
   push:
@@ -25,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pg: ["11", "12", "13", "14", "15", "16", "17"]
+        pg: ["10", "11", "12", "13", "14", "15", "16", "17"]
     services:
       postgres:
         image: postgres:${{ matrix.pg }}

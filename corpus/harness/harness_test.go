@@ -141,10 +141,14 @@ func TestCorpusVerdicts(t *testing.T) {
 			if err != nil {
 				t.Fatalf("validate %s: %v", filepath.Base(c.Dir), err)
 			}
-			if verdict != c.Expected.Verdict {
-				t.Errorf("verdict = %s, want %s", verdict, c.Expected.Verdict)
+			// Resolve the expectation for the major under test: a version-conditional
+			// case (RFC §9.1) declares per-major overrides, so a finding right on one
+			// major and wrong on another is asserted correctly on each (PRD §12).
+			wantVerdict, wantFindings := c.Expected.ForMajor(PGMajor())
+			if verdict != wantVerdict {
+				t.Errorf("verdict = %s, want %s (PG %s)", verdict, wantVerdict, PGMajor())
 			}
-			for _, want := range c.Expected.Findings {
+			for _, want := range wantFindings {
 				got := findingByCode(findings, want.Code)
 				if got == nil {
 					t.Errorf("missing expected finding %s", want.Code)

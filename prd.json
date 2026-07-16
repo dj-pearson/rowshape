@@ -1423,8 +1423,8 @@
           "verification": ["corpus matrix CI green across PG 11-17 on the expanded case set"],
           "artifacts": ["corpus/cases/version-*/**", "internal/extrapolate/models.go"],
           "type": "code/asset",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 3
         },
         {
