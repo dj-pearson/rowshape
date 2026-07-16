@@ -244,7 +244,8 @@ func numericBounds(c fixture.Column) (lo, hi int64, ok bool) {
 }
 
 // temporalInRange returns a timestamp within the column's range, or a fixed fake
-// epoch-based time if no range is known.
+// epoch-based time if no range is known. It returns a time.Time so it encodes
+// cleanly for both SQL literals and the binary COPY protocol.
 func temporalInRange(c fixture.Column, n int64) any {
 	base := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 	if c.Range != nil {
@@ -252,15 +253,15 @@ func temporalInRange(c fixture.Column, n int64) any {
 			if hi, ok := toTime(c.Range.Max); ok && !hi.Before(lo) {
 				span := hi.Sub(lo)
 				if span <= 0 {
-					return lo.UTC().Format(time.RFC3339)
+					return lo.UTC()
 				}
 				off := time.Duration(n) % span
-				return lo.Add(off).UTC().Format(time.RFC3339)
+				return lo.Add(off).UTC()
 			}
-			return lo.UTC().Format(time.RFC3339)
+			return lo.UTC()
 		}
 	}
-	return base.Add(time.Duration(n) * time.Hour).UTC().Format(time.RFC3339)
+	return base.Add(time.Duration(n) * time.Hour).UTC()
 }
 
 // fakeUUID renders a deterministic, obviously-synthetic UUID encoding n.

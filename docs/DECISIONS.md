@@ -64,6 +64,31 @@ Tracked here so resolutions are recorded where code can cite them.
 
 ---
 
+## D-005 — Disposable hydrate target (OQ-TARGET, P1-T9)
+
+**Decision:** A single `internal/target.Target` interface abstracts the database
+`hydrate` loads into, so the disposable mechanism can be swapped without touching
+the synthesis engine. Three implementations ship:
+
+- **`Ephemeral`** (default disposable target) — creates a throwaway database on a
+  reachable Postgres server and drops it on teardown. Dependency-light: it needs
+  only a libpq connection, no Docker daemon and no container SDK.
+- **`Provided`** — hydrate loads into a user-supplied `--target` URL; teardown
+  only closes connections, never drops the database.
+- **`Container`** — a Docker-based disposable target (throwaway `postgres`
+  container) for full OS-level isolation, invoked through the `docker` CLI.
+
+**Why not testcontainers-go as the default (RFC §17.2 / OQ-TARGET):**
+`testcontainers-go` pulls in the Docker client SDK and dozens of transitive
+dependencies, which conflicts with **INV-SUPPLY-CHAIN** ("single static binary,
+deps kept deliberately few"). The `Target` interface keeps testcontainers-go — or
+`pg_tmp` / an embedded Postgres — a clean swap-in behind the same contract, so the
+open question stays genuinely open while the shipped default stays dependency-light.
+The ephemeral-database default provides the same observable behaviour the story
+requires: a disposable Postgres is spun up and torn down after use.
+
+---
+
 ## D-004 — Cloud traction gate (P5-T7)
 
 Cloud (registry, audit, drift, attestation, billing) does NOT start until the

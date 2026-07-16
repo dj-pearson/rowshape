@@ -479,8 +479,8 @@
           "verification": ["go test ./internal/target/... (container lifecycle up/teardown; provided-URL path)"],
           "artifacts": ["internal/target/target.go", "internal/target/testcontainers.go", "internal/target/target_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 9
         },
         {

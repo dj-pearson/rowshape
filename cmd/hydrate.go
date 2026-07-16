@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 
 	"github.com/rowshape/rowshape/internal/fixture"
 	"github.com/rowshape/rowshape/internal/hydrate"
+	"github.com/rowshape/rowshape/internal/target"
 	"github.com/spf13/cobra"
 )
 
@@ -13,6 +15,8 @@ import (
 type hydrateOptions struct {
 	fixturePath string
 	out         string
+	target      string
+	ephemeral   string
 	seed        int64
 	scale       float64
 	maxRows     int64
@@ -41,6 +45,8 @@ func newHydrateCmd() *cobra.Command {
 	}
 	f := cmd.Flags()
 	f.StringVarP(&opts.out, "out", "o", opts.out, "output path for the SQL ('-' for stdout)")
+	f.StringVar(&opts.target, "target", "", "hydrate into this database URL instead of emitting SQL")
+	f.StringVar(&opts.ephemeral, "ephemeral", "", "admin URL: create a disposable database, hydrate into it, then drop it")
 	f.Int64Var(&opts.seed, "seed", 0, "deterministic seed")
 	f.Float64Var(&opts.scale, "scale", opts.scale, "fraction of declared rows to synthesize")
 	f.Int64Var(&opts.maxRows, "max-rows", 0, "cap synthesized rows per table (0 = no cap)")
@@ -59,7 +65,14 @@ func runHydrate(opts *hydrateOptions) error {
 		return toolError()
 	}
 
-	res, err := hydrate.Generate(f, hydrate.Options{Seed: opts.seed, Scale: opts.scale, MaxRows: opts.maxRows})
+	genOpts := hydrate.Options{Seed: opts.seed, Scale: opts.scale, MaxRows: opts.maxRows}
+
+	// If a live target is requested, load rows into it instead of emitting SQL.
+	if opts.target != "" || opts.ephemeral != "" {
+		return loadIntoTarget(f, genOpts, opts)
+	}
+
+	res, err := hydrate.Generate(f, genOpts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "rowshape hydrate: %v\n", err)
 		return toolError()
@@ -79,5 +92,38 @@ func runHydrate(opts *hydrateOptions) error {
 		fmt.Fprintf(os.Stderr, "rowshape hydrate: writing SQL failed: %v\n", err)
 		return toolError()
 	}
+	return nil
+}
+
+// loadIntoTarget hydrates directly into a live database: a user-provided one
+// (--target) or a disposable ephemeral database created and dropped for the run
+// (--ephemeral). Connection strings and credentials are never logged.
+func loadIntoTarget(f *fixture.Fixture, genOpts hydrate.Options, opts *hydrateOptions) error {
+	ctx := context.Background()
+
+	var t target.Target
+	if opts.target != "" {
+		t = target.NewProvided(opts.target)
+	} else {
+		eph, err := target.NewEphemeral(ctx, opts.ephemeral)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "rowshape hydrate: could not create a disposable database (check the admin connection)")
+			return toolError()
+		}
+		// A disposable target is always torn down, even on failure.
+		defer func() { _ = eph.Close(ctx) }()
+		t = eph
+	}
+
+	report, err := target.Load(ctx, t, f, genOpts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "rowshape hydrate: load failed: %v\n", err)
+		return toolError()
+	}
+	var total int64
+	for _, n := range report.Tables {
+		total += n
+	}
+	fmt.Fprintf(os.Stderr, "rowshape hydrate: loaded %d rows across %d tables\n", total, len(report.Tables))
 	return nil
 }
