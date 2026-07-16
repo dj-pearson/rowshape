@@ -35,6 +35,19 @@ type Capture struct {
 	// Populated by the pipeline from the hydration report; empty for a provided
 	// (ground-truth) target, where the fixture's declared rows are already real.
 	TableRows map[string]int64
+	// Calibration, when set, carries a SECOND measured run at a different scale so
+	// analyzers can fit the cost curve to two points and mark the estimate
+	// `measured` (RFC §9.2, `validate --calibrate`). Nil for a normal single-run
+	// validate, where estimates stay `estimated`.
+	Calibration *Calibration
+}
+
+// Calibration is a second measured run of the same migration at a different
+// hydration scale: the per-table row counts and the per-statement wall times,
+// indexed parallel to Capture.Statements.
+type Calibration struct {
+	TableRows    map[string]int64
+	StatementMs2 []int64
 }
 
 // Statement is the capture of one applied SQL statement.

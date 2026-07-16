@@ -41,7 +41,7 @@ func (rsConstraint) Analyze(f *fixture.Fixture, c *validate.Capture) []verdict.F
 	notValidAdds := map[string]addInfo{} // upper(constraint name) -> add
 	epoch := 0                           // transaction epoch: increments on each COMMIT/ROLLBACK
 
-	for _, st := range c.Statements {
+	for i, st := range c.Statements {
 		clean := collapseSpaces(stripSQLComments(st.SQL))
 		upper := strings.ToUpper(clean)
 
@@ -58,7 +58,7 @@ func (rsConstraint) Analyze(f *fixture.Fixture, c *validate.Capture) []verdict.F
 
 		if vname, ok := parseValidateConstraint(upper); ok {
 			if add, known := notValidAdds[strings.ToUpper(vname)]; known && add.epoch == epoch {
-				out = append(out, sameTxFinding(f, c, add.table, vname, st, hasVersion))
+				out = append(out, sameTxFinding(f, c, i, add.table, vname, hasVersion))
 			}
 		}
 
@@ -69,10 +69,10 @@ func (rsConstraint) Analyze(f *fixture.Fixture, c *validate.Capture) []verdict.F
 	return out
 }
 
-// sameTxFinding reports a NOT VALID constraint validated in the same transaction.
-func sameTxFinding(f *fixture.Fixture, c *validate.Capture, table, name string, validateStmt validate.Statement, hasVersion bool) verdict.Finding {
+// sameTxFinding reports a NOT VALID constraint validated in the same transaction
+// (the VALIDATE is statement i).
+func sameTxFinding(f *fixture.Fixture, c *validate.Capture, i int, table, name string, hasVersion bool) verdict.Finding {
 	tbl := f.Tables[table]
-	declared := tbl.Rows.Value
 
 	fnd := verdict.Finding{
 		Code:        "RS-CONSTRAINT-001",
@@ -84,16 +84,7 @@ func sameTxFinding(f *fixture.Fixture, c *validate.Capture, table, name string, 
 		Explain:     "rowshape explain RS-CONSTRAINT-001",
 	}
 	if hasVersion {
-		basisRows := c.TableRows[table]
-		if basisRows <= 0 {
-			basisRows = declared
-		}
-		basisMs := validateStmt.DurationMs
-		if basisMs <= 0 {
-			basisMs = 1
-		}
-		est := estimate.Extrapolate(estimate.ConstraintValidation, basisRows, basisMs, declared, tbl.Rows.Confidence)
-		fnd.Estimate = &est
+		fnd.Estimate = estimateFor(c, i, estimate.ConstraintValidation, table, tbl.Rows.Value, tbl.Rows.Confidence)
 	}
 	return fnd
 }

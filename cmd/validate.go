@@ -27,6 +27,7 @@ type validateOptions struct {
 	runnerKind  string // override runner auto-detection
 	asJSON      bool
 	warnFail    bool // make a WARN-only verdict exit non-zero
+	calibrate   bool // fit the cost curve at two scales, upgrading estimates to measured
 	seed        int64
 	scale       float64
 	maxRows     int64
@@ -62,6 +63,7 @@ func newValidateCmd() *cobra.Command {
 	f.StringVar(&opts.runnerKind, "runner", "", "override runner detection (alembic|prisma|drizzle|rawsql)")
 	f.BoolVar(&opts.asJSON, "json", false, "emit the machine-readable verdict as JSON")
 	f.BoolVar(&opts.warnFail, "warn-fail", false, "exit non-zero on a WARN-only verdict")
+	f.BoolVar(&opts.calibrate, "calibrate", false, "hydrate at two scales and fit the cost curve, upgrading duration estimates to measured (slower)")
 	f.Int64Var(&opts.seed, "seed", 0, "deterministic hydration seed")
 	f.Float64Var(&opts.scale, "scale", opts.scale, "fraction of declared rows to hydrate")
 	f.Int64Var(&opts.maxRows, "max-rows", 0, "cap hydrated rows per table (0 = no cap)")
@@ -99,34 +101,40 @@ func runValidate(opts *validateOptions) error {
 		}
 	}
 
-	// Prepare the target: a provided live branch is used as-is (ground truth); a
-	// disposable database is created and hydrated from the fixture.
-	var t target.Target
-	var hydrated map[string]int64
+	// Prepare the target and capture. A provided live branch is used as-is
+	// (ground truth); a disposable database is hydrated from the fixture.
+	var cap *validate.Capture
 	if groundTruth {
-		t = target.NewProvided(opts.target)
+		if opts.calibrate {
+			fmt.Fprintln(os.Stderr, "rowshape validate: --calibrate applies only to a disposable target; a provided branch's data is already ground truth")
+			return toolError()
+		}
+		cap, err = applyAndCapture(ctx, target.NewProvided(opts.target), opts)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "rowshape validate: %v\n", err)
+			return toolError()
+		}
 	} else {
-		eph, err := target.NewEphemeral(ctx, opts.ephemeral)
+		cap, err = hydrateApplyEphemeral(ctx, f, opts, opts.scale)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "rowshape validate: could not create a disposable database (check the admin connection)")
+			fmt.Fprintf(os.Stderr, "rowshape validate: %v\n", err)
 			return toolError()
 		}
-		defer func() { _ = eph.Close(ctx) }()
-		report, err := target.Load(ctx, eph, f, hydrate.Options{Seed: opts.seed, Scale: opts.scale, MaxRows: opts.maxRows})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "rowshape validate: hydration failed: %v\n", err)
-			return toolError()
+		// --calibrate fits the cost curve to a SECOND run at half scale, upgrading
+		// duration estimates from `estimated` to `measured` (RFC §9.2). Slower and
+		// honest — the option for the one migration you're genuinely nervous about.
+		if opts.calibrate {
+			cap2, err := hydrateApplyEphemeral(ctx, f, opts, opts.scale/2)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "rowshape validate: calibration run failed: %v\n", err)
+				return toolError()
+			}
+			cap.Calibration = &validate.Calibration{
+				TableRows:    cap2.TableRows,
+				StatementMs2: statementDurations(cap2),
+			}
 		}
-		hydrated = report.Tables
-		t = eph
 	}
-
-	cap, err := applyAndCapture(ctx, t, opts)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "rowshape validate: %v\n", err)
-		return toolError()
-	}
-	cap.TableRows = hydrated
 
 	result := validate.BuildResult(f, cap, validate.Registered(), groundTruth)
 	if err := result.Validate(); err != nil {
@@ -144,6 +152,38 @@ func runValidate(opts *validateOptions) error {
 		return &ExitError{Code: code}
 	}
 	return nil
+}
+
+// hydrateApplyEphemeral creates a disposable database, hydrates the fixture at
+// the given scale, applies the migration, and returns the capture (with hydrated
+// row counts). The database is torn down before returning.
+func hydrateApplyEphemeral(ctx context.Context, f *fixture.Fixture, opts *validateOptions, scale float64) (*validate.Capture, error) {
+	eph, err := target.NewEphemeral(ctx, opts.ephemeral)
+	if err != nil {
+		return nil, fmt.Errorf("could not create a disposable database (check the admin connection): %w", err)
+	}
+	defer func() { _ = eph.Close(ctx) }()
+
+	report, err := target.Load(ctx, eph, f, hydrate.Options{Seed: opts.seed, Scale: scale, MaxRows: opts.maxRows})
+	if err != nil {
+		return nil, fmt.Errorf("hydration failed: %w", err)
+	}
+	cap, err := applyAndCapture(ctx, eph, opts)
+	if err != nil {
+		return nil, err
+	}
+	cap.TableRows = report.Tables
+	return cap, nil
+}
+
+// statementDurations extracts the per-statement wall times of a capture, aligned
+// by index with the primary run's statements (both apply the same migration).
+func statementDurations(c *validate.Capture) []int64 {
+	ms := make([]int64, len(c.Statements))
+	for i, st := range c.Statements {
+		ms[i] = st.DurationMs
+	}
+	return ms
 }
 
 // applyAndCapture applies the migration set to the target and captures the six

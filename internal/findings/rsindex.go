@@ -27,13 +27,13 @@ func (rsIndex) Analyze(f *fixture.Fixture, c *validate.Capture) []verdict.Findin
 	_, hasVersion := estimate.Major(f.Meta.Engine.Version)
 
 	var out []verdict.Finding
-	for _, st := range c.Statements {
+	for i, st := range c.Statements {
 		clean := collapseSpaces(stripSQLComments(st.SQL))
 		upper := strings.ToUpper(clean)
 
 		if unique, concurrent, table, cols, ok := parseCreateIndex(clean, upper); ok {
 			if !concurrent {
-				out = append(out, nonConcurrentFinding(f, c, table, hasVersion))
+				out = append(out, nonConcurrentFinding(f, c, i, table, hasVersion))
 			}
 			if unique {
 				out = append(out, indexUniqueFinding(f, table, cols))
@@ -49,10 +49,10 @@ func (rsIndex) Analyze(f *fixture.Fixture, c *validate.Capture) []verdict.Findin
 	return out
 }
 
-// nonConcurrentFinding flags a plain CREATE INDEX and recommends CONCURRENTLY.
-func nonConcurrentFinding(f *fixture.Fixture, c *validate.Capture, table string, hasVersion bool) verdict.Finding {
+// nonConcurrentFinding flags a plain CREATE INDEX (statement i) and recommends
+// CONCURRENTLY.
+func nonConcurrentFinding(f *fixture.Fixture, c *validate.Capture, i int, table string, hasVersion bool) verdict.Finding {
 	tbl := f.Tables[table]
-	declared := tbl.Rows.Value
 	fnd := verdict.Finding{
 		Code:        "RS-INDEX-001",
 		Severity:    verdict.SeverityWarn,
@@ -63,13 +63,7 @@ func nonConcurrentFinding(f *fixture.Fixture, c *validate.Capture, table string,
 		Explain:     "rowshape explain RS-INDEX-001",
 	}
 	if hasVersion {
-		basisRows := c.TableRows[table]
-		if basisRows <= 0 {
-			basisRows = declared
-		}
-		basisMs := int64(1)
-		est := estimate.Extrapolate(estimate.BTreeBuild, basisRows, basisMs, declared, tbl.Rows.Confidence)
-		fnd.Estimate = &est
+		fnd.Estimate = estimateFor(c, i, estimate.BTreeBuild, table, tbl.Rows.Value, tbl.Rows.Confidence)
 	}
 	return fnd
 }

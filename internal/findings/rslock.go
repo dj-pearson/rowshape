@@ -30,18 +30,18 @@ func (rsLock) Analyze(f *fixture.Fixture, c *validate.Capture) []verdict.Finding
 	major, hasVersion := estimate.Major(f.Meta.Engine.Version)
 
 	var out []verdict.Finding
-	for _, st := range c.Statements {
+	for i, st := range c.Statements {
 		op, table, kind, rewrites := classifyRewrite(st.SQL, major, hasVersion)
 		if !rewrites {
 			continue
 		}
-		out = append(out, rsLock{}.finding(f, c, st, op, table, kind, hasVersion))
+		out = append(out, rsLock{}.finding(f, c, i, st, op, table, kind, hasVersion))
 	}
 	return out
 }
 
-// finding builds one RS-LOCK-001 finding for a rewrite statement.
-func (rsLock) finding(f *fixture.Fixture, c *validate.Capture, st validate.Statement, op estimate.OpClass, table, kind string, hasVersion bool) verdict.Finding {
+// finding builds one RS-LOCK-001 finding for a rewrite statement at index i.
+func (rsLock) finding(f *fixture.Fixture, c *validate.Capture, i int, st validate.Statement, op estimate.OpClass, table, kind string, hasVersion bool) verdict.Finding {
 	tbl := f.Tables[table]
 	declared := tbl.Rows.Value
 
@@ -66,16 +66,8 @@ func (rsLock) finding(f *fixture.Fixture, c *validate.Capture, st validate.State
 	// Durations are buckets with the basis attached, never point estimates
 	// (INV-DURATIONS-BUCKETS). Extrapolation refuses without an engine version.
 	if hasVersion {
-		basisRows := c.TableRows[table]
-		if basisRows <= 0 {
-			basisRows = declared // ground-truth target: hydrated == real
-		}
-		basisMs := st.DurationMs
-		if basisMs <= 0 {
-			basisMs = 1
-		}
-		est := estimate.Extrapolate(op, basisRows, basisMs, declared, tbl.Rows.Confidence)
-		fnd.Estimate = &est
+		est := estimateFor(c, i, op, table, declared, tbl.Rows.Confidence)
+		fnd.Estimate = est
 		fnd.Title = fmt.Sprintf("%s lock on %s, %s rewrite of %s rows", lockMode, shortTable(table), est.Bucket, humanCount(declared))
 		fnd.Detail = fmt.Sprintf("%s holds %s and rewrites all %d rows.", kind, lockMode, declared)
 	} else {

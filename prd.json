@@ -938,8 +938,8 @@
           "verification": ["go test ./internal/estimate/... (two-point fit; confidence upgrade only under --calibrate)"],
           "artifacts": ["internal/estimate/calibrate.go", "cmd/validate.go (flag)", "internal/estimate/calibrate_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 14
         },
         {
