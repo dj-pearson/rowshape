@@ -461,8 +461,8 @@
           "verification": ["go test ./internal/hydrate/... (scale test asserting declared vs materialized counts diverge correctly)"],
           "artifacts": ["internal/hydrate/scale.go", "internal/hydrate/scale_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 8
         },
         {
