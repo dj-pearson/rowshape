@@ -137,6 +137,19 @@ func (t Table) MarshalYAML() (any, error) {
 	if err := appendFlowSeq(n, "references", len(t.References), t.References); err != nil {
 		return nil, err
 	}
+	if t.Partitions != nil {
+		pn := &yaml.Node{Kind: yaml.MappingNode, Style: yaml.FlowStyle}
+		if err := appendField(pn, "count", t.Partitions.Count); err != nil {
+			return nil, err
+		}
+		appendScalar(pn, "strategy", t.Partitions.Strategy)
+		if t.Partitions.Skew != 0 {
+			if err := appendField(pn, "skew", t.Partitions.Skew); err != nil {
+				return nil, err
+			}
+		}
+		n.Content = append(n.Content, keyNode("partitions"), pn)
+	}
 	if err := appendSortedX(n, t.X); err != nil {
 		return nil, err
 	}

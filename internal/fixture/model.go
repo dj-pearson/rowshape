@@ -91,8 +91,22 @@ type Table struct {
 	Constraints []Constraint      `yaml:"constraints,omitempty"`
 	Indexes     []Index           `yaml:"indexes,omitempty"`
 	References  []Reference       `yaml:"references,omitempty"`
+	// Partitions describes a partitioned table's shape (RFC §14.2): the parent
+	// declares count/strategy/skew, with no per-partition entries.
+	Partitions *Partitions `yaml:"partitions,omitempty"`
 
 	X map[string]any `yaml:",inline"`
+}
+
+// Partitions is a partitioned table's shape (RFC §14.2). Partition count and
+// per-partition skew change lock behavior under a partitioning migration
+// materially, and no other field captures it.
+type Partitions struct {
+	Count    int    `yaml:"count"`
+	Strategy string `yaml:"strategy"` // range | list | hash
+	// Skew is the fraction of rows in the largest partition (1/count is uniform;
+	// approaching 1 means one partition dominates).
+	Skew float64 `yaml:"skew,omitempty"`
 }
 
 // UnmarshalYAML ignores unknown fields but preserves x_ vendor extensions.

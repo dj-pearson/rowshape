@@ -132,15 +132,17 @@ type tableRef struct {
 	qualified string // schema.name
 	reltuples float64
 	bytes     int64
+	relkind   string // 'r' ordinary, 'p' partitioned parent
 }
 
 // tables lists ordinary and partitioned tables in the requested schemas.
 func (r *reader) tables(ctx context.Context, schemas []string) ([]tableRef, error) {
 	const q = `
-SELECT c.oid, n.nspname, c.relname, c.reltuples, pg_total_relation_size(c.oid)
+SELECT c.oid, n.nspname, c.relname, c.reltuples, pg_total_relation_size(c.oid), c.relkind::text
 FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE c.relkind IN ('r', 'p')
+  AND NOT c.relispartition
   AND n.nspname NOT IN ('pg_catalog', 'information_schema')
   AND n.nspname NOT LIKE 'pg_toast%'
   AND ($1::text[] IS NULL OR n.nspname = ANY($1))
@@ -159,7 +161,7 @@ ORDER BY n.nspname, c.relname`
 	var out []tableRef
 	for rows.Next() {
 		var t tableRef
-		if err := rows.Scan(&t.oid, &t.schema, &t.name, &t.reltuples, &t.bytes); err != nil {
+		if err := rows.Scan(&t.oid, &t.schema, &t.name, &t.reltuples, &t.bytes, &t.relkind); err != nil {
 			return nil, err
 		}
 		t.qualified = t.schema + "." + t.name

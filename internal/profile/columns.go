@@ -70,6 +70,15 @@ func (r *reader) profileTable(ctx context.Context, t tableRef, tbl *fixture.Tabl
 				return err
 			}
 			col.Range = rng
+			// A skewed numeric column also earns a histogram — the only field that
+			// captures skew (§6.2). Privacy-gated at standard+ (§8.2).
+			if category == "numeric" {
+				hist, err := r.measureHistogram(ctx, from, name)
+				if err != nil {
+					return err
+				}
+				col.Histogram = hist
+			}
 		case "text":
 			samples, err := r.valueSample(ctx, from, name)
 			if err != nil {
@@ -114,6 +123,21 @@ func (r *reader) profileTable(ctx context.Context, t tableRef, tbl *fixture.Tabl
 	// (RFC §6.6, P1-T11).
 	if err := r.measureReferences(ctx, t, tbl); err != nil {
 		return err
+	}
+
+	// A partitioned parent declares its partition shape (RFC §14.2, P1-T12), and
+	// its declared rows come from the partitions (the parent stores none itself).
+	parts, err := r.measurePartitions(ctx, t)
+	if err != nil {
+		return err
+	}
+	tbl.Partitions = parts
+	if parts != nil {
+		total, err := r.partitionTotalRows(ctx, t.oid)
+		if err != nil {
+			return err
+		}
+		tbl.Rows = fixture.Fact[int64]{Value: total, Confidence: fixture.Estimated}
 	}
 	return nil
 }

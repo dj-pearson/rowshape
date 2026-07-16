@@ -134,6 +134,17 @@ func generateValue(seed int64, table, column string, c fixture.Column, ord int64
 	// (RFC §13 honor `unique`). A non-unique column draws a bucket in [0, distinct)
 	// so only about `distinct` distinct values appear.
 	unique := c.Unique != nil && c.Unique.Value
+
+	// A skewed numeric column carries a histogram; sample from it so hydrate
+	// reproduces the skew, not just the mean/range (RFC §6.2). Each equi-depth
+	// bucket holds equal rows, so picking a bucket uniformly and a value within it
+	// recreates the original density.
+	if !unique && c.Histogram != nil && categorize(c.Type) == "numeric" {
+		if v, ok := sampleHistogram(c.Histogram, r); ok {
+			return v
+		}
+	}
+
 	var n int64
 	if unique {
 		n = ord
@@ -143,6 +154,42 @@ func generateValue(seed int64, table, column string, c fixture.Column, ord int64
 		n = r.intn(1 << 20)
 	}
 	return fakeValue(c, n, r)
+}
+
+// sampleHistogram draws an integer from an equi-depth histogram: a uniformly
+// chosen bucket, then a uniform value within that bucket's bounds. This
+// reproduces the column's skew — dense value regions have many narrow buckets
+// and so receive proportionally many rows.
+func sampleHistogram(h *fixture.Histogram, r *rng) (any, bool) {
+	if h == nil || len(h.Bounds) < 2 {
+		return nil, false
+	}
+	b := int(r.intn(int64(len(h.Bounds) - 1)))
+	lo, lok := toFloat(h.Bounds[b])
+	hi, hok := toFloat(h.Bounds[b+1])
+	if !lok || !hok {
+		return nil, false
+	}
+	if hi < lo {
+		lo, hi = hi, lo
+	}
+	span := hi - lo
+	v := lo + r.float64()*span
+	return int64(v), true
+}
+
+// toFloat best-effort converts a histogram bound to a float64.
+func toFloat(v any) (float64, bool) {
+	switch x := v.(type) {
+	case float64:
+		return x, true
+	case int:
+		return float64(x), true
+	case int64:
+		return float64(x), true
+	default:
+		return 0, false
+	}
 }
 
 // fakeValue produces an obviously-fake value of the right shape (RFC §13): the

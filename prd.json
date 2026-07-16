@@ -534,8 +534,8 @@
           "verification": ["go test: hydrated distribution reproduces an 80/20 skew within tolerance; a partitioned source emits the partitions block; strict drops histogram bounds"],
           "artifacts": ["internal/engine/postgres/histogram.go", "internal/engine/postgres/partitions.go", "internal/engine/postgres/skew_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 12
         }
       ]
