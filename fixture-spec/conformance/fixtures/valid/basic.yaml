@@ -1,0 +1,14 @@
+rowshape_fixture: "1"
+meta:
+  id: conformance-basic
+  engine: {name: postgres, version: "16"}
+  privacy: standard
+  profile: {mode: fast, escalated: []}
+tables:
+  public.users:
+    rows: {value: 1200000, confidence: exact}
+    columns:
+      id: {type: bigint, nullable: false, unique: {value: true, confidence: exact, via: constraint}}
+      email: {type: text, nullable: false, distinct: {value: 1199950, confidence: measured, via: hll, error: 0.008}, unique: {value: true, confidence: exact, via: probe}, format: email}
+      age: {type: integer, nullable: true, null_fraction: {value: 0.03, confidence: exact}, range: {min: 18, max: 97}}
+    constraints: [{name: users_pkey, kind: primary_key, columns: [id]}]

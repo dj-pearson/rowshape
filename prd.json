@@ -974,8 +974,8 @@
           "verification": ["conformance CI green against rowshape; suite rejects seeded non-conformant fixtures; JSON Schema validates all reference fixtures"],
           "artifacts": ["fixture-spec/schema/rowshape.schema.json", "fixture-spec/conformance/**", "fixture-spec/conformance/README.md"],
           "type": "code/asset",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 16
         },
         {

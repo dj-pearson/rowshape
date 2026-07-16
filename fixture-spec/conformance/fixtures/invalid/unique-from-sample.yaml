@@ -1,0 +1,10 @@
+rowshape_fixture: "1"
+meta:
+  id: bad-unique-from-sample
+  engine: {name: postgres, version: "16"}
+tables:
+  public.users:
+    rows: {value: 1000000, confidence: exact}
+    columns:
+      # Uniqueness claimed at `estimated` confidence: a sample can never establish it.
+      email: {type: text, nullable: false, unique: {value: true, confidence: estimated, via: pg_stats}}

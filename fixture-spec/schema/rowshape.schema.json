@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rowshape.com/schema/fixture/v1",
+  "title": "Rowshape Fixture",
+  "description": "A rowshape.yaml fixture, format version \"1\" (RFC-0001). A fixture contains no rows from a database — only statistics computed from them, each carrying the confidence it is known at. Unknown fields are ignored by readers (RFC §12); x_-prefixed keys are reserved for vendor extensions.",
+  "type": "object",
+  "required": ["rowshape_fixture", "meta", "tables"],
+  "additionalProperties": true,
+  "properties": {
+    "rowshape_fixture": {
+      "description": "Major format version. A reader that does not understand this major MUST refuse (RFC §12).",
+      "const": "1"
+    },
+    "meta": { "$ref": "#/$defs/meta" },
+    "tables": {
+      "type": "object",
+      "description": "Qualified table name (schema.table) -> table profile.",
+      "additionalProperties": { "$ref": "#/$defs/table" }
+    }
+  },
+  "$defs": {
+    "confidence": {
+      "description": "The confidence a fact is known at, strictly ordered exact > measured > estimated > declared (RFC §7.1).",
+      "type": "string",
+      "enum": ["exact", "measured", "estimated", "declared"]
+    },
+    "meta": {
+      "type": "object",
+      "required": ["engine"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string" },
+        "generated_at": { "type": "string" },
+        "generator": { "type": "string" },
+        "engine": {
+          "type": "object",
+          "required": ["name", "version"],
+          "additionalProperties": true,
+          "properties": {
+            "name": { "type": "string" },
+            "version": {
+              "description": "Engine major version — mandatory, because cost models are engine-version-conditional (RFC §9.1).",
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "privacy": { "enum": ["strict", "standard", "permissive"] },
+        "source": { "type": "string" },
+        "profile": { "type": "object" },
+        "digest": { "type": "string" }
+      }
+    },
+    "intFact": {
+      "description": "An integer fact, as a {value, confidence, via} object or a bare scalar (shorthand for confidence:estimated, RFC §6.1).",
+      "oneOf": [
+        { "type": "integer" },
+        {
+          "type": "object",
+          "required": ["value"],
+          "additionalProperties": true,
+          "properties": {
+            "value": { "type": "integer" },
+            "confidence": { "$ref": "#/$defs/confidence" },
+            "via": { "type": "string" },
+            "error": { "type": "number" }
+          }
+        }
+      ]
+    },
+    "floatFact": {
+      "oneOf": [
+        { "type": "number" },
+        {
+          "type": "object",
+          "required": ["value"],
+          "additionalProperties": true,
+          "properties": {
+            "value": { "type": "number" },
+            "confidence": { "$ref": "#/$defs/confidence" },
+            "via": { "type": "string" },
+            "error": { "type": "number" }
+          }
+        }
+      ]
+    },
+    "uniqueFact": {
+      "description": "Uniqueness. It MUST be exact or absent — a sample can never establish it (RFC §7.2). As an object, confidence is constrained to exact.",
+      "oneOf": [
+        { "type": "boolean" },
+        {
+          "type": "object",
+          "required": ["value"],
+          "additionalProperties": true,
+          "properties": {
+            "value": { "type": "boolean" },
+            "confidence": { "const": "exact" },
+            "via": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "table": {
+      "type": "object",
+      "required": ["rows"],
+      "additionalProperties": true,
+      "properties": {
+        "rows": { "$ref": "#/$defs/intFact" },
+        "bytes": { "type": "integer" },
+        "columns": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/column" }
+        },
+        "constraints": { "type": "array", "items": { "type": "object" } },
+        "indexes": { "type": "array", "items": { "type": "object" } },
+        "references": { "type": "array", "items": { "type": "object" } },
+        "partitions": { "type": "object" }
+      }
+    },
+    "column": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": true,
+      "properties": {
+        "type": { "type": "string" },
+        "nullable": { "type": "boolean" },
+        "null_fraction": { "$ref": "#/$defs/floatFact" },
+        "distinct": { "$ref": "#/$defs/intFact" },
+        "unique": { "$ref": "#/$defs/uniqueFact" },
+        "generated": { "type": "string" },
+        "format": { "type": "string" },
+        "length": { "type": "object" },
+        "range": { "type": "object" },
+        "histogram": { "type": "object" },
+        "shape": {},
+        "values": { "type": "array" },
+        "frequencies": { "type": "array" },
+        "redact": {}
+      }
+    }
+  }
+}
