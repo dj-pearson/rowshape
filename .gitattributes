@@ -1,0 +1,10 @@
+# Force LF line endings repo-wide. The fixture canonical form requires \n line
+# endings (RFC §11, INV-DETERMINISM); keeping the whole tree LF avoids
+# cross-platform digest drift and golden-file churn.
+* text=auto eol=lf
+
+# Binary assets: never touch.
+*.png binary
+*.jpg binary
+*.gz binary
+*.zip binary

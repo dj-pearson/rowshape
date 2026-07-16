@@ -26,6 +26,7 @@ func NewRootCmd() *cobra.Command {
 		Long: "rowshape — execute a proposed schema change against production-shaped\n" +
 			"data in a disposable environment and return a machine-readable verdict.\n\n" +
 			"A human and an agent get the same answer through the same contract.",
+		Version:       fmt.Sprintf("%s (commit %s, built %s)", version, commit, date),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

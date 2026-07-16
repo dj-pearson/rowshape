@@ -252,7 +252,8 @@
           "artifacts": [".goreleaser.yaml", "npm/", "Dockerfile"],
           "type": "code/ops",
           "passes": false,
-          "status": "todo",
+          "status": "blocked",
+          "blocked_reason": "Config complete and locally verified: `goreleaser check` clean (no deprecations), `goreleaser release --snapshot` builds all 5 platform/arch combos (darwin/linux amd64+arm64, windows amd64), injects version via ldflags, and generates archives, checksums, and the Homebrew cask. Artifacts written: .goreleaser.yaml (builds/archives/homebrew_casks/dockers_v2/release), Dockerfile (FROM scratch), npm/ wrapper (install.js fetch-on-install + bin shim). Two acceptance criteria cannot be verified from this environment: `npx rowshape --help` requires a published GitHub Release for the wrapper to download, and `docker run <image> --help` requires a running Docker daemon (currently down). Both are release-time checks gated on the `rowshape` GitHub org + CI secrets (see P0-T1 / docs/DECISIONS.md D-002).",
           "priority": 4
         },
         {

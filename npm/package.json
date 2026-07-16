@@ -1,0 +1,31 @@
+{
+  "name": "rowshape",
+  "version": "0.0.0",
+  "description": "The type-checker for database migrations — a human and an agent get the same answer through the same contract.",
+  "bin": {
+    "rowshape": "bin/rowshape.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "bin/",
+    "install.js"
+  ],
+  "keywords": [
+    "postgres",
+    "database",
+    "migration",
+    "schema",
+    "ci"
+  ],
+  "license": "MIT",
+  "homepage": "https://rowshape.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rowshape/rowshape.git"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}

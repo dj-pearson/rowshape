@@ -1,0 +1,113 @@
+# goreleaser configuration for rowshape (PRD §7 distribution).
+#
+# Distribution channels (P0-T4): GitHub Releases, Homebrew tap, `go install`
+# (via module proxy — no config needed), npm wrapper (npm/, publishes separately
+# consuming these release assets), and a FROM scratch Docker image for CI.
+#
+# Supply chain (P0-T5): SBOM per artifact + cosign signatures. Ship from the
+# first release (INV-SUPPLY-CHAIN).
+version: 2
+
+project_name: rowshape
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: rowshape
+    main: .
+    binary: rowshape
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/rowshape/rowshape/cmd.version={{.Version}}
+      - -X github.com/rowshape/rowshape/cmd.commit={{.Commit}}
+      - -X github.com/rowshape/rowshape/cmd.date={{.Date}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    # 5 platform/arch combos: darwin{amd64,arm64}, linux{amd64,arm64}, windows{amd64}.
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - id: rowshape
+    ids:
+      - rowshape
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - LICENSE
+      - README.md
+
+# --- Supply chain (P0-T5) ---
+sboms:
+  - id: archive-sbom
+    artifacts: archive
+
+signs:
+  - id: cosign-checksum
+    cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--output-signature=${artifact}.sig"
+      - "--output-certificate=${artifact}.pem"
+      - "--yes"
+      - "${artifact}"
+    artifacts: checksum
+    output: true
+
+# --- Homebrew tap ---
+homebrew_casks:
+  - name: rowshape
+    repository:
+      owner: rowshape
+      name: homebrew-tap
+    homepage: "https://rowshape.com"
+    description: "The type-checker for database migrations"
+
+# --- FROM scratch Docker image for CI (multi-arch, dockers_v2) ---
+dockers_v2:
+  - id: rowshape
+    ids:
+      - rowshape
+    images:
+      - "ghcr.io/rowshape/rowshape"
+    tags:
+      - "{{ .Version }}"
+      - "latest"
+    dockerfile: Dockerfile
+    platforms:
+      - "linux/amd64"
+      - "linux/arm64"
+
+checksum:
+  name_template: "checksums.txt"
+
+release:
+  github:
+    owner: rowshape
+    name: rowshape
+  draft: false
+  prerelease: auto
+
+changelog:
+  use: github
+  sort: asc
