@@ -810,8 +810,8 @@
           "verification": ["go test ./cmd/... (end-to-end validate on a corpus triple); assert host-match refusal; assert no cloud egress"],
           "artifacts": ["cmd/validate.go", "internal/validate/capture.go", "cmd/validate_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 7
         },
         {
