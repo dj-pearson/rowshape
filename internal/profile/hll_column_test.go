@@ -42,7 +42,7 @@ func TestHLLDistinctMeasured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	defer tx.Rollback(context.Background())
+	defer func() { _ = tx.Rollback(context.Background()) }()
 	r := &reader{tx: tx, attNames: map[uint32]map[int16]string{}}
 
 	fact, err := r.hllDistinct(context.Background(), hllSchema, "t", "external_ref")

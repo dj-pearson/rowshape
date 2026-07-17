@@ -188,3 +188,72 @@ func TestEmitSizeUnder100KB(t *testing.T) {
 	}
 	t.Logf("200-table fixture size: %d bytes", len(out))
 }
+
+// TestParseVerifiedRefusesTamperedFixture: meta.digest is the fixture's identity
+// (RFC §11) and the subject of every attestation (INV-DSSE-SHAPE). rowshape
+// computed it, stored it, and never checked it.
+//
+// That is not cosmetic. Demonstrated against a live database before this existed:
+// editing a pulled fixture to read null_fraction {value: 0.0, confidence: exact}
+// made `validate` return PASS, exit 0, for a SET NOT NULL against a column that
+// is 2.9% null in production — while the stale digest sat in the file saying the
+// content was untouched. A wrong PASS, which INV-CONFIDENCE-CAPPING calls the one
+// thing that must never be wrong, reachable by editing a text file.
+func TestParseVerifiedRefusesTamperedFixture(t *testing.T) {
+	// Build a fixture and stamp a real digest, the way `pull` emits one.
+	f, err := Parse([]byte(`rowshape_fixture: "1"
+meta: {id: t, engine: {name: postgres, version: "16"}}
+tables:
+  public.users:
+    rows: {value: 100, confidence: exact}
+    columns:
+      nickname: {type: text, nullable: true, null_fraction: {value: 0.029, confidence: exact}}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := Digest(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	good := []byte(`rowshape_fixture: "1"
+meta: {id: t, engine: {name: postgres, version: "16"}, digest: ` + d + `}
+tables:
+  public.users:
+    rows: {value: 100, confidence: exact}
+    columns:
+      nickname: {type: text, nullable: true, null_fraction: {value: 0.029, confidence: exact}}
+`)
+
+	// Untampered: accepted. Without this the check could just refuse everything.
+	if _, err := ParseVerified(good); err != nil {
+		t.Fatalf("a fixture whose digest matches its content must be accepted: %v", err)
+	}
+
+	// The tamper that produced the wrong PASS: claim the column has no nulls.
+	tampered := []byte(strings.Replace(string(good), "value: 0.029", "value: 0.0", 1))
+	_, err = ParseVerified(tampered)
+	if err == nil {
+		t.Fatal("a fixture edited after pull must be refused — its stale digest says the content is " +
+			"untouched, and validate would answer from the edited facts")
+	}
+	for _, want := range []string{"digest mismatch", "rowshape pull"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal should mention %q so it is actionable, got: %v", want, err)
+		}
+	}
+
+	// No digest: accepted. Every fixture in this repo's corpus and test suites is
+	// hand-authored and carries none; demanding one would mean rowshape only ever
+	// reads its own output.
+	none := []byte(`rowshape_fixture: "1"
+meta: {id: t, engine: {name: postgres, version: "16"}}
+tables:
+  public.users:
+    rows: {value: 100, confidence: exact}
+    columns: {nickname: {type: text, nullable: true}}
+`)
+	if _, err := ParseVerified(none); err != nil {
+		t.Errorf("a hand-authored fixture with no digest must be accepted: %v", err)
+	}
+}

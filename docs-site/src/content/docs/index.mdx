@@ -1,0 +1,45 @@
+---
+title: rowshape
+description: The type-checker for database migrations — a human and an agent get the same answer through the same contract.
+template: splash
+hero:
+  tagline: Execute a proposed schema change against production-shaped data in a disposable environment, and get back a machine-readable verdict.
+  actions:
+    - text: Install
+      link: /install/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/rowshape/rowshape
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## The problem
+
+A migration that passes every test on a dev database with twelve rows in it can
+still take production down. `SET NOT NULL` on a column that is 3% null fails on
+contact. A cascade delete on a foreign key with a long fan-out tail is an outage,
+not a cleanup. The shape of the data decides the answer, and the shape is exactly
+what a dev database does not have.
+
+<CardGrid>
+	<Card title="Shape, not rows">
+		A fixture is statistics — row counts, null fractions, cardinality, fan-out
+		distributions. No rows. It commits to your repo and is small enough to review.
+	</Card>
+	<Card title="One verdict, two readers">
+		The CLI, the MCP server, and the GitHub Action all render the same verdict
+		struct. A human and an agent get the same answer through the same contract.
+	</Card>
+	<Card title="Confidence is part of the answer">
+		A verdict is capped by the weakest fact it rests on. If rowshape could only
+		estimate something, it says WARN and names the command that proves it — it
+		does not guess PASS.
+	</Card>
+	<Card title="Built for the agent loop">
+		`rowshape mcp` puts the shape and the verdict inside the agent's turn, so it
+		can write, validate, read the failure, and fix — without a human round trip.
+	</Card>
+</CardGrid>

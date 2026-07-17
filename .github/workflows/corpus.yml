@@ -55,4 +55,16 @@ jobs:
           ROWSHAPE_PG_VERSION: ${{ matrix.pg }}
           ROWSHAPE_TEST_PG_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
         # -count=1 disables the test cache so every major genuinely runs.
-        run: go test ./corpus/... -count=1
+        #
+        # The corpus is not the only thing that talks to a real server. `pull`'s
+        # catalog reader gates columns on the server version (pg_index
+        # .indnullsnotdistinct is PG15+, so it degrades to a constant below that),
+        # the disposable-target lifecycle issues DROP DATABASE, and the pathology
+        # gate hydrates. Those all ran on PG 16 alone — the version-conditional
+        # branches were correct by inspection and never executed.
+        #
+        # That is not a hypothetical gap: `DROP DATABASE ... WITH (FORCE)` is PG13+
+        # and silently broke every corpus case on 10/11/12 until the matrix caught
+        # it. The matrix already exists; pointing it at the packages that speak SQL
+        # costs a few minutes and is what turns "guarded" into "verified".
+        run: go test ./corpus/... ./internal/profile/... ./internal/target/... ./test/pathology/... -count=1

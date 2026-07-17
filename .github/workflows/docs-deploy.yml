@@ -1,0 +1,82 @@
+name: docs
+
+# The docs site: build and check on every change, deploy to Cloudflare Pages on
+# main (PRD §9).
+#
+# The build+check job runs for everyone, including forks and PRs, because it is
+# the gate: broken internal links and a blown client-JS budget fail here rather
+# than on the live site. Deploy is separate and only runs on main, where the
+# secrets exist.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs-site/**'
+      - '.github/workflows/docs-deploy.yml'
+  pull_request:
+    paths:
+      - 'docs-site/**'
+      - '.github/workflows/docs-deploy.yml'
+
+# Never let two deploys of the same branch race.
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: docs-site
+
+jobs:
+  build:
+    name: build + check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs-site/package-lock.json
+      - run: npm ci
+      - name: build
+        run: npm run build
+      - name: check (links + client-JS budget)
+        run: npm run check
+      - name: upload site
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-site
+          path: docs-site/dist
+          retention-days: 7
+
+  deploy:
+    name: deploy to Cloudflare Pages
+    needs: build
+    # Only on main, and never from a fork PR — a fork must not reach the account
+    # token.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs-site/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - name: publish
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: docs-site
+          command: pages deploy dist --project-name=rowshape-docs

@@ -10,11 +10,16 @@ import (
 	"github.com/rowshape/rowshape/internal/verdict"
 )
 
-// CheckHydrator runs the hydrator MUSTs (RFC §13, §10) against a hydrator by
-// hydrating f: null_fraction is honored within ±0.5%; a column declared `unique`
+// CheckHydrator runs the hydrator MUSTs (RFC §13, §10) against ROWSHAPE's
+// hydrator by hydrating f: null_fraction is honored within ±0.5%; a column declared `unique`
 // is hydrated with distinct values; and generation is deterministic (the same
 // fixture + seed produces byte-identical output). rows is the number of rows to
 // synthesize (a larger count tightens the null_fraction tolerance).
+//
+// This checks the reference implementation, not an arbitrary one: it calls
+// hydrate.Generate directly. Plugging in a third party's hydrator would need an
+// agreed wire format for hydrated rows, which RFC-0001 does not define — so the
+// suite does not pretend to offer it.
 func CheckHydrator(f *fixture.Fixture, seed, rows int64) []Violation {
 	var vs []Violation
 

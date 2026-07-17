@@ -1,0 +1,134 @@
+name: Release
+
+# Tag -> release (P0-T4, P0-T5).
+#
+# .goreleaser.yaml described a release in detail and nothing ran it. Tagging
+# v0.1.0 would have produced silence: no binaries, no cask, no image, and — since
+# cosign keyless signing needs a CI OIDC identity — no signatures or SBOM either.
+# The config was complete; the pipeline did not exist.
+#
+# Everything this needs beyond the checkout is installed here rather than assumed:
+# goreleaser's `sboms` block shells out to syft and its `signs` block to cosign,
+# and neither is on a runner by default. A missing tool at release time fails the
+# tag, and a tag is not something you get to retry cleanly.
+
+on:
+  push:
+    tags:
+      - "v*"
+  # Lets the pipeline be exercised end-to-end (build, SBOM, archives) before the
+  # first real tag, without publishing anything.
+  workflow_dispatch:
+
+permissions:
+  contents: write # create the GitHub Release
+  packages: write # push the image to ghcr.io
+  id-token: write # OIDC identity for cosign keyless signing (P0-T5)
+
+env:
+  GO_VERSION: "1.26.x"
+
+jobs:
+  release:
+    name: goreleaser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # goreleaser derives the changelog from history; a shallow clone gives
+          # it nothing to work with.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # A tag must not ship code the test suite has never seen. This is cheap
+      # next to publishing a broken binary to five platforms.
+      - name: Test
+        run: go test ./...
+
+      # Multi-arch (linux/amd64 + linux/arm64) image builds need QEMU + buildx.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # INV-SUPPLY-CHAIN: SBOM and cosign signatures from the FIRST release, not
+      # retrofitted. goreleaser only orchestrates these — the tools have to exist.
+      - name: Install syft (SBOM)
+        uses: anchore/sbom-action/download-syft@v0
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: goreleaser release
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          # On a tag, publish. On a manual run, build everything and publish
+          # nothing — the dry run that makes the first real tag boring.
+          args: >-
+            release --clean
+            ${{ !startsWith(github.ref, 'refs/tags/v') && '--snapshot --skip=publish,sign' || '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The Homebrew cask lands in rowshape/homebrew-tap, a DIFFERENT repo,
+          # which GITHUB_TOKEN cannot write to. Without this the release
+          # succeeds and the tap silently does not update.
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+
+      - name: Check the npm wrapper asks for what was actually built
+        # install.js constructs the asset name itself, in JavaScript, from
+        # goreleaser's name_template. The two drifted apart once already and
+        # every `npx rowshape` would have 404'd. dist/ is right here, so compare.
+        run: node npm/naming.test.js
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sbom.json
+            dist/checksums.txt*
+          retention-days: 14
+          if-no-files-found: ignore
+
+  npm:
+    name: publish npm wrapper
+    needs: release
+    # Only on a real tag: the postinstall hook downloads from the GitHub Release,
+    # so the release has to exist first (hence `needs`), and a snapshot has no
+    # release to download from.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # package.json ships version 0.0.0, and install.js builds its download URL
+      # from that version. Publishing without stamping it would fetch
+      # releases/download/v0.0.0/... and 404 on every machine — the wrapper
+      # working depends on this line.
+      - name: Stamp the version from the tag
+        working-directory: npm
+        run: npm --no-git-tag-version version "${GITHUB_REF_NAME#v}"
+
+      - name: Check the naming convention
+        run: node npm/naming.test.js
+
+      - name: Publish
+        working-directory: npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

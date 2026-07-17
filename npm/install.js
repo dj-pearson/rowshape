@@ -14,8 +14,16 @@ const REPO = "rowshape/rowshape";
 const VERSION = require("./package.json").version;
 
 // Map Node's platform/arch onto goreleaser's archive naming.
-const PLATFORM = { darwin: "Darwin", linux: "Linux", win32: "Windows" }[process.platform];
-const ARCH = { x64: "x86_64", arm64: "arm64", amd64: "x86_64" }[process.arch];
+//
+// These MUST match .goreleaser.yaml's archives.name_template, which is
+// `{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}` — raw lowercase GOOS
+// and GOARCH. This file previously used the older goreleaser convention
+// (title-cased OS, amd64 rewritten to x86_64) and asked for
+// `rowshape_1.0.0_Darwin_x86_64.tar.gz` where the release actually publishes
+// `rowshape_1.0.0_darwin_amd64.tar.gz`. Every install would have 404'd, and
+// nothing could catch it before the first real release.
+const PLATFORM = { darwin: "darwin", linux: "linux", win32: "windows" }[process.platform];
+const ARCH = { x64: "amd64", arm64: "arm64" }[process.arch];
 
 function fail(msg) {
   console.error(`rowshape: ${msg}`);
@@ -29,9 +37,23 @@ function fail(msg) {
 if (!PLATFORM || !ARCH) {
   fail(`unsupported platform ${process.platform}/${process.arch}`);
 }
+// The release builds 5 combos: darwin/linux on amd64+arm64, windows on amd64.
+// goreleaser explicitly ignores windows/arm64, so there is no asset to fetch —
+// say that plainly rather than reporting a confusing 404.
+if (PLATFORM === "windows" && ARCH === "arm64") {
+  fail("windows/arm64 is not a released target");
+}
+
+// assetName mirrors .goreleaser.yaml archives.name_template exactly:
+//   {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+// with the windows format_override to zip.
+function assetName(version, platform, arch) {
+  const ext = platform === "windows" ? "zip" : "tar.gz";
+  return `rowshape_${version}_${platform}_${arch}.${ext}`;
+}
 
 const ext = process.platform === "win32" ? "zip" : "tar.gz";
-const asset = `rowshape_${VERSION}_${PLATFORM}_${ARCH}.${ext}`;
+const asset = assetName(VERSION, PLATFORM, ARCH);
 const url = `https://github.com/${REPO}/releases/download/v${VERSION}/${asset}`;
 const binName = process.platform === "win32" ? "rowshape.exe" : "rowshape";
 const binDir = path.join(__dirname, "bin");
@@ -49,6 +71,12 @@ function get(u, cb) {
     })
     .on("error", (e) => fail(`network error: ${e.message}`));
 }
+
+// Exported so the naming can be checked against what goreleaser actually
+// publishes (npm/naming.test.js). Requiring this file must not download
+// anything — the postinstall hook runs it directly.
+module.exports = { assetName, PLATFORM, ARCH };
+if (require.main !== module) return;
 
 fs.mkdirSync(binDir, { recursive: true });
 const archivePath = path.join(binDir, asset);

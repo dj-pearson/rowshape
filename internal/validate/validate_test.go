@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/rowshape/rowshape/internal/fixture"
+	"github.com/rowshape/rowshape/internal/profile"
 	"github.com/rowshape/rowshape/internal/verdict"
 )
 
@@ -127,5 +128,112 @@ func TestConstraintViolationClass(t *testing.T) {
 	}
 	if (Statement{ErrCode: "42P01"}).ConstraintViolation() {
 		t.Error("42P01 (undefined_table) is not a constraint violation")
+	}
+}
+
+// TestCheckHostRefusesEquivalentSpellings: a host is not a string.
+//
+// This is INV-BLAST-RADIUS-ZERO's last line, and it was bypassable. A fixture
+// pulled from `localhost` and validated with `--ephemeral` against `127.0.0.1`
+// went straight past the refusal and started creating a database on the very
+// server the fixture came from. The old test only compared a host to itself and
+// to an obviously different one, so every equivalent spelling went unchecked.
+//
+// Each case below is the SAME machine written two ways, and every one must refuse.
+func TestCheckHostRefusesEquivalentSpellings(t *testing.T) {
+	cases := []struct {
+		name        string
+		fixtureHost string // what pull recorded in meta.source
+		targetHost  string // what validate was aimed at
+		wantRefusal bool
+	}{
+		// The proven bypass, in both directions — a fixture may already exist
+		// written either way, so neither direction may fail open.
+		{"localhost fixture, 127.0.0.1 target", "localhost", "127.0.0.1", true},
+		{"127.0.0.1 fixture, localhost target", "127.0.0.1", "localhost", true},
+		{"localhost fixture, ::1 target", "localhost", "::1", true},
+		{"::1 fixture, 127.0.0.1 target", "::1", "127.0.0.1", true},
+		{"bracketed ipv6 target", "::1", "[::1]", true},
+		// 127.0.0.0/8 is loopback in its entirety.
+		{"127.0.0.53 is still this machine", "localhost", "127.0.0.53", true},
+
+		// DNS is case-insensitive (RFC 4343).
+		{"case differs", "DB.Internal", "db.internal", true},
+		{"case differs, other way", "db.internal", "DB.INTERNAL", true},
+
+		// An absolute FQDN names the same host as its relative form.
+		{"trailing FQDN dot", "db.internal", "db.internal.", true},
+
+		{"same host, same spelling", "prod.example.com", "prod.example.com", true},
+
+		// Genuinely different hosts must still be allowed, or validate refuses to
+		// do its job.
+		{"different host", "prod.example.com", "staging.example.com", false},
+		{"different host, loopback target", "prod.example.com", "localhost", false},
+		// Not loopback: 128.x is a public range, and a substring match on "127."
+		// must not creep into treating it as one.
+		{"128.0.0.1 is not loopback", "localhost", "128.0.0.1", false},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			source := profile.HashSource(c.fixtureHost)
+			err := CheckHost(source, c.targetHost)
+
+			if c.wantRefusal && err == nil {
+				t.Errorf("fixture pulled from %q, target %q: NOT refused — validate would touch the "+
+					"server the fixture came from (INV-BLAST-RADIUS-ZERO)", c.fixtureHost, c.targetHost)
+			}
+			if !c.wantRefusal && err != nil {
+				t.Errorf("fixture pulled from %q, target %q: refused a genuinely different host (%v)",
+					c.fixtureHost, c.targetHost, err)
+			}
+		})
+	}
+}
+
+// TestSplitStatementsInTracksLines: a finding's `location` (PRD §10) is only as
+// good as the line the splitter reports.
+//
+// locationFor was a stub returning nil unconditionally, and Statement carried no
+// origin at all, so `location` was never populated on any finding — while sitting
+// in the documented verdict contract, in PRD §10's own example, in the human
+// renderer ("at file:line"), and under P4-T2, whose entire job is turning it into
+// a PR annotation at the offending line.
+func TestSplitStatementsInTracksLines(t *testing.T) {
+	sql := "-- a leading comment\n" + // 1
+		"\n" + // 2
+		"ALTER TABLE t ADD COLUMN a text;\n" + // 3
+		"\n" + // 4
+		"ALTER TABLE t ADD COLUMN b text;\n" // 5
+
+	got := SplitStatementsIn("migrations/001.sql", sql)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 statements, got %d: %+v", len(got), got)
+	}
+	// The first statement's text begins at its leading comment, on line 1.
+	if got[0].Line != 1 {
+		t.Errorf("first statement Line = %d, want 1", got[0].Line)
+	}
+	// The second begins on line 5 — blank lines between statements must not shift
+	// it, which is what the trim-aware offset is for.
+	if got[1].Line != 5 {
+		t.Errorf("second statement Line = %d, want 5 — a wrong line annotates the wrong code", got[1].Line)
+	}
+	for i, l := range got {
+		if l.File != "migrations/001.sql" {
+			t.Errorf("statement %d lost its file: %q", i, l.File)
+		}
+	}
+
+	// Inline SQL has no file, and must not invent one.
+	inline := SplitStatementsIn("", "ALTER TABLE t ADD COLUMN c text;")
+	if len(inline) != 1 || inline[0].File != "" {
+		t.Errorf("inline SQL must carry no file, got %+v", inline)
+	}
+
+	// SplitStatements keeps its old shape for callers that only want the text.
+	if plain := SplitStatements(sql); len(plain) != 2 {
+		t.Errorf("SplitStatements should still return 2 statements, got %d", len(plain))
 	}
 }

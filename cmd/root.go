@@ -3,11 +3,9 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
 	// Registers the RS-* finding analyzers with the validate pipeline (P2-T8+).
 	_ "github.com/rowshape/rowshape/internal/findings"
-	"github.com/rowshape/rowshape/internal/verdict"
 	"github.com/spf13/cobra"
 )
 
@@ -49,13 +47,4 @@ func NewRootCmd() *cobra.Command {
 // Execute runs the root command. main maps the returned error onto an exit code.
 func Execute() error {
 	return NewRootCmd().Execute()
-}
-
-// notImplemented is the phase-0 stub body: print a tool error and exit 3.
-// Exit code 3 = tool error (could not produce a verdict), per PRD §10.
-func notImplemented(name string) func(*cobra.Command, []string) error {
-	return func(_ *cobra.Command, _ []string) error {
-		fmt.Fprintf(os.Stderr, "rowshape %s: not implemented\n", name)
-		return &ExitError{Code: verdict.ExitToolError}
-	}
 }

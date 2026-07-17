@@ -38,14 +38,50 @@ func DDL(f *fixture.Fixture) []string {
 	// Recreate the fixture's secondary indexes so a migration that reindexes or
 	// depends on them has them present. On hydrated (small) data these are cheap;
 	// their fixture-recorded bytes/bloat drive extrapolation, not the real build.
+	//
+	// SECONDARY is the operative word. Postgres backs every PRIMARY KEY and UNIQUE
+	// constraint with an implicit index NAMED AFTER THE CONSTRAINT, and a
+	// conformant `pull` records both the constraint (§6.4) and that index (§6.5) —
+	// they are both really there. createTable above already emits the constraint,
+	// which recreates its index, so emitting the index again is a duplicate:
+	//
+	//	ERROR: relation "orders_pkey" already exists (SQLSTATE 42P07)
+	//
+	// which fails the whole DDL and takes `validate` with it. Every hand-written
+	// test fixture lists constraints without their backing indexes, so only a
+	// fixture from a real `pull` ever triggers this — that is, every real schema
+	// with a primary key.
 	for _, name := range sortedKeys(f.Tables) {
+		backed := constraintBackedIndexes(f.Tables[name])
 		for _, ix := range f.Tables[name].Indexes {
+			if backed[ix.Name] {
+				continue
+			}
 			if stmt := createIndex(name, ix); stmt != "" {
 				stmts = append(stmts, stmt)
 			}
 		}
 	}
 	return stmts
+}
+
+// constraintBackedIndexes returns the index names that a PRIMARY KEY or UNIQUE
+// constraint on this table already creates.
+//
+// Postgres names the implicit index after the constraint that owns it, which is
+// what makes name matching exact rather than a guess: `orders_pkey` the
+// constraint and `orders_pkey` the index are the same object viewed twice.
+func constraintBackedIndexes(tbl fixture.Table) map[string]bool {
+	backed := make(map[string]bool)
+	for _, con := range tbl.Constraints {
+		switch con.Kind {
+		case "primary_key", "unique":
+			if con.Name != "" {
+				backed[con.Name] = true
+			}
+		}
+	}
+	return backed
 }
 
 // createIndex renders a secondary index. Partial and expression indexes are

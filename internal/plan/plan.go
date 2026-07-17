@@ -37,7 +37,7 @@ func ReadLiveSchema(ctx context.Context, url string) (*fixture.Fixture, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect to target failed")
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 	f, err := profile.ReadStructure(ctx, conn, profile.Options{})
 	if err != nil {
 		return nil, fmt.Errorf("reading target schema failed: %w", err)
@@ -121,14 +121,41 @@ func existsNote(exists bool) string {
 	return "target table not present on the live schema"
 }
 
-// RedactURL strips credentials from a connection URL for display.
+// RedactURL strips credentials from a connection URL for display (PRD §5: the
+// connection URL and any credentials are never logged, persisted, or written into
+// a fixture).
+//
+// It cuts at the LAST "@" inside the authority, not the first. A password may
+// legally contain an unencoded "@" — and people write them — so splitting on the
+// first one leaves the tail of the password in the output:
+//
+//	postgres://admin:p@ss@host/db  ->  postgres://…@ss@host/db   (leaks "ss")
+//
+// The search is bounded to the authority so an "@" in a path or query string is
+// not mistaken for a credential separator, which would corrupt the URL it is
+// supposed to be merely displaying.
 func RedactURL(url string) string {
-	if i := strings.Index(url, "@"); i >= 0 {
-		if s := strings.Index(url, "://"); s >= 0 && s+3 < i {
-			return url[:s+3] + "…@" + url[i+1:]
+	s := strings.Index(url, "://")
+	if s < 0 {
+		return url
+	}
+	start := s + 3
+
+	// The authority runs to the first "/", "?", or "#" after the scheme.
+	end := len(url)
+	for _, sep := range []string{"/", "?", "#"} {
+		if i := strings.Index(url[start:], sep); i >= 0 && start+i < end {
+			end = start + i
 		}
 	}
-	return url
+
+	// A host cannot contain "@", so the last one in the authority ends the
+	// userinfo — everything before it is credentials.
+	at := strings.LastIndex(url[start:end], "@")
+	if at < 0 {
+		return url
+	}
+	return url[:start] + "…@" + url[start+at+1:]
 }
 
 func collapse(s string) string { return strings.Join(strings.Fields(s), " ") }

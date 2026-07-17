@@ -47,7 +47,7 @@ func runInspectLeaks(cmd *cobra.Command, path string, failOnLeak bool) error {
 		fmt.Fprintf(os.Stderr, "rowshape inspect: reading %s failed: %v\n", path, err)
 		return toolError()
 	}
-	f, err := fixture.Parse(data)
+	f, err := fixture.ParseVerified(data)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "rowshape inspect: %v\n", err)
 		return toolError()

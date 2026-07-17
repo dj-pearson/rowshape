@@ -26,7 +26,7 @@ func TestServerHandshakeAndTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client connect (handshake): %v", err)
 	}
-	defer cs.Close()
+	defer func() { _ = cs.Close() }()
 
 	// The handshake exposes the server's identity and instructions.
 	init := cs.InitializeResult()

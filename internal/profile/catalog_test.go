@@ -51,7 +51,11 @@ func seedRich(t *testing.T, conn *pgx.Conn) {
 				(g*1.5)::numeric(10,2),
 				g,
 				timestamptz '2021-01-01' + (g||' hours')::interval,
-				gen_random_uuid(),
+				-- md5()::uuid, not gen_random_uuid(): the latter is core only on
+				-- PG13+ (pgcrypto before that), and this seed now runs on every
+				-- major in the corpus matrix. Deterministic, which a seed wants
+				-- anyway.
+				md5(g::text)::uuid,
 				jsonb_build_object('k1',g,'k2','v'||g,'nested',jsonb_build_object('a',true,'b',g)),
 				decode(md5(g::text),'hex')
 			FROM generate_series(1,300) g`,

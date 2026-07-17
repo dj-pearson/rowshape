@@ -46,7 +46,7 @@ func (r Result) WriteHuman(w io.Writer) {
 				e.Bucket, e.BasisRows, e.BasisMs, e.Model, e.DeclaredRows)
 		}
 		if len(f.DependsOn) > 0 {
-			fmt.Fprintf(w, "    rests on: %s [confidence: %s]\n", strings.Join(f.DependsOn, ", "), f.Confidence)
+			fmt.Fprintf(w, "    rests on: %s [confidence: %s]\n", strings.Join(f.DependsOn, ", "), humanConfidence(f.Confidence))
 		}
 		if f.Remediation != "" {
 			fmt.Fprintf(w, "    fix: %s\n", f.Remediation)
@@ -83,4 +83,21 @@ func severityMark(s string) string {
 	default:
 		return "-"
 	}
+}
+
+// humanConfidence renders a confidence for a reader.
+//
+// An absent confidence is the empty string — the fixture carries no such fact, so
+// the finding rests on nothing and is capped to WARN. Printing that verbatim gave
+// `[confidence: ]`, which is blank on the one line whose whole job is to say how
+// well the answer is known. "absent" is the word RFC §7.4 uses for it; say it.
+//
+// The JSON marshaler is untouched: `null` there already means absent, and the
+// verdict contract is the public API (INV-VERDICT-STABLE). This is a rendering of
+// the same struct, which is the point (INV-VERDICT-SHAPE).
+func humanConfidence(c string) string {
+	if c == "" {
+		return "absent"
+	}
+	return c
 }

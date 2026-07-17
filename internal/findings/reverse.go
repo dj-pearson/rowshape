@@ -63,7 +63,7 @@ func dropTableFinding(f *fixture.Fixture, clean, upper string) verdict.Finding {
 }
 
 func dropColumnFinding(f *fixture.Fixture, clean, upper string) (verdict.Finding, bool) {
-	table := alterTableTarget(clean)
+	table := resolveTable(f, alterTableTarget(clean))
 	col := identAfter(clean, upper, "DROP COLUMN")
 	if table == "" || col == "" {
 		return verdict.Finding{}, false
@@ -82,7 +82,7 @@ func dropColumnFinding(f *fixture.Fixture, clean, upper string) (verdict.Finding
 }
 
 func narrowTypeFinding(f *fixture.Fixture, clean, upper string) (verdict.Finding, bool) {
-	table := alterTableTarget(clean)
+	table := resolveTable(f, alterTableTarget(clean))
 	col := columnBeforeTypeChange(clean, upper)
 	newType := typeAfter(clean, upper)
 	if table == "" || col == "" || newType == "" {
