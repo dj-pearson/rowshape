@@ -16,24 +16,25 @@ const configFile = "rowshape.toml"
 // database and never runs a migration. `init --agent` (P3-T8+) extends this base.
 func newInitCmd() *cobra.Command {
 	var force bool
+	var agent bool
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Scaffold rowshape config in the current repo (offline detection only)",
 		Long: "init detects your database engine and migration runner from the repo\n" +
 			"layout and writes a starter " + configFile + " you can commit and edit. It\n" +
 			"makes no network or database connection. Re-running it leaves an existing\n" +
-			"config untouched unless you pass --force.",
+			"config untouched unless you pass --force.\n\n" +
+			"--agent additionally wires this repo for coding agents: it registers\n" +
+			"`rowshape mcp` in the MCP config of every detected client (.mcp.json for\n" +
+			"Claude Code, .cursor/mcp.json, .vscode/mcp.json). It merges into existing\n" +
+			"config and is safe to re-run.",
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			dir, err := os.Getwd()
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "rowshape init: %v\n", err)
-				return toolError()
-			}
-			return runInit(dir, force)
+			return newInitAgentRunner(&agent, &force)()
 		},
 	}
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "regenerate an existing "+configFile)
+	cmd.Flags().BoolVar(&agent, "agent", false, "also wire this repo for coding agents (MCP client config)")
 	return cmd
 }
 

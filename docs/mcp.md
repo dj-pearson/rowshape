@@ -17,6 +17,50 @@ read the failure → fix → re-validate, with no human turn in the middle.
 `rowshape init --agent` writes this for you, along with the agent rule and a
 pre-commit backstop.
 
+## `rowshape init --agent`
+
+An MCP server the agent never calls is decoration. `--agent` wires it in: it
+registers `rowshape mcp` in the config of every client it detects in the repo.
+
+| Client | Config it writes | Root key |
+| --- | --- | --- |
+| Claude Code | `.mcp.json` | `mcpServers` |
+| Cursor | `.cursor/mcp.json` | `mcpServers` |
+| VS Code | `.vscode/mcp.json` | `servers` (+ `"type": "stdio"`) |
+
+The formats have quietly diverged, which is why that table exists — a config in
+the wrong shape is silently ignored by the client, and looks exactly like
+rowshape not working.
+
+A repo worked in by both Cursor and Claude Code gets both. A repo with no markers
+at all gets `.mcp.json`, the de-facto standard. Only repo-local, committable paths
+are written — never machine-global config, which is a different consent surface
+and isn't committable anyway.
+
+The registered command is the bare name `rowshape`, resolved from `PATH`, not the
+absolute path of the binary that ran `init`. These files get committed; an
+absolute path from your machine is broken for everyone else on the team.
+
+**Re-running is safe.** The merge replaces only the `rowshape` key and leaves
+every other server and top-level field intact, so `--agent` is safe on a repo that
+already has five servers configured. When the entry is already correct, the file
+isn't touched at all.
+
+Two things worth knowing:
+
+- **The first write reformats the file.** Merging goes through a JSON round-trip,
+  so an existing config comes back re-indented with keys sorted. No data is lost
+  and it happens once — the output is stable, so later runs are byte-identical
+  no-ops — but expect the first `--agent` diff to touch lines you didn't add.
+- **A config that isn't valid JSON is refused, not rewritten.** If your
+  `.vscode/mcp.json` has comments (JSONC), rowshape will not touch it — it exits
+  3 and prints the entry to paste. Clobbering a file we can't parse would destroy
+  your other servers.
+
+Zed isn't supported yet: it keys servers under `context_servers` with a different
+entry shape, in a JSONC settings file whose format has moved across versions. A
+half-right entry there is worse than an honest omission.
+
 ## The tools
 
 | Tool | What it's for |
