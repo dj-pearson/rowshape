@@ -301,12 +301,20 @@ func TestFindingCarriesLocation(t *testing.T) {
 		t.Errorf("location = %+v, want migrations/0042_add_note.sql:3", loc)
 	}
 
-	// Windows paths must not leak into the contract: the verdict is DSSE-signable
-	// (INV-DSSE-SHAPE), so the same migration has to produce the same document on
-	// every platform, and annotations want repo-style paths.
-	c.Statements[0].File = `migrations\0042_add_note.sql`
+	// A path built the way the CLI builds one must reach the contract with forward
+	// slashes on EVERY platform: the verdict is DSSE-signable (INV-DSSE-SHAPE), so
+	// the same migration must produce the same document on Windows and Linux, and
+	// annotations want repo-style paths.
+	//
+	// Asserted through filepath.Join rather than a hardcoded `migrations\0042.sql`.
+	// An earlier version did the latter and CI failed it on Linux — correctly:
+	// filepath.ToSlash is platform-dependent, and on Linux a backslash is a legal
+	// FILENAME character, not a separator, so rewriting it would corrupt the path.
+	// The claim worth pinning is about the platform's own paths, not about
+	// backslashes.
+	c.Statements[0].File = filepath.Join("migrations", "0042_add_note.sql")
 	if got := (rsLock{}).Analyze(f, c)[0].Location; got == nil || got.File != "migrations/0042_add_note.sql" {
-		t.Errorf("a backslash path must normalize to forward slashes, got %+v", got)
+		t.Errorf("a native path must reach the verdict with forward slashes, got %+v", got)
 	}
 
 	// Inline SQL (an agent handing over what it just wrote, unsaved) has no file;
