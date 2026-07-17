@@ -47,7 +47,7 @@ func tempDB(t *testing.T) (string, func()) {
 		// lingering sessions explicitly and drop plainly. Mirrors
 		// internal/target.dropDatabase — the corpus matrix runs 11-17.
 		var num int
-		if err := c.QueryRow(ctx, "SHOW server_version_num").Scan(&num); err == nil && num >= 130000 {
+		if err := c.QueryRow(ctx, "SELECT current_setting('server_version_num')::int").Scan(&num); err == nil && num >= 130000 {
 			_, _ = c.Exec(ctx, "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)")
 			return
 		}

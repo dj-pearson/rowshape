@@ -126,7 +126,7 @@ func dropDatabase(ctx context.Context, admin *pgx.Conn, name string) error {
 // 160004 (16.4), which is why it is read instead of parsing the version string.
 func supportsDropForce(ctx context.Context, admin *pgx.Conn) (bool, error) {
 	var num int
-	if err := admin.QueryRow(ctx, "SHOW server_version_num").Scan(&num); err != nil {
+	if err := admin.QueryRow(ctx, "SELECT current_setting('server_version_num')::int").Scan(&num); err != nil {
 		return false, fmt.Errorf("reading server version: %w", err)
 	}
 	return num >= 130000, nil
