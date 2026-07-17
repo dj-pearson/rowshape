@@ -14,10 +14,10 @@ a long tail is an outage rather than a cleanup. Guessing costs more than asking.
 compact finding codes (`RS-LOCK-001`, `RS-DATA-014`, …). Call `explain_finding`
 with a code to get the fix.
 
-**Never hand-wave a FAIL.** A FAIL is a reproduction, not an opinion: the
-migration was executed against production-shaped data and something broke. Fix it
-and re-validate. Do not explain it away in the PR description, do not disable the
-check, and do not ask a human to accept it.
+**Never hand-wave a FAIL.** A FAIL is not an opinion. Either the migration was
+executed against production-shaped data and broke, or a fact measured from
+production says it will. Fix it and re-validate. Do not explain it away in the PR
+description, do not disable the check, and do not ask a human to accept it.
 
 **A WARN is not a pass.** WARN means the verdict rests on a fact rowshape could
 not prove — usually a statistic it could only estimate. The finding names the

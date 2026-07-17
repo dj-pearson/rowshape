@@ -82,7 +82,7 @@ one. A rule you paste from a README can never do that.
 That's what the markers are for:
 
 ```markdown
-<!-- rowshape:begin v1 — managed by `rowshape init --agent`. Edits here are overwritten... -->
+<!-- rowshape:begin v2 — managed by `rowshape init --agent`. Edits here are overwritten... -->
 ...the rule...
 <!-- rowshape:end -->
 ```
@@ -115,7 +115,7 @@ workflow; replacing it to install a backstop is worse than not installing one.
 | --- | --- | --- |
 | `0` PASS | allows | — |
 | `2` WARN-only | allows | WARN is surfaced, not a gate. Use `--warn-fail` in CI. |
-| `1` FAIL | **blocks** | A reproduction, not an opinion. |
+| `1` FAIL | **blocks** | Not an opinion: an execution that broke, or a measured fact that says it will. |
 | `3` tool error | allows, loudly | Not a verdict — see below. |
 
 It only runs when a **migration is actually staged**, matched per detected runner

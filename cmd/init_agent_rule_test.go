@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -145,8 +146,11 @@ Tabs, not spaces. This paragraph is ours.
 	if n := strings.Count(got, "rowshape:begin"); n != 1 {
 		t.Errorf("expected exactly 1 managed block after upgrade, got %d — an upgrade must replace, not append:\n%s", n, got)
 	}
-	if !strings.Contains(got, "rowshape:begin v1") {
-		t.Errorf("the block should now carry the current version, got:\n%s", got)
+	// The CURRENT version, not a literal. Pinning v1 here made a legitimate rule
+	// bump fail this test — which is backwards: the point is that the block tracks
+	// whatever version ships.
+	if !strings.Contains(got, fmt.Sprintf("rowshape:begin v%d", agentrule.Version)) {
+		t.Errorf("the block should now carry the current version (v%d), got:\n%s", agentrule.Version, got)
 	}
 	hasRule(t, got, "AGENTS.md")
 
@@ -236,8 +240,8 @@ func TestInitWithoutAgentWritesNoRule(t *testing.T) {
 func TestRuleBlockRoundTrip(t *testing.T) {
 	t.Run("insert into empty", func(t *testing.T) {
 		out, changed := agentrule.Upsert("")
-		if !changed || !strings.Contains(out, "rowshape:begin v1") {
-			t.Errorf("empty content should get the block, got: %q", out)
+		if !changed || !strings.Contains(out, fmt.Sprintf("rowshape:begin v%d", agentrule.Version)) {
+			t.Errorf("empty content should get the block at v%d, got: %q", agentrule.Version, out)
 		}
 	})
 

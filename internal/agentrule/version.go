@@ -21,10 +21,17 @@ import (
 // Version is the rule's version. Bump it whenever rule.md changes so existing
 // repos take the new text on their next `rowshape init --agent`.
 //
+// v2: "a FAIL is a reproduction" overstated it. Most findings are — validate
+// hydrates and applies the migration, and it really breaks. But some are static
+// facts read from the fixture: the orphan_fraction findings fire off a measured
+// production fact without the hydrated data containing an orphan at all. The
+// rule now says "not an opinion" and names both grounds, which is just as
+// forceful and has the advantage of being true.
+//
 // It is a plain integer, not semver: there is no such thing as a
 // backward-incompatible prompt, and the only question a consumer ever asks is
 // "is this older than what I ship?".
-const Version = 1
+const Version = 2
 
 // Text is the rule itself, embedded so the binary is self-contained (PRD §7:
 // single static binary, no runtime).
