@@ -84,7 +84,16 @@ type drift struct {
 
 // compareSchema reports where the live target does not match the intended
 // fixture: missing tables/columns, a NOT NULL that isn't enforced, a type
-// mismatch, or a missing constraint. It is a comparison only — no writes.
+// mismatch, a missing constraint, or a column the fixture does not know about.
+// It is a comparison only — no writes.
+//
+// "Does reality match intent" (PRD §8.1) runs in both directions. Only walking
+// the fixture answers "is everything I declared still there?", which misses the
+// commonest and most consequential drift: a column that EXISTS in production and
+// is absent from the fixture. That is the signature of a migration shipped
+// without a re-pull, and it is worse than a cosmetic gap — validate hydrates from
+// the fixture, so every later verdict reasons about a schema production no longer
+// has, confidently and wrongly. verify is the one command meant to catch that.
 func compareSchema(expected, actual *fixture.Fixture) []drift {
 	var drifts []drift
 	for _, tname := range sortedTableNames(expected) {
@@ -106,6 +115,22 @@ func compareSchema(expected, actual *fixture.Fixture) []drift {
 			}
 			if !ec.Nullable && ac.Nullable {
 				drifts = append(drifts, drift{Object: tname + "." + cname, Want: "NOT NULL", Got: "nullable"})
+			}
+		}
+		// The other direction: columns live that the fixture never declared.
+		//
+		// Scoped to tables the fixture DOES declare, deliberately. A fixture may
+		// legitimately cover a subset of the database (`pull --schema public`),
+		// so an undeclared TABLE is not evidence of anything and flagging it would
+		// be noise. An undeclared COLUMN in a table the fixture claims to describe
+		// is unambiguous: the fixture is out of date.
+		for _, cname := range sortedColNames(at.Columns) {
+			if _, ok := et.Columns[cname]; !ok {
+				drifts = append(drifts, drift{
+					Object: tname + "." + cname,
+					Want:   "not in the fixture",
+					Got:    "present on the target (re-run `rowshape pull`)",
+				})
 			}
 		}
 		for _, ec := range et.Constraints {
