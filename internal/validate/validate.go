@@ -39,16 +39,74 @@ var ErrHostMatchesSource = errors.New("validate: refusing to run against the fix
 
 // CheckHost enforces the host-match refusal (PRD §11). fixtureSource is
 // meta.source (a salted host hash); targetHost is the plain host of the target
-// URL. It refuses when the target hashes to the source. Empty inputs are safe
-// (an ephemeral local target has no source to collide with).
+// URL. It refuses when the target is the host the fixture was pulled from. Empty
+// inputs are safe (an ephemeral local target has no source to collide with).
+//
+// A host is not a string. Comparing one hash of the target against the source
+// missed every equivalent spelling, and the bypass was not hypothetical: a
+// fixture pulled from `localhost`, validated with --ephemeral against
+// `127.0.0.1`, sailed past this refusal and began creating a database on the very
+// server the fixture came from. `DB.Internal` vs `db.internal` (DNS is
+// case-insensitive) and a trailing FQDN dot did the same.
+//
+// The fix is in two halves, and it needs both. profile.HashSource normalizes the
+// host before hashing, so one machine hashes to one value however it was spelled
+// — that half has to be at emit time, because a hash cannot be inverted, and if
+// the odd spelling is the one already recorded in meta.source, no work here can
+// recover it. This half then hashes the target under every spelling that is
+// definitionally the same machine, which normalization alone cannot unify:
+// `localhost` and `127.0.0.1` normalize to themselves and are still one host.
+// Any match refuses.
+//
+// What this deliberately does NOT do is resolve DNS. `db.internal` and the IP it
+// points at are the same machine, but finding that out means a network call from
+// a safety check, and an answer that can change between the check and the
+// connection. The refusal is the last line, not the only one: it is why
+// `--ephemeral` wants a disposable server, not a hostname that merely looks
+// different from production.
 func CheckHost(fixtureSource, targetHost string) error {
 	if fixtureSource == "" || targetHost == "" {
 		return nil
 	}
-	if profile.HashSource(targetHost) == fixtureSource {
-		return ErrHostMatchesSource
+	for _, alias := range hostAliases(targetHost) {
+		if profile.HashSource(alias) == fixtureSource {
+			return ErrHostMatchesSource
+		}
 	}
 	return nil
+}
+
+// hostAliases returns the spellings under which targetHost must be checked: the
+// host exactly as given (so a fixture written from that spelling still matches),
+// its DNS-normalized form, and — when it is loopback — every other way of naming
+// this machine.
+func hostAliases(host string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(h string) {
+		if h != "" && !seen[h] {
+			seen[h] = true
+			out = append(out, h)
+		}
+	}
+
+	add(host) // verbatim: matches fixtures already written with this spelling
+	add(profile.NormalizeHost(host))
+
+	if isLoopback(profile.NormalizeHost(host)) {
+		// These are the same machine by definition, so a fixture pulled from any
+		// of them must refuse a target named by any other.
+		for _, l := range []string{"localhost", "127.0.0.1", "::1", "[::1]"} {
+			add(l)
+		}
+	}
+	return out
+}
+
+// isLoopback reports whether h names this machine. 127.0.0.0/8 is loopback in
+// its entirety, not just 127.0.0.1.
+func isLoopback(h string) bool {
+	return h == "localhost" || h == "::1" || h == "0:0:0:0:0:0:0:1" || strings.HasPrefix(h, "127.")
 }
 
 // BuildResult assembles the Verdict from a capture: it runs each analyzer,
@@ -148,26 +206,77 @@ func MarkExact(f *fixture.Fixture) {
 	}
 }
 
+// Located is a statement together with where it came from. The origin is what
+// lets a finding carry `location` (PRD §10) — the field a PR annotation needs to
+// point at the offending line (P4-T2).
+type Located struct {
+	SQL  string
+	File string // as given to SplitStatementsIn; "" for inline SQL
+	Line int    // 1-based line where the statement text begins
+}
+
 // SplitStatements splits a SQL script into individual statements on top-level
 // semicolons, skipping semicolons inside line/block comments, single- and
 // double-quoted strings, and dollar-quoted bodies ($$...$$, $tag$...$tag$). It
 // is enough to apply a raw-SQL migration statement-by-statement for capture; it
 // does not validate SQL.
 func SplitStatements(sql string) []string {
-	var stmts []string
+	loc := SplitStatementsIn("", sql)
+	out := make([]string, 0, len(loc))
+	for _, l := range loc {
+		out = append(out, l.SQL)
+	}
+	return out
+}
+
+// SplitStatementsIn is SplitStatements, keeping each statement's origin.
+//
+// Line is where the statement's text starts, counting a leading comment as part
+// of the statement — that is where a reviewer's eye goes, and it is what the
+// splitter already has without a second parse.
+func SplitStatementsIn(file, sql string) []Located {
+	var stmts []Located
 	var buf strings.Builder
 	runes := []rune(sql)
 	i, n := 0, len(runes)
 
+	// Prefix count of newlines, so a rune index maps to a line in O(1).
+	nl := make([]int, n+1)
+	c := 0
+	for k := 0; k < n; k++ {
+		nl[k] = c
+		if runes[k] == '\n' {
+			c++
+		}
+	}
+	nl[n] = c
+	lineAt := func(idx int) int {
+		if idx > n {
+			idx = n
+		}
+		if idx < 0 {
+			idx = 0
+		}
+		return nl[idx] + 1
+	}
+	bufStart := 0
+
 	flush := func() {
-		s := strings.TrimSpace(buf.String())
+		raw := buf.String()
+		s := strings.TrimSpace(raw)
 		if s != "" {
-			stmts = append(stmts, s)
+			// Where the trimmed text actually begins, so leading blank lines
+			// between statements do not shift the reported line.
+			lead := len([]rune(raw)) - len([]rune(strings.TrimLeft(raw, " \t\r\n")))
+			stmts = append(stmts, Located{SQL: s, File: file, Line: lineAt(bufStart + lead)})
 		}
 		buf.Reset()
 	}
 
 	for i < n {
+		if buf.Len() == 0 {
+			bufStart = i
+		}
 		c := runes[i]
 		switch {
 		case c == '-' && i+1 < n && runes[i+1] == '-': // line comment

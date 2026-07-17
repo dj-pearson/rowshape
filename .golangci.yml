@@ -1,0 +1,41 @@
+version: "2"
+
+# Lint config for CI (P0-T6). The default linter set is kept — errcheck, govet,
+# ineffassign, staticcheck, unused — and the exclusions below are deliberately
+# narrow.
+#
+# The temptation with errcheck is to switch it off, or to exclude `Close`
+# wholesale, because most unchecked Close calls are harmless deferred cleanup.
+# That exclusion would be a mistake: a `defer file.Close()` on a WRITE path
+# silently drops a failed flush and reports success over a truncated file, which
+# is precisely the bug errcheck found in `hydrate` (see cmd/hydrate.go). So Close
+# stays checked, and the handful of genuinely-safe sites say `_ =` at the call —
+# a visible, reviewable claim rather than a blanket rule.
+#
+# Only calls that CANNOT meaningfully fail are excluded here.
+
+linters:
+  settings:
+    staticcheck:
+      checks:
+        - all
+        # QF1001 (apply De Morgan's law) is a style quickfix, and in this codebase
+        # it argues the wrong way. Every site it fires on is a scanner loop:
+        #
+        #   for i < n && !(runes[i] == '*' && i+1 < n && runes[i+1] == '/')
+        #
+        # which reads as "until we reach the closing */". De Morgan turns that into
+        # `runes[i] != '*' || i+1 >= n || runes[i+1] != '/'` — equivalent, and
+        # harder to check against the thing it is looking for. The other staticcheck
+        # checks stay on.
+        - -QF1001
+    errcheck:
+      exclude-functions:
+        # Writes to stdout/stderr and to a tabwriter. There is no recovery for a
+        # failed write to a terminal, and the exit code — not the text — is the
+        # contract these commands are judged on (PRD §10).
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        # hash.Hash.Write "never returns an error" per its own documentation.
+        - (hash.Hash).Write

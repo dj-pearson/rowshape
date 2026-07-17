@@ -1,0 +1,140 @@
+// Post-build checks for the docs site: internal links resolve, and the client JS
+// stays inside its budget.
+//
+// Deliberately dependency-free — it reads the built `dist/` the way a browser
+// would. A link checker that needs a headless browser and four hundred packages to
+// tell you a href is wrong is worse than the problem.
+//
+// Run: node scripts/check-build.mjs   (npm run check, after npm run build)
+
+import { readFile, readdir, stat } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { join, dirname, resolve, extname } from 'node:path';
+
+const DIST = 'dist';
+
+/**
+ * The client-JS budget, in bytes, for what a visitor loads on a page.
+ *
+ * PRD §9 chose Starlight partly for "ships zero JS by default". That is not
+ * literally true and this file is where that stops being a belief: Starlight
+ * emits a small amount of progressive-enhancement JS (theme toggle, table of
+ * contents, the search launcher) on every page. What it does NOT ship is a UI
+ * framework runtime, which is what the claim was actually protecting against.
+ *
+ * So the guard measures the real thing: a per-page ceiling low enough that no
+ * framework runtime, analytics bundle, or component island can slip in without
+ * tripping it. Raising this number is a product decision, not a build fix.
+ */
+const JS_BUDGET_BYTES = 32 * 1024;
+
+/** Recursively collect files under dir matching a predicate. */
+async function walk(dir, match, out = []) {
+	for (const entry of await readdir(dir, { withFileTypes: true })) {
+		const path = join(dir, entry.name);
+		if (entry.isDirectory()) await walk(path, match, out);
+		else if (match(path)) out.push(path);
+	}
+	return out;
+}
+
+/** Every href/src target a page references, as written. */
+function extractLinks(html) {
+	return [...html.matchAll(/(?:href|src)="([^"]+)"/g)].map((m) => m[1]);
+}
+
+/** Resolve an internal link to the file that must exist in dist/. */
+function resolveTarget(link) {
+	const clean = link.split('#')[0].split('?')[0];
+	if (!clean || clean === '/') return join(DIST, 'index.html');
+	const path = join(DIST, clean);
+	if (extname(clean)) return path; // an asset: /_astro/x.js, /favicon.svg
+	return join(path, 'index.html'); // a page: /install/ -> dist/install/index.html
+}
+
+async function checkLinks(pages) {
+	const broken = [];
+	for (const page of pages) {
+		const html = await readFile(page, 'utf8');
+		for (const link of extractLinks(html)) {
+			// External, protocol-relative, anchors, and data URIs are not ours to
+			// verify. A link checker that hits the network is a flaky CI job.
+			if (/^(https?:|\/\/|#|mailto:|data:)/.test(link)) continue;
+			if (!link.startsWith('/')) continue; // relative links are rare in Starlight output
+			const target = resolveTarget(link);
+			if (!existsSync(target)) broken.push(`${page} -> ${link} (expected ${target})`);
+		}
+	}
+	return broken;
+}
+
+async function checkJSBudget(pages) {
+	const over = [];
+	for (const page of pages) {
+		const html = await readFile(page, 'utf8');
+
+		// Module scripts the page actually loads.
+		let total = 0;
+		const loaded = [];
+		for (const m of html.matchAll(/<script[^>]*\bsrc="([^"]+)"/g)) {
+			const src = m[1];
+			if (!src.startsWith('/')) continue;
+			const path = join(DIST, src);
+			if (!existsSync(path)) continue;
+			total += (await stat(path)).size;
+			loaded.push(src);
+		}
+		// Inline scripts ship on the page itself and count too.
+		for (const m of html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)) {
+			total += Buffer.byteLength(m[1], 'utf8');
+		}
+
+		const rel = page.replace(/\\/g, '/');
+		console.log(`  ${(total / 1024).toFixed(1)} KiB JS  ${rel}  (${loaded.length} module script(s))`);
+		if (total > JS_BUDGET_BYTES) {
+			over.push(`${rel}: ${total} bytes of client JS, over the ${JS_BUDGET_BYTES} budget`);
+		}
+	}
+	return over;
+}
+
+async function main() {
+	if (!existsSync(DIST)) {
+		console.error(`no ${DIST}/ — run \`npm run build\` first`);
+		process.exit(1);
+	}
+	const pages = await walk(DIST, (p) => p.endsWith('.html'));
+	if (pages.length === 0) {
+		console.error('no pages in dist/ — the build produced nothing');
+		process.exit(1);
+	}
+	console.log(`checking ${pages.length} page(s)\n`);
+
+	console.log('client JS per page:');
+	const over = await checkJSBudget(pages);
+	console.log('');
+
+	const broken = await checkLinks(pages);
+
+	let failed = false;
+	if (broken.length) {
+		failed = true;
+		console.error(`${broken.length} broken internal link(s):`);
+		for (const b of broken) console.error(`  ${b}`);
+	}
+	if (over.length) {
+		failed = true;
+		console.error(`\n${over.length} page(s) over the client-JS budget:`);
+		for (const o of over) console.error(`  ${o}`);
+		console.error(
+			'\nStarlight ships a little progressive-enhancement JS by design; a framework\n' +
+				'runtime or an analytics bundle is what this budget exists to catch. Raising it\n' +
+				'is a product decision, not a build fix.'
+		);
+	}
+	if (failed) process.exit(1);
+
+	console.log(`OK: ${pages.length} pages, no broken internal links, all within the ${JS_BUDGET_BYTES / 1024} KiB JS budget`);
+}
+
+await main();

@@ -7,6 +7,7 @@ package findings
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/rowshape/rowshape/internal/estimate"
@@ -32,6 +33,7 @@ func (rsLock) Analyze(f *fixture.Fixture, c *validate.Capture) []verdict.Finding
 	var out []verdict.Finding
 	for i, st := range c.Statements {
 		op, table, kind, rewrites := classifyRewrite(st.SQL, major, hasVersion)
+		table = resolveTable(f, table)
 		if !rewrites {
 			continue
 		}
@@ -65,12 +67,23 @@ func (rsLock) finding(f *fixture.Fixture, c *validate.Capture, i int, st validat
 
 	// Durations are buckets with the basis attached, never point estimates
 	// (INV-DURATIONS-BUCKETS). Extrapolation refuses without an engine version.
+	known := tableKnown(f, table)
+	var est *verdict.Estimate
 	if hasVersion {
-		est := estimateFor(c, i, op, table, declared, tbl.Rows.Confidence)
+		est = estimateFor(c, i, op, table, declared, tbl.Rows.Confidence, known)
+	}
+	switch {
+	case est != nil:
 		fnd.Estimate = est
 		fnd.Title = fmt.Sprintf("%s lock on %s, %s rewrite of %s rows", lockMode, shortTable(table), est.Bucket, humanCount(declared))
 		fnd.Detail = fmt.Sprintf("%s holds %s and rewrites all %d rows.", kind, lockMode, declared)
-	} else {
+	case !known:
+		// The lock is real — it is read off the SQL — but the row count is not
+		// ours to guess. Say the table is missing instead of reporting the
+		// `instant` that rows=0 would produce.
+		fnd.Title = fmt.Sprintf("%s lock on %s rewrites the table (duration not extrapolated: %s is not in the fixture)", lockMode, shortTable(table), table)
+		fnd.Detail = fmt.Sprintf("%s holds %s and rewrites the whole table. %s carries no facts in this fixture, so the row count is unknown and the duration is not extrapolated. Re-run `rowshape pull` to include it, or qualify the table name if it exists under a different schema.", kind, lockMode, table)
+	default:
 		fnd.Title = fmt.Sprintf("%s lock on %s rewrites %s rows (duration not extrapolated: no engine version)", lockMode, shortTable(table), humanCount(declared))
 		fnd.Detail = fmt.Sprintf("%s holds %s and rewrites all %d rows. meta.engine.version is absent, so the duration is not extrapolated (RFC §9.1).", kind, lockMode, declared)
 	}
@@ -199,7 +212,28 @@ func humanLock(mode string) string {
 // is not plumbed to the analyzer yet, so this stays nil; the evidence and title
 // carry the actionable detail. (Location is populated when validate threads the
 // source file, a follow-up.)
-func locationFor(_ validate.Statement) *verdict.Location { return nil }
+// locationFor turns a statement's origin into the finding's `location` (PRD §10).
+//
+// This returned nil unconditionally — a stub, with a discarded parameter — so
+// `location` was never populated on any finding, ever, while sitting in the
+// documented verdict contract and in PRD §10's own example. The human renderer
+// already prints "at file:line" when it is set, and P4-T2's whole job is to turn
+// it into a PR annotation at the offending line: that story would have been built
+// on a field that is always empty.
+//
+// Inline SQL (an agent handing over the migration it just wrote, unsaved) has no
+// file, and nil is the honest answer there rather than a fabricated path.
+func locationFor(st validate.Statement) *verdict.Location {
+	if st.File == "" || st.Line <= 0 {
+		return nil
+	}
+	// Forward slashes, always. The verdict is the public contract
+	// (INV-VERDICT-STABLE) and is shaped to be DSSE-signable (INV-DSSE-SHAPE), so
+	// a path that reads migrations.sql on Windows and migrations/001.sql on
+	// Linux makes the same migration produce two different documents — and GitHub
+	// annotations (P4-T2) want repo-style paths regardless of the runner's OS.
+	return &verdict.Location{File: filepath.ToSlash(st.File), Line: st.Line}
+}
 
 // shortTable drops the schema qualifier for a compact title ("public.orders" ->
 // "orders"), matching the PRD §10 example title.
@@ -249,4 +283,23 @@ func stripSQLComments(sql string) string {
 		}
 	}
 	return b.String()
+}
+
+// resolveTable maps a table name as written in the migration onto the fixture's
+// own key (RFC §5 keys tables by qualified name; migrations say `users`).
+//
+// Every analyzer routes SQL-derived table names through this before touching the
+// fixture, because a miss is silent and dangerous: the lookup yields the zero
+// value, so an unresolved 50M-row table reads as rows=0 and its rewrite is
+// reported as `instant` rather than `outage`.
+//
+// When the fixture cannot resolve the name — genuinely absent, or the same name
+// in two schemas — the raw name is returned unchanged. That keeps today's
+// behavior for the caller (no facts found, dependency unresolvable, capped to
+// WARN) rather than silently answering from the wrong table.
+func resolveTable(f *fixture.Fixture, raw string) string {
+	if resolved, ok := f.ResolveTable(raw); ok {
+		return resolved
+	}
+	return raw
 }

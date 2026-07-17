@@ -97,9 +97,11 @@ func generateTable(f *fixture.Fixture, name string, tbl fixture.Table, seed int6
 
 	// Precompute foreign-key assignments per column so fan-out shape is honored.
 	fkAssign := map[string][]int64{}
+	fkRefs := map[string]fixture.Reference{}
 	for _, ref := range tbl.References {
 		parentRows := rowCounts[parentTable(ref.To)]
-		fkAssign[ref.Column] = assignForeignKeys(seed, name, ref, n, parentRows)
+		fkAssign[ref.Column] = assignForeignKeys(seed, name, ref, n, parentRows, tbl.Rows.Value)
+		fkRefs[ref.Column] = ref
 	}
 
 	for ci, col := range colNames {
@@ -110,8 +112,8 @@ func generateTable(f *fixture.Fixture, name string, tbl fixture.Table, seed int6
 			switch {
 			case isFK:
 				// fk[ord] is the assigned parent ordinal; map it to the id value
-				// the parent's identity column generated.
-				v = parentIDValue(fk[ord])
+				// the parent's identity column actually generated for that ordinal.
+				v = parentIDValue(f, fkRefs[col], fk[ord], rowCounts[parentTable(fkRefs[col].To)])
 			default:
 				v = generateValue(seed, name, col, c, ord)
 			}
@@ -316,12 +318,84 @@ func fakeUUID(n int64) string {
 	return fmt.Sprintf("00000000-0000-4000-8000-%012d", n)
 }
 
-// parentIDValue maps a parent ordinal to the id value the parent table generated
-// for it. A unique numeric id with no range is generated as its ordinal (see
-// generateValue -> fakeValue -> numericInRange), so a foreign key referencing it
-// uses the same ordinal — keeping child references consistent with parent keys.
-func parentIDValue(parentOrdinal int64) int64 {
+// parentIDValue maps a parent ordinal to the id value the parent table actually
+// generated for it, by running the same generator over the same ordinal.
+//
+// It used to just return the ordinal, on the reasoning that "a unique numeric id
+// with no range is generated as its ordinal". The caveat was the bug: a real
+// `pull` emits a range for every numeric column (RFC §6.2), so a real fixture's
+// id column has one, and numericInRange produces `min + (ordinal % span)` — not
+// the ordinal. For `users.id` with range {min: 1, max: 5000}, ordinal 0 is id 1.
+//
+// Returning the ordinal therefore pointed every child one parent short: user_id
+// ran 0..parentN-1 while users.id ran 1..parentN, so user_id=0 referenced a
+// parent that does not exist. That is an ORPHAN, in a fixture whose
+// orphan_fraction is {value: 0, confidence: exact, via: constraint} — hydrate
+// inventing the exact condition the fixture proves absent. A migration adding
+// `FOREIGN KEY (user_id) REFERENCES users(id)` then fails on hydrated data, and
+// rowshape reports a FAIL it manufactured itself.
+//
+// Deriving the value from the parent column instead of assuming its shape keeps
+// the two in step whatever the range is — and if the fixture carries no facts for
+// the parent column, generation falls back to the ordinal, which is what the id
+// would be in that case anyway.
+func parentIDValue(f *fixture.Fixture, ref fixture.Reference, parentOrdinal, parentN int64) int64 {
+	col, ok := parentIDColumn(f, ref)
+	if !ok {
+		return parentOrdinal
+	}
+	// An ordinal at or beyond parentN is a deliberate orphan (assignForeignKeys
+	// hands these out to honour orphan_fraction). It must be an id NO parent has,
+	// and "beyond the largest one generated" is the only choice that holds
+	// whatever the column's range is: min + (ordinal % span) wraps, so picking an
+	// unused ordinal is not enough when the span is narrower than the parent
+	// count — the wrap would land on a real parent and the orphan would quietly
+	// become valid.
+	if parentOrdinal >= parentN && parentN > 0 {
+		return maxParentID(col, parentN) + 1 + (parentOrdinal - parentN)
+	}
+	if v, ok := numericInRange(col, parentOrdinal).(int64); ok {
+		return v
+	}
 	return parentOrdinal
+}
+
+// maxParentID is the largest id the parent table generated across ordinals
+// [0, parentN).
+func maxParentID(col fixture.Column, parentN int64) int64 {
+	var max int64
+	for ord := int64(0); ord < parentN; ord++ {
+		v, ok := numericInRange(col, ord).(int64)
+		if !ok {
+			return parentN // no numeric range: ids are the ordinals themselves
+		}
+		if ord == 0 || v > max {
+			max = v
+		}
+		// The values cycle with period span, so one lap is enough.
+		if lo, hi, ok := numericBounds(col); ok && ord >= hi-lo {
+			break
+		}
+	}
+	return max
+}
+
+// parentIDColumn resolves ref.To ("public.users.id") to the referenced column's
+// profile.
+func parentIDColumn(f *fixture.Fixture, ref fixture.Reference) (fixture.Column, bool) {
+	if f == nil {
+		return fixture.Column{}, false
+	}
+	i := strings.LastIndex(ref.To, ".")
+	if i < 0 {
+		return fixture.Column{}, false
+	}
+	tbl, ok := f.Tables[ref.To[:i]]
+	if !ok {
+		return fixture.Column{}, false
+	}
+	col, ok := tbl.Columns[ref.To[i+1:]]
+	return col, ok
 }
 
 // parentTable extracts schema.table from a reference target schema.table.column.

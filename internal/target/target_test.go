@@ -31,7 +31,7 @@ func dbExists(t *testing.T, adminDSN, name string) bool {
 	if err != nil {
 		t.Fatalf("admin connect: %v", err)
 	}
-	defer conn.Close(context.Background())
+	defer func() { _ = conn.Close(context.Background()) }()
 	var exists bool
 	if err := conn.QueryRow(context.Background(), "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)", name).Scan(&exists); err != nil {
 		t.Fatalf("check db: %v", err)
@@ -119,7 +119,7 @@ func TestLoadIntoEphemeral(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 
 	var total, distinctEmail, distinctStatus, nullEmail int64
 	err = conn.QueryRow(ctx, `SELECT count(*), count(distinct email), count(distinct status), count(*) FILTER (WHERE email IS NULL) FROM app.users`).

@@ -123,3 +123,49 @@ func TestSchemaIsPublished(t *testing.T) {
 		}
 	}
 }
+
+// TestCheckEmitterYAMLIsTheThirdPartyEntryPoint: the suite's stated purpose is
+// that a third party can hold their own emitter to the spec (PRD §3, §16 — the
+// strategic value of the format is that anyone can emit it).
+//
+// Every exported check took *fixture.Fixture, a type in rowshape's internal
+// tree. Go forbids importing .../internal/... across module boundaries, so no
+// outside module could name the argument, let alone construct one: the whole
+// surface was uncallable from anywhere but this repository, while the package
+// doc said otherwise. An emitter has bytes. This asserts bytes are enough.
+func TestCheckEmitterYAMLIsTheThirdPartyEntryPoint(t *testing.T) {
+	// Conformant bytes -> no violations. A third party emits this and learns
+	// their output is conformant, without importing anything internal.
+	good, err := os.ReadFile(filepath.Join("fixtures", "valid", "basic.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	vs, err := CheckEmitterYAML(good)
+	if err != nil {
+		t.Fatalf("a valid reference fixture must parse: %v", err)
+	}
+	if len(vs) != 0 {
+		t.Errorf("valid fixture reported violations: %v", vs)
+	}
+
+	// Non-conformant bytes -> the violation, named. `range` on a text column is
+	// an RFC §6.1 MUST NOT: min/max would be real production values.
+	bad, err := os.ReadFile(filepath.Join("fixtures", "invalid", "range-on-text.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	vs, err = CheckEmitterYAML(bad)
+	if err != nil {
+		t.Fatalf("the fixture parses; it is the CONTENT that violates: %v", err)
+	}
+	if len(vs) == 0 {
+		t.Error("range on a text column must be reported (RFC §6.1)")
+	}
+
+	// Unparseable bytes are an error, not a verdict: we cannot say whether an
+	// emitter conforms when we cannot read what it emitted.
+	if _, err := CheckEmitterYAML([]byte("{{{ not yaml")); err == nil {
+		t.Error("unreadable bytes must error rather than report zero violations — " +
+			"silence would read as 'conformant'")
+	}
+}

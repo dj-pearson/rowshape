@@ -70,9 +70,10 @@ func writePlan(w io.Writer, against string, items []plan.Item) {
 	}
 	for _, it := range items {
 		mark := "+"
-		if it.Status == "conflict" {
+		switch it.Status {
+		case "conflict":
 			mark = "!"
-		} else if it.Status == "missing-target" {
+		case "missing-target":
 			mark = "?"
 		}
 		fmt.Fprintf(w, "  %s %s\n", mark, it.Change)

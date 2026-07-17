@@ -46,6 +46,7 @@ func (rsConstraint) Analyze(f *fixture.Fixture, c *validate.Capture) []verdict.F
 		upper := strings.ToUpper(clean)
 
 		if name, table, kind, notValid, checkExpr, ok := parseAddConstraint(clean, upper); ok {
+			table = resolveTable(f, table)
 			if notValid {
 				notValidAdds[strings.ToUpper(name)] = addInfo{table: table, epoch: epoch, stmt: st}
 			}
@@ -84,7 +85,7 @@ func sameTxFinding(f *fixture.Fixture, c *validate.Capture, i int, table, name s
 		Explain:     "rowshape explain RS-CONSTRAINT-001",
 	}
 	if hasVersion {
-		fnd.Estimate = estimateFor(c, i, estimate.ConstraintValidation, table, tbl.Rows.Value, tbl.Rows.Confidence)
+		fnd.Estimate = estimateFor(c, i, estimate.ConstraintValidation, table, tbl.Rows.Value, tbl.Rows.Confidence, tableKnown(f, table))
 	}
 	return fnd
 }

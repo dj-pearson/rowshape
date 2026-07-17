@@ -53,6 +53,8 @@ type Calibration struct {
 // Statement is the capture of one applied SQL statement.
 type Statement struct {
 	SQL          string // the statement text (trimmed)
+	File         string // migration file it came from ("" for inline SQL)
+	Line         int    // 1-based line where the statement begins
 	DurationMs   int64  // wall time — also the lock hold time for a blocking DDL
 	RowsAffected int64  // command-tag row count (0 for pure DDL)
 	LockMode     string // strongest lock this statement held on a relation, "" if none
@@ -92,11 +94,11 @@ func (c *Capture) FailedStatement() *Statement {
 // CONCURRENTLY index build (which cannot run in a transaction block) is executed
 // directly. Application stops at the first error — a broken migration's later
 // statements are not meaningful.
-func Apply(ctx context.Context, conn *pgx.Conn, statements []string) *Capture {
+func Apply(ctx context.Context, conn *pgx.Conn, statements []Located) *Capture {
 	cap := &Capture{Success: true}
 	start := time.Now()
-	for _, raw := range statements {
-		sql := strings.TrimSpace(raw)
+	for _, loc := range statements {
+		sql := strings.TrimSpace(loc.SQL)
 		if sql == "" {
 			continue
 		}
@@ -106,10 +108,11 @@ func Apply(ctx context.Context, conn *pgx.Conn, statements []string) *Capture {
 		// each DDL statement is applied in its own transaction for lock
 		// inspection, so replaying the migration's own BEGIN/COMMIT would clash.
 		if isTxControl(sql) {
-			cap.Statements = append(cap.Statements, Statement{SQL: sql})
+			cap.Statements = append(cap.Statements, Statement{SQL: sql, File: loc.File, Line: loc.Line})
 			continue
 		}
 		st := applyOne(ctx, conn, sql)
+		st.File, st.Line = loc.File, loc.Line
 		cap.Statements = append(cap.Statements, st)
 		if st.ErrCode != "" {
 			cap.Success = false

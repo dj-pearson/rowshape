@@ -76,6 +76,9 @@ func cellSeed(seed int64, table, column string, ordinal int64) uint64 {
 func writeFramed(h interface{ Write([]byte) (int, error) }, s string) {
 	var buf [8]byte
 	binary.BigEndian.PutUint64(buf[:], uint64(len(s)))
-	h.Write(buf[:])
-	h.Write([]byte(s))
+	// h is always a hash, and hash.Hash.Write never returns an error by
+	// documented contract. Written as an anonymous interface, so errcheck cannot
+	// be told that by name.
+	_, _ = h.Write(buf[:])
+	_, _ = h.Write([]byte(s))
 }

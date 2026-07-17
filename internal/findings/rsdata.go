@@ -51,6 +51,7 @@ func (rsData) Analyze(f *fixture.Fixture, c *validate.Capture) []verdict.Finding
 		// check an immediately-validated FK at ADD time. Names are keyed
 		// upper-cased so ADD and VALIDATE match regardless of quoting/case.
 		if name, ref, ok := parseAddForeignKey(clean, upper); ok {
+			ref.table = resolveTable(f, ref.table)
 			fkCols[strings.ToUpper(name)] = ref
 			if !strings.Contains(upper, "NOT VALID") {
 				if fnd, ok := orphanFinding(f, ref); ok {
@@ -74,7 +75,7 @@ func (rsData) Analyze(f *fixture.Fixture, c *validate.Capture) []verdict.Finding
 // (INV-UNIQUENESS). The finding wants PASS and rests on the column's `unique`
 // fact; capping downgrades it to a resolving WARN when uniqueness is unproven.
 func uniqueFinding(f *fixture.Fixture, sql, upper string) (verdict.Finding, bool) {
-	table := alterTableTarget(sql)
+	table := resolveTable(f, alterTableTarget(sql))
 	cols := colsAfter(sql, "UNIQUE")
 	if table == "" || len(cols) == 0 {
 		return verdict.Finding{}, false
@@ -138,7 +139,7 @@ func uniquenessState(f *fixture.Fixture, table string, cols []string) uniqState 
 // when only sampled). A zero null_fraction wants PASS and is capped: an exact
 // zero certifies, an estimated zero declines (WARN).
 func notNullFinding(f *fixture.Fixture, sql, upper string) (verdict.Finding, bool) {
-	table := alterTableTarget(sql)
+	table := resolveTable(f, alterTableTarget(sql))
 	col := columnBeforeSetNotNull(sql, upper)
 	if table == "" || col == "" {
 		return verdict.Finding{}, false

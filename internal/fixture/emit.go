@@ -81,3 +81,45 @@ func VerifyDigest(data []byte) (ok bool, stored, recomputed string, err error) {
 	}
 	return stored == recomputed, stored, recomputed, nil
 }
+
+// ParseVerified parses fixture bytes and refuses a fixture whose stored digest
+// does not match its content.
+//
+// meta.digest is the fixture's identity (RFC §11) and the subject of every
+// attestation (INV-DSSE-SHAPE). rowshape computed it, stored it, and then never
+// looked at it again: a fixture edited after `pull` was trusted verbatim, and its
+// stale digest sat in the file saying otherwise.
+//
+// That is reachable without malice — a merge resolution, a hand-tweak, a tool
+// that rewrites YAML — and it is not cosmetic. A fixture edited to read
+// null_fraction: {value: 0.0, confidence: exact} makes `validate` return PASS,
+// exit 0, for a SET NOT NULL against a column that is 2.9% null in production.
+// That is the wrong PASS INV-CONFIDENCE-CAPPING calls unrecoverable, produced by
+// editing a text file, while the mechanism built to detect it was present and
+// unenforced.
+//
+// A fixture with NO digest is accepted: hand-authored fixtures (every one in this
+// repo's corpus and test suites) legitimately have none, and demanding one would
+// mean rowshape only reads its own output.
+func ParseVerified(data []byte) (*Fixture, error) {
+	f, err := Parse(data)
+	if err != nil {
+		return nil, err
+	}
+	if f.Meta.Digest == "" {
+		return f, nil // hand-authored: nothing was claimed, nothing to check
+	}
+	got, err := Digest(f)
+	if err != nil {
+		return nil, fmt.Errorf("recomputing the fixture digest: %w", err)
+	}
+	if got != f.Meta.Digest {
+		return nil, fmt.Errorf(
+			"fixture digest mismatch: the file was modified after `rowshape pull`\n"+
+				"  meta.digest claims: %s\n"+
+				"  content hashes to:  %s\n"+
+				"Re-run `rowshape pull` to regenerate it, or delete meta.digest if you are hand-authoring this fixture",
+			f.Meta.Digest, got)
+	}
+	return f, nil
+}

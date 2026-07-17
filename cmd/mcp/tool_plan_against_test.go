@@ -31,7 +31,7 @@ func tempDB(t *testing.T) (string, func()) {
 	if err != nil {
 		t.Skipf("admin connect: %v", err)
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 
 	name := fmt.Sprintf("rowshape_mcp_%d_%d", os.Getpid(), pvCounter.Add(1))
 	if _, err := conn.Exec(ctx, "CREATE DATABASE "+name); err != nil {
@@ -42,8 +42,17 @@ func tempDB(t *testing.T) (string, func()) {
 		if err != nil {
 			return
 		}
-		defer c.Close(ctx)
-		_, _ = c.Exec(ctx, "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)")
+		defer func() { _ = c.Close(ctx) }()
+		// WITH (FORCE) is PG13+; on 11/12 it is a syntax error, so terminate
+		// lingering sessions explicitly and drop plainly. Mirrors
+		// internal/target.dropDatabase — the corpus matrix runs 11-17.
+		var num int
+		if err := c.QueryRow(ctx, "SELECT current_setting('server_version_num')::int").Scan(&num); err == nil && num >= 130000 {
+			_, _ = c.Exec(ctx, "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)")
+			return
+		}
+		_, _ = c.Exec(ctx, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`, name)
+		_, _ = c.Exec(ctx, "DROP DATABASE IF EXISTS "+name)
 	}
 	cfg, _ := pgx.ParseConfig(admin)
 	auth := cfg.User
@@ -60,7 +69,7 @@ func execSQL(t *testing.T, url, sql string) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 	if _, err := conn.Exec(ctx, sql); err != nil {
 		t.Fatalf("exec %q: %v", sql, err)
 	}
@@ -73,7 +82,7 @@ func columnExists(t *testing.T, url, table, col string) bool {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 	schema, tbl := "public", table
 	if i := strings.IndexByte(table, '.'); i >= 0 {
 		schema, tbl = table[:i], table[i+1:]
@@ -124,10 +133,10 @@ func TestPlanAgainstDryRunReadOnly(t *testing.T) {
 	if !strings.Contains(i0["change"].(string), "add column t.c") {
 		t.Errorf("diff should describe the add-column, got %v", i0["change"])
 	}
-	// The target's credentials are redacted in the echoed target.
-	if strings.Contains(out["target"].(string), "@") && !strings.Contains(out["target"].(string), "…") {
-		// only a concern if there were credentials; localhost URLs have none.
-	}
+	// (Credential redaction of the echoed target is asserted directly against
+	// plan.RedactURL in internal/plan — a localhost URL has no credentials, so
+	// checking for redaction here could only ever pass vacuously.)
+
 	// Read-only: the column was NOT created on the target.
 	if columnExists(t, url, "public.t", "c") {
 		t.Error("plan_against must be read-only, but it created the column on the target")

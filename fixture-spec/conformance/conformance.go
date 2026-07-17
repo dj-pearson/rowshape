@@ -1,11 +1,27 @@
 // Package conformance is the executable conformance suite for the Rowshape
 // Fixture Spec (RFC-0001 §13). It encodes the emitter, hydrator, and validator
-// MUSTs so that rowshape's own CLI can be held to them AND a third party can run
-// the same suite against their own implementation — this is what makes the spec
-// a position rather than an aspiration (PRD §3, §16).
+// MUSTs so that rowshape's own CLI can be held to them, and so that a third
+// party can hold their own EMITTER to them — which is what makes the spec a
+// position rather than an aspiration (PRD §3, §16: the strategic value is that
+// anyone can emit the format).
+//
+// CheckEmitterYAML is the third-party entry point, and it takes bytes on
+// purpose. The rest of this package is typed in rowshape's internal fixture
+// model, which no outside module can name — Go forbids importing
+// .../internal/... across module boundaries, so a signature like
+// CheckEmitter(*fixture.Fixture) is uncallable from anywhere but this repo. An
+// emitter has bytes; bytes are the honest interface.
+//
+// Scope, stated plainly: CheckHydrator and CheckValidator exercise ROWSHAPE's
+// hydrator and verdict engine. They are regression tests that the reference
+// implementation obeys its own spec, not a harness a third party can plug their
+// hydrator into — doing that needs an agreed wire format for hydrated rows,
+// which RFC-0001 does not define.
 //
 // Lives under fixture-spec/ in this monorepo; in the published layout it is the
-// rowshape/fixture-spec repository alongside schema/rowshape.schema.json.
+// rowshape/fixture-spec repository alongside schema/rowshape.schema.json. Note
+// that the Go suite cannot move there as-is: it imports rowshape's internal
+// packages, which stop compiling the moment it becomes a separate module.
 package conformance
 
 import (
@@ -31,6 +47,24 @@ func (v Violation) String() string {
 var textTypes = map[string]bool{
 	"text": true, "bytea": true, "varchar": true, "character varying": true,
 	"char": true, "character": true, "citext": true, "json": true, "jsonb": true,
+}
+
+// CheckEmitterYAML runs the emitter MUSTs against fixture bytes. This is the
+// entry point for a third-party emitter: hand it what you emitted.
+//
+// It exists because CheckEmitter takes *fixture.Fixture — a type in
+// rowshape's internal tree, which no other module may import. The suite claimed
+// anyone could run it while its whole surface was, in fact, uncallable from
+// outside this repository.
+//
+// A parse failure is returned as an error rather than a Violation: unreadable
+// bytes are not a conformance verdict, they are the absence of one.
+func CheckEmitterYAML(data []byte) ([]Violation, error) {
+	f, err := fixture.Parse(data)
+	if err != nil {
+		return nil, fmt.Errorf("parse fixture: %w", err)
+	}
+	return CheckEmitter(f), nil
 }
 
 // CheckEmitter runs the statically-checkable emitter MUSTs (RFC §13) against a

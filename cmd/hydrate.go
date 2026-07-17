@@ -59,7 +59,7 @@ func runHydrate(opts *hydrateOptions) error {
 		fmt.Fprintf(os.Stderr, "rowshape hydrate: reading %s failed: %v\n", opts.fixturePath, err)
 		return toolError()
 	}
-	f, err := fixture.Parse(data)
+	f, err := fixture.ParseVerified(data)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "rowshape hydrate: %v\n", err)
 		return toolError()
@@ -78,18 +78,31 @@ func runHydrate(opts *hydrateOptions) error {
 		return toolError()
 	}
 
-	w := os.Stdout
-	if opts.out != "-" {
-		file, err := os.Create(opts.out)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "rowshape hydrate: creating %s failed: %v\n", opts.out, err)
+	if opts.out == "-" {
+		if err := hydrate.WriteSQL(os.Stdout, res); err != nil {
+			fmt.Fprintf(os.Stderr, "rowshape hydrate: writing SQL failed: %v\n", err)
 			return toolError()
 		}
-		defer file.Close()
-		w = file
+		return nil
 	}
-	if err := hydrate.WriteSQL(w, res); err != nil {
+
+	file, err := os.Create(opts.out)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "rowshape hydrate: creating %s failed: %v\n", opts.out, err)
+		return toolError()
+	}
+	if err := hydrate.WriteSQL(file, res); err != nil {
+		_ = file.Close()
 		fmt.Fprintf(os.Stderr, "rowshape hydrate: writing SQL failed: %v\n", err)
+		return toolError()
+	}
+	// Close is checked, not deferred. This is a write path: a Close error is a
+	// failed flush — a full disk, a network filesystem — which means the SQL on
+	// disk is truncated. Deferring it would drop that error and report success
+	// over a corrupt file, and hydrate's entire promise is that its output is
+	// byte-reproducible for a given fixture and seed.
+	if err := file.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "rowshape hydrate: closing %s failed (the file may be incomplete): %v\n", opts.out, err)
 		return toolError()
 	}
 	return nil

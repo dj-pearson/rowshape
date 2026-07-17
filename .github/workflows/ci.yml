@@ -92,6 +92,12 @@ jobs:
       - name: go vet
         run: go vet ./...
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        # v8 of the action is required to run golangci-lint v2, which is what
+        # .golangci.yml is written against (`version: "2"`). The v6 action only
+        # drives golangci-lint v1 and cannot read that config at all.
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          # Pinned, not `latest`. With `latest`, a new golangci-lint release adds
+          # checks overnight and turns CI red on a commit that changed nothing —
+          # which trains everyone to ignore the lint job. Bump this deliberately.
+          version: v2.12.2

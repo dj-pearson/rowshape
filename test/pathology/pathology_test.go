@@ -86,16 +86,38 @@ func TestPathologyFanoutTail(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	var mean, p95, max float64
+	// LEFT JOIN from the parent, not GROUP BY on the child.
+	//
+	// `SELECT count(*) FROM orders GROUP BY user_id` only ever sees parents that
+	// HAVE children, so a hydration that leaves most parents childless is
+	// invisible to it — the fan-out could collapse onto a handful of parents and
+	// every statistic here would still look healthy. Counting from users outward
+	// includes the zeros, which is the population the fixture's p50 describes.
+	var mean, p50, p95, max float64
+	var childless, parents int64
 	err := conn.QueryRow(ctx, `
 SELECT avg(c)::float8,
+       percentile_cont(0.50) WITHIN GROUP (ORDER BY c),
        percentile_cont(0.95) WITHIN GROUP (ORDER BY c),
-       max(c)::float8
-FROM (SELECT count(*)::float8 AS c FROM public.orders GROUP BY user_id) g`).Scan(&mean, &p95, &max)
+       max(c)::float8,
+       count(*) FILTER (WHERE c = 0),
+       count(*)
+FROM (SELECT u.id, count(o.user_id)::float8 AS c
+      FROM public.users u LEFT JOIN public.orders o ON o.user_id = u.id
+      GROUP BY u.id) g`).Scan(&mean, &p50, &p95, &max, &childless, &parents)
 	if err != nil {
 		t.Fatalf("query fan-out: %v", err)
 	}
-	t.Logf("hydrated fan-out: mean=%.1f p95=%.0f max=%.0f (fixture mean 20, p95 100, max 800)", mean, p95, max)
+	t.Logf("hydrated fan-out over ALL %d parents: mean=%.1f p50=%.0f p95=%.0f max=%.0f (%d childless) "+
+		"— fixture declares mean 20, p50 5, p95 100, max 800", parents, mean, p50, p95, max, childless)
+
+	// p50 is the shape claim that a mean cannot make. A hydration that dumps every
+	// child onto a few parents reproduces the mean exactly and still has a median
+	// of zero, which is not this fixture's distribution.
+	if p50 < 5/2.5 || p50 > 5*1.5 {
+		t.Errorf("fan-out p50=%.0f not within tolerance of fixture p50 5 — the shape is not reproduced, "+
+			"only the mean (RFC §6.6, P1-T7)", p50)
+	}
 
 	// The tail must exist: max fan-out is many times the mean (the whole point —
 	// a uniform distribution would fail here).

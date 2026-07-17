@@ -85,10 +85,7 @@ func TestValidateNoCloudEgress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read internal/validate: %v", err)
 	}
-	var paths []string
-	for _, f := range files {
-		paths = append(paths, f)
-	}
+	paths := append([]string(nil), files...)
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".go") {
 			paths = append(paths, filepath.Join(pkg, e.Name()))

@@ -88,7 +88,7 @@ func runPull(ctx context.Context, opts *pullOptions) error {
 		fmt.Fprintln(os.Stderr, "rowshape pull: could not connect to the database (check your connection settings)")
 		return toolError()
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 
 	if err := profile.CheckAccess(ctx, conn, opts.iKnow); err != nil {
 		fmt.Fprintf(os.Stderr, "rowshape pull: %v\n", err)

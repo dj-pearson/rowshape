@@ -30,7 +30,7 @@ func Load(ctx context.Context, t Target, f *fixture.Fixture, opts hydrate.Option
 	if err != nil {
 		return nil, fmt.Errorf("connect to target: %w", err)
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {

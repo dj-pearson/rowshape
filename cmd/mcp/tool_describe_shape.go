@@ -184,7 +184,7 @@ func loadFixture(path string) (*fixture.Fixture, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading fixture %s failed", path)
 	}
-	return fixture.Parse(data)
+	return fixture.ParseVerified(data)
 }
 
 // confOf renders a confidence, defaulting an absent one to "estimated" (the
