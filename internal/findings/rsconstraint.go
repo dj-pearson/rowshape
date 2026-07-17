@@ -46,6 +46,7 @@ func (rsConstraint) Analyze(f *fixture.Fixture, c *validate.Capture) []verdict.F
 		upper := strings.ToUpper(clean)
 
 		if name, table, kind, notValid, checkExpr, ok := parseAddConstraint(clean, upper); ok {
+			table = resolveTable(f, table)
 			if notValid {
 				notValidAdds[strings.ToUpper(name)] = addInfo{table: table, epoch: epoch, stmt: st}
 			}

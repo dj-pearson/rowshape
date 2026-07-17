@@ -32,6 +32,7 @@ func (rsLock) Analyze(f *fixture.Fixture, c *validate.Capture) []verdict.Finding
 	var out []verdict.Finding
 	for i, st := range c.Statements {
 		op, table, kind, rewrites := classifyRewrite(st.SQL, major, hasVersion)
+		table = resolveTable(f, table)
 		if !rewrites {
 			continue
 		}
@@ -249,4 +250,23 @@ func stripSQLComments(sql string) string {
 		}
 	}
 	return b.String()
+}
+
+// resolveTable maps a table name as written in the migration onto the fixture's
+// own key (RFC §5 keys tables by qualified name; migrations say `users`).
+//
+// Every analyzer routes SQL-derived table names through this before touching the
+// fixture, because a miss is silent and dangerous: the lookup yields the zero
+// value, so an unresolved 50M-row table reads as rows=0 and its rewrite is
+// reported as `instant` rather than `outage`.
+//
+// When the fixture cannot resolve the name — genuinely absent, or the same name
+// in two schemas — the raw name is returned unchanged. That keeps today's
+// behavior for the caller (no facts found, dependency unresolvable, capped to
+// WARN) rather than silently answering from the wrong table.
+func resolveTable(f *fixture.Fixture, raw string) string {
+	if resolved, ok := f.ResolveTable(raw); ok {
+		return resolved
+	}
+	return raw
 }

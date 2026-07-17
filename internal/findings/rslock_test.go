@@ -1,6 +1,7 @@
 package findings
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -154,5 +155,65 @@ tables:
 		if got := count(t, ver, volatile); got != 1 {
 			t.Errorf("PG %s volatile default must fire RS-LOCK on every version, got %d", ver, got)
 		}
+	}
+}
+
+// TestUnqualifiedTableGetsTheSameEstimate is the defect resolution exists to
+// prevent, pinned end to end rather than at the resolver.
+//
+// `ALTER TABLE orders` and `ALTER TABLE public.orders` are the same statement.
+// Before resolution the unqualified form missed the fixture key (RFC §5 keys
+// tables by qualified name), the analyzer read the zero value, and a 50M-row
+// rewrite was reported as `instant` instead of `outage` — a confident, materially
+// wrong answer to the exact question rowshape is for. Both verdicts were WARN, so
+// only the estimate gave it away.
+//
+// The capture below carries what a real validate run has and a bare fixture does
+// not: a hydrated row count and a measured duration. Without those, estimateFor
+// extrapolates from 1ms at declared==hydrated and every bucket is `instant` — an
+// earlier version of this test omitted them and passed against the bug.
+func TestUnqualifiedTableGetsTheSameEstimate(t *testing.T) {
+	f := &fixture.Fixture{
+		Meta: fixture.Meta{Engine: fixture.Engine{Name: "postgres", Version: "16"}},
+		Tables: map[string]fixture.Table{
+			"public.orders": {
+				Rows:    fixture.Fact[int64]{Value: 50_000_000, Confidence: fixture.Exact},
+				Columns: map[string]fixture.Column{"id": {Type: "bigint"}},
+			},
+		},
+	}
+	const stmt = `ALTER TABLE %s ADD COLUMN note text DEFAULT clock_timestamp()::text NOT NULL`
+
+	bucketFor := func(t *testing.T, table string) string {
+		t.Helper()
+		c := &validate.Capture{
+			Success:    true,
+			Statements: []validate.Statement{{SQL: fmt.Sprintf(stmt, table), DurationMs: 40}},
+			// 2,000 rows were hydrated and the rewrite took 40ms; production
+			// declares 50M. That is a 25,000x extrapolation — an outage.
+			TableRows: map[string]int64{"public.orders": 2000},
+		}
+		for _, fnd := range (rsLock{}).Analyze(f, c) {
+			if fnd.Estimate != nil {
+				return fnd.Estimate.Bucket
+			}
+		}
+		return ""
+	}
+
+	qualified := bucketFor(t, "public.orders")
+	unqualified := bucketFor(t, "orders")
+	t.Logf("qualified=%q unqualified=%q", qualified, unqualified)
+
+	// Guard the guard: if the qualified form is not itself alarming, the
+	// comparison below proves nothing.
+	if qualified == "" || qualified == "instant" {
+		t.Fatalf("qualified estimate = %q; a 50M-row rewrite extrapolated from 40ms/2k rows must be "+
+			"alarming or this test cannot detect the bug", qualified)
+	}
+	if unqualified != qualified {
+		t.Errorf("estimate for `ALTER TABLE orders` = %q, but `ALTER TABLE public.orders` = %q — "+
+			"the same statement on the same 50M-row table. The unqualified form read rows=0 and would "+
+			"tell a user an outage is %q.", unqualified, qualified, unqualified)
 	}
 }
