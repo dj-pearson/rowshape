@@ -421,7 +421,7 @@
             "Fixture for a 200-table schema is under 100KB (RFC §3.3).",
             "meta.digest matches a fresh recomputation over the file."
           ],
-          "verification": ["rowshape pull --from $TEST_URL -> rowshape.yaml; rowshape (re)digest matches; yaml lint; size check on a synthetic 200-table schema"],
+          "verification": ["rowshape pull $TEST_URL -> rowshape.yaml (connection URL is POSITIONAL; there is no --from flag — the original text here said `pull --from $TEST_URL`, which cannot ever have been run: it exits 3); rowshape (re)digest matches; yaml lint; size check on a synthetic 200-table schema"],
           "artifacts": ["internal/fixture/emit.go", "cmd/init.go", "cmd/pull.go (wiring)"],
           "type": "code",
           "passes": true,
