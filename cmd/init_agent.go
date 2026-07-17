@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/rowshape/rowshape/internal/agentrule"
 )
 
 // `init --agent` is the part that actually closes the loop (PRD §8.3).
@@ -27,9 +29,10 @@ func runInitAgent(dir string, force bool, w io.Writer) error {
 		return err
 	}
 
-	clients := detectMCPClients(dir)
 	failed := false
-	for _, c := range clients {
+
+	// 1. MCP config — tell the client the tools exist.
+	for _, c := range detectMCPClients(dir) {
 		status, err := writeMCPConfig(dir, c)
 		if err != nil {
 			fmt.Fprintf(w, "rowshape init: %s: %v\n", c.Name, err)
@@ -43,6 +46,24 @@ func runInitAgent(dir string, force bool, w io.Writer) error {
 			fmt.Fprintf(w, "rowshape init: updated %s (%s) — registered `rowshape mcp`\n", c.Path, c.Name)
 		case statusUnchanged:
 			fmt.Fprintf(w, "rowshape init: %s (%s) already registers `rowshape mcp`\n", c.Path, c.Name)
+		}
+	}
+
+	// 2. The agent rule — make the agent actually reach for them.
+	for _, t := range detectRuleTargets(dir) {
+		status, err := writeRule(dir, t)
+		if err != nil {
+			fmt.Fprintf(w, "rowshape init: %s: %v\n", t.Name, err)
+			failed = true
+			continue
+		}
+		switch status {
+		case statusCreated:
+			fmt.Fprintf(w, "rowshape init: wrote %s — agent rule v%d\n", t.Path, agentrule.Version)
+		case statusUpdated:
+			fmt.Fprintf(w, "rowshape init: updated %s — agent rule v%d\n", t.Path, agentrule.Version)
+		case statusUnchanged:
+			fmt.Fprintf(w, "rowshape init: %s already carries agent rule v%d\n", t.Path, agentrule.Version)
 		}
 	}
 

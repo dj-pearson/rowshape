@@ -61,6 +61,41 @@ Zed isn't supported yet: it keys servers under `context_servers` with a differen
 entry shape, in a JSONC settings file whose format has moved across versions. A
 half-right entry there is worse than an honest omission.
 
+### The agent rule
+
+Registering the server tells the client the tools *exist*. It doesn't make an
+agent reach for them — agents don't invoke tools they haven't been told about. So
+`--agent` also writes a rule: before writing a migration call `describe_shape`,
+before opening a PR call `validate_migration`, never hand-wave a FAIL, and a WARN
+is not a pass.
+
+It goes into the conventions your repo already keeps — `AGENTS.md`, `CLAUDE.md`,
+`.cursor/rules/rowshape.mdc` — and a repo that keeps none of them gets `AGENTS.md`,
+the one that isn't tied to a single vendor.
+
+The rule is a **product artifact**, not a doc snippet. It gets iterated against
+real agent sessions the way a prompt does, which is why it ships versioned and
+embedded in the binary ([`internal/agentrule/rule.md`](../internal/agentrule/rule.md)):
+an improvement found in month four has to reach the repo that ran `init` in month
+one. A rule you paste from a README can never do that.
+
+That's what the markers are for:
+
+```markdown
+<!-- rowshape:begin v1 — managed by `rowshape init --agent`. Edits here are overwritten... -->
+...the rule...
+<!-- rowshape:end -->
+```
+
+Re-running `--agent` finds the block *at any version* and replaces it in place —
+so an upgrade never leaves you with two rules that contradict each other.
+Everything outside the block comes back byte-for-byte: your file, your
+conventions, rowshape is a guest in it. Put your own guidance outside the markers
+and it survives every upgrade; edit inside them and the next `--agent` wins.
+
+The rule is budgeted too, at ~500 tokens — it's read on every turn, and prose
+attracts "just one more sentence" forever.
+
 ## The tools
 
 | Tool | What it's for |
