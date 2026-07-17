@@ -1321,7 +1321,8 @@
           "artifacts": ["docs-site/src/content/docs/mcp.md", "docs-site/src/content/docs/agent-setup.md"],
           "type": "docs",
           "passes": false,
-          "status": "todo",
+          "status": "blocked",
+          "blocked_reason": "All THREE acceptance criteria MET and verified; blocked only by the transitive depends_on P4-T3 (owner-gated: §9 decision + Cloudflare) — and one cross-link target, the fixture-spec repo, does not exist yet (P0-T2, owner-gated), though the link is present and well-formed. Docs build clean (`npm run verify`: 23 pages, no broken internal links, within the JS budget).\n\nCriterion 1: docs-site/src/content/docs/agent/index.md documents `rowshape init --agent`'s three outputs (MCP client config with the .mcp.json snippet, the versioned agent rule, the pre-commit backstop) and the loop; agent/mcp.md documents all four MCP tools (describe_shape, validate_migration, explain_finding, plan_against) and how they compose into the loop. Criterion 2: both agent/index.md and agent/mcp.md cross-link the fixture-spec repo (github.com/rowshape/fixture-spec) and MCPFold (github.com/dj-pearson/MCPFold). Criterion 3: agent/rule.md shows the published rule text VERBATIM — and to keep it from drifting from what the binary writes, it is GENERATED from internal/agentrule (the embedded rule + Version) by tools/genagentrule, guarded by gen_test.go (TestRulePageUpToDate byte-equality; TestRulePageShowsRule asserts the verbatim rule + its load-bearing lines).\n\ngofmt/vet/golangci-lint clean. Artifact-path deviation (precedent P0-T2): the scaffold uses directory-index pages and the sidebar autogenerates from the `agent/` directory, so the pages are agent/index.md (setup), agent/mcp.md (tools), agent/rule.md (generated rule) rather than top-level mcp.md / agent-setup.md.",
           "priority": 5
         },
         {
