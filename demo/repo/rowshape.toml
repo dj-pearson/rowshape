@@ -1,0 +1,23 @@
+# rowshape configuration — https://rowshape.com
+# Commit this file; it carries no secrets. The database connection comes from the
+# standard libpq environment variables (PGHOST, PGUSER, ...) or a URL passed to
+# `rowshape pull`. init detected this offline, from the repo layout only.
+
+# Database engine (v1 targets Postgres).
+engine = "postgres"
+
+# Privacy level for pull: strict | standard | permissive.
+# strict emits no numeric/temporal ranges, histograms, values, or verbatim CHECK
+# expressions (RFC-0001 §8). Never commit a fixture you have not reviewed.
+privacy = "standard"
+
+# Where pull writes the fixture.
+out = "rowshape.yaml"
+
+[pull]
+# Restrict profiling to specific schemas (default: all non-system schemas).
+# schemas = ["public"]
+
+[migrations]
+# Your migration runner. rowshape orchestrates it; it does not reimplement it.
+runner = "rawsql"  # this demo applies plain .sql files under migrations/

@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "rowshape": {
+      "args": [
+        "mcp"
+      ],
+      "command": "rowshape"
+    }
+  }
+}

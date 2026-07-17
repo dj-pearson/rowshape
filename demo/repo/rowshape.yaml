@@ -1,0 +1,17 @@
+rowshape_fixture: "1"
+# The committed fixture for the demo app. It contains NO rows — only statistics
+# (PRD §11): a users table with 5,000,000 declared rows and no `email` column
+# yet. This is what an agent reasons against; it never touches production.
+meta:
+  id: demo-users
+  engine: {name: postgres, version: "16"}
+  privacy: standard
+  profile: {mode: fast, escalated: []}
+tables:
+  public.users:
+    rows: {value: 5000000, confidence: exact}
+    columns:
+      id: {type: bigint, nullable: false, unique: {value: true, confidence: exact, via: constraint}}
+      name: {type: text, nullable: false}
+      created_at: {type: timestamptz, nullable: false}
+    constraints: [{name: users_pkey, kind: primary_key, columns: [id]}]
