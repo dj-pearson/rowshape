@@ -59,7 +59,7 @@ func (p pipelineValidator) Validate(c Case) (string, []ProducedFinding, error) {
 	// volatile-default corpus case applies on every major.
 	_, _ = conn.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS pgcrypto")
 
-	cap := validate.Apply(ctx, conn, validate.SplitStatements(c.Migration))
+	cap := validate.Apply(ctx, conn, validate.SplitStatementsIn(c.Name+"/migration.sql", c.Migration))
 	cap.TableRows = report.Tables
 
 	res := validate.BuildResult(c.Fixture, cap, validate.Registered(), false)

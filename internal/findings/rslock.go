@@ -7,6 +7,7 @@ package findings
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/rowshape/rowshape/internal/estimate"
@@ -211,7 +212,28 @@ func humanLock(mode string) string {
 // is not plumbed to the analyzer yet, so this stays nil; the evidence and title
 // carry the actionable detail. (Location is populated when validate threads the
 // source file, a follow-up.)
-func locationFor(_ validate.Statement) *verdict.Location { return nil }
+// locationFor turns a statement's origin into the finding's `location` (PRD §10).
+//
+// This returned nil unconditionally — a stub, with a discarded parameter — so
+// `location` was never populated on any finding, ever, while sitting in the
+// documented verdict contract and in PRD §10's own example. The human renderer
+// already prints "at file:line" when it is set, and P4-T2's whole job is to turn
+// it into a PR annotation at the offending line: that story would have been built
+// on a field that is always empty.
+//
+// Inline SQL (an agent handing over the migration it just wrote, unsaved) has no
+// file, and nil is the honest answer there rather than a fabricated path.
+func locationFor(st validate.Statement) *verdict.Location {
+	if st.File == "" || st.Line <= 0 {
+		return nil
+	}
+	// Forward slashes, always. The verdict is the public contract
+	// (INV-VERDICT-STABLE) and is shaped to be DSSE-signable (INV-DSSE-SHAPE), so
+	// a path that reads migrations.sql on Windows and migrations/001.sql on
+	// Linux makes the same migration produce two different documents — and GitHub
+	// annotations (P4-T2) want repo-style paths regardless of the runner's OS.
+	return &verdict.Location{File: filepath.ToSlash(st.File), Line: st.Line}
+}
 
 // shortTable drops the schema qualifier for a compact title ("public.orders" ->
 // "orders"), matching the PRD §10 example title.

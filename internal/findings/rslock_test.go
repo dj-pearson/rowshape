@@ -272,3 +272,47 @@ func TestUnknownTableRefusesToExtrapolate(t *testing.T) {
 		t.Errorf("control: a 50M-row rewrite should not be instant, got %q", known[0].Estimate.Bucket)
 	}
 }
+
+// TestFindingCarriesLocation: `location` is in the verdict contract (PRD §10),
+// the human renderer prints it, and P4-T2 turns it into a PR annotation at the
+// offending line. locationFor was a stub returning nil, so it was never set — and
+// no test noticed, because none asserted it.
+func TestFindingCarriesLocation(t *testing.T) {
+	f := &fixture.Fixture{
+		Meta: fixture.Meta{Engine: fixture.Engine{Name: "postgres", Version: "16"}},
+		Tables: map[string]fixture.Table{
+			"public.orders": {Rows: fixture.Fact[int64]{Value: 50_000_000, Confidence: fixture.Exact}},
+		},
+	}
+	const stmt = `ALTER TABLE public.orders ADD COLUMN note text DEFAULT clock_timestamp()::text NOT NULL`
+
+	c := &validate.Capture{Success: true, Statements: []validate.Statement{
+		{SQL: stmt, File: "migrations/0042_add_note.sql", Line: 3, DurationMs: 40},
+	}}
+	found := (rsLock{}).Analyze(f, c)
+	if len(found) == 0 {
+		t.Fatal("expected a rewrite finding")
+	}
+	loc := found[0].Location
+	if loc == nil {
+		t.Fatal("finding carries no location — a PR annotation has nothing to point at (PRD §10, P4-T2)")
+	}
+	if loc.File != "migrations/0042_add_note.sql" || loc.Line != 3 {
+		t.Errorf("location = %+v, want migrations/0042_add_note.sql:3", loc)
+	}
+
+	// Windows paths must not leak into the contract: the verdict is DSSE-signable
+	// (INV-DSSE-SHAPE), so the same migration has to produce the same document on
+	// every platform, and annotations want repo-style paths.
+	c.Statements[0].File = `migrations\0042_add_note.sql`
+	if got := (rsLock{}).Analyze(f, c)[0].Location; got == nil || got.File != "migrations/0042_add_note.sql" {
+		t.Errorf("a backslash path must normalize to forward slashes, got %+v", got)
+	}
+
+	// Inline SQL (an agent handing over what it just wrote, unsaved) has no file;
+	// nil is honest, an invented path is not.
+	c.Statements[0].File, c.Statements[0].Line = "", 0
+	if got := (rsLock{}).Analyze(f, c)[0].Location; got != nil {
+		t.Errorf("inline SQL must carry no location, got %+v", got)
+	}
+}

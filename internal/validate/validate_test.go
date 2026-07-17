@@ -191,3 +191,49 @@ func TestCheckHostRefusesEquivalentSpellings(t *testing.T) {
 		})
 	}
 }
+
+// TestSplitStatementsInTracksLines: a finding's `location` (PRD §10) is only as
+// good as the line the splitter reports.
+//
+// locationFor was a stub returning nil unconditionally, and Statement carried no
+// origin at all, so `location` was never populated on any finding — while sitting
+// in the documented verdict contract, in PRD §10's own example, in the human
+// renderer ("at file:line"), and under P4-T2, whose entire job is turning it into
+// a PR annotation at the offending line.
+func TestSplitStatementsInTracksLines(t *testing.T) {
+	sql := "-- a leading comment\n" + // 1
+		"\n" + // 2
+		"ALTER TABLE t ADD COLUMN a text;\n" + // 3
+		"\n" + // 4
+		"ALTER TABLE t ADD COLUMN b text;\n" // 5
+
+	got := SplitStatementsIn("migrations/001.sql", sql)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 statements, got %d: %+v", len(got), got)
+	}
+	// The first statement's text begins at its leading comment, on line 1.
+	if got[0].Line != 1 {
+		t.Errorf("first statement Line = %d, want 1", got[0].Line)
+	}
+	// The second begins on line 5 — blank lines between statements must not shift
+	// it, which is what the trim-aware offset is for.
+	if got[1].Line != 5 {
+		t.Errorf("second statement Line = %d, want 5 — a wrong line annotates the wrong code", got[1].Line)
+	}
+	for i, l := range got {
+		if l.File != "migrations/001.sql" {
+			t.Errorf("statement %d lost its file: %q", i, l.File)
+		}
+	}
+
+	// Inline SQL has no file, and must not invent one.
+	inline := SplitStatementsIn("", "ALTER TABLE t ADD COLUMN c text;")
+	if len(inline) != 1 || inline[0].File != "" {
+		t.Errorf("inline SQL must carry no file, got %+v", inline)
+	}
+
+	// SplitStatements keeps its old shape for callers that only want the text.
+	if plain := SplitStatements(sql); len(plain) != 2 {
+		t.Errorf("SplitStatements should still return 2 statements, got %d", len(plain))
+	}
+}

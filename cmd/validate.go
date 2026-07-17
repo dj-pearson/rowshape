@@ -202,7 +202,7 @@ func applyAndCapture(ctx context.Context, t target.Target, opts *validateOptions
 	if r.Kind() != runner.RawSQL || !ok {
 		return nil, toolerror.New(toolerror.RunnerNotFound, fmt.Sprintf("capturing %s migrations is not yet supported", r.Kind()), "point --migrations at a raw-SQL file or directory")
 	}
-	var stmts []string
+	var stmts []validate.Located
 	for _, name := range raw.Files() {
 		s, err := readSQLFile(filepath.Join(opts.migrations, name))
 		if err != nil {
@@ -214,7 +214,7 @@ func applyAndCapture(ctx context.Context, t target.Target, opts *validateOptions
 }
 
 // applyStatements connects to the target and captures each statement.
-func applyStatements(ctx context.Context, t target.Target, stmts []string) (*validate.Capture, error) {
+func applyStatements(ctx context.Context, t target.Target, stmts []validate.Located) (*validate.Capture, error) {
 	conn, err := t.Connect(ctx)
 	if err != nil {
 		return nil, toolerror.New(toolerror.ConnectFailed, "could not connect to the target", "check the target is reachable and the credentials are valid")
@@ -293,10 +293,10 @@ func isSQLFile(path string) bool {
 }
 
 // readSQLFile reads a .sql file and splits it into statements.
-func readSQLFile(path string) ([]string, error) {
+func readSQLFile(path string) ([]validate.Located, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	return validate.SplitStatements(string(b)), nil
+	return validate.SplitStatementsIn(path, string(b)), nil
 }

@@ -206,26 +206,77 @@ func MarkExact(f *fixture.Fixture) {
 	}
 }
 
+// Located is a statement together with where it came from. The origin is what
+// lets a finding carry `location` (PRD §10) — the field a PR annotation needs to
+// point at the offending line (P4-T2).
+type Located struct {
+	SQL  string
+	File string // as given to SplitStatementsIn; "" for inline SQL
+	Line int    // 1-based line where the statement text begins
+}
+
 // SplitStatements splits a SQL script into individual statements on top-level
 // semicolons, skipping semicolons inside line/block comments, single- and
 // double-quoted strings, and dollar-quoted bodies ($$...$$, $tag$...$tag$). It
 // is enough to apply a raw-SQL migration statement-by-statement for capture; it
 // does not validate SQL.
 func SplitStatements(sql string) []string {
-	var stmts []string
+	loc := SplitStatementsIn("", sql)
+	out := make([]string, 0, len(loc))
+	for _, l := range loc {
+		out = append(out, l.SQL)
+	}
+	return out
+}
+
+// SplitStatementsIn is SplitStatements, keeping each statement's origin.
+//
+// Line is where the statement's text starts, counting a leading comment as part
+// of the statement — that is where a reviewer's eye goes, and it is what the
+// splitter already has without a second parse.
+func SplitStatementsIn(file, sql string) []Located {
+	var stmts []Located
 	var buf strings.Builder
 	runes := []rune(sql)
 	i, n := 0, len(runes)
 
+	// Prefix count of newlines, so a rune index maps to a line in O(1).
+	nl := make([]int, n+1)
+	c := 0
+	for k := 0; k < n; k++ {
+		nl[k] = c
+		if runes[k] == '\n' {
+			c++
+		}
+	}
+	nl[n] = c
+	lineAt := func(idx int) int {
+		if idx > n {
+			idx = n
+		}
+		if idx < 0 {
+			idx = 0
+		}
+		return nl[idx] + 1
+	}
+	bufStart := 0
+
 	flush := func() {
-		s := strings.TrimSpace(buf.String())
+		raw := buf.String()
+		s := strings.TrimSpace(raw)
 		if s != "" {
-			stmts = append(stmts, s)
+			// Where the trimmed text actually begins, so leading blank lines
+			// between statements do not shift the reported line.
+			lead := len([]rune(raw)) - len([]rune(strings.TrimLeft(raw, " \t\r\n")))
+			stmts = append(stmts, Located{SQL: s, File: file, Line: lineAt(bufStart + lead)})
 		}
 		buf.Reset()
 	}
 
 	for i < n {
+		if buf.Len() == 0 {
+			bufStart = i
+		}
 		c := runes[i]
 		switch {
 		case c == '-' && i+1 < n && runes[i+1] == '-': // line comment
