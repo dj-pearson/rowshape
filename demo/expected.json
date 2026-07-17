@@ -1,0 +1,12 @@
+{
+  "note": "Expected verdicts for the agent-loop demo regression (P4-T7 / PRD §14.1 week-12 kill criterion). RS-LOCK-001 is a WARN by design (a rewrite is an availability problem, not data corruption); the demo gates it with --warn-fail so the naive migration exits non-zero. The rewrite reaches PASS. See demo/README.md. Assertions are deterministic via --seed 1 (INV-DETERMINISM).",
+  "naive": {
+    "verdict": "WARN",
+    "must_include_findings": ["RS-LOCK-001"],
+    "gated_exit_nonzero": true
+  },
+  "rewrite": {
+    "verdict": "PASS",
+    "must_include_findings": []
+  }
+}

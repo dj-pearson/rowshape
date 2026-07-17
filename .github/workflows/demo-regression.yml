@@ -1,0 +1,46 @@
+name: Demo regression
+
+# Turns the agent-loop demo (P4-T6) into a continuously-checked guard so the
+# wedge cannot silently rot (PRD §14.1 week-12 kill criterion; PRD §15 — a single
+# wrong PASS is unrecoverable). It runs the demo's naive migration and asserts it
+# is rejected on RS-LOCK-001, and the three-step rewrite and asserts PASS, using
+# a disposable Postgres and a seeded hydrate so the result is deterministic.
+#
+# Runs on every push and PR; a failure blocks merge (branch protection). If this
+# job ever goes red, the loop stopped closing — that is the signal, not noise.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  demo-regression:
+    name: agent-loop demo still closes
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+      - name: Assert the demo loop closes (naive rejected on RS-LOCK-001, rewrite PASS)
+        env:
+          ROWSHAPE_TEST_PG_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+        # -count=1 disables the test cache so the demo genuinely re-runs each time.
+        run: go test ./test/demo/... -count=1 -v

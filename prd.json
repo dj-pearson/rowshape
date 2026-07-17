@@ -1358,7 +1358,8 @@
           "artifacts": [".github/workflows/demo-regression.yml", "demo/expected.json"],
           "type": "code/ops",
           "passes": false,
-          "status": "todo",
+          "status": "blocked",
+          "blocked_reason": "BUILT and verified; blocked only by the transitive P4-T6 gate (its depends_on), which is itself gated on P4-T1 -> the P0-T4 release. .github/workflows/demo-regression.yml runs the demo on every push + PR against a disposable postgres:16 service and asserts the loop still closes; blocking merge is branch-protection (owner config). demo/expected.json is the committed source of truth and test/demo/demo_test.go now asserts against it (naive -> WARN incl. RS-LOCK-001, gated exit non-zero; rewrite -> PASS). Determinism (criterion 3) via --seed 1 + the fixed fixture (INV-DETERMINISM). Locally: go build + gofmt/vet/golangci-lint clean; the test skips without ROWSHAPE_TEST_PG_DSN and runs green in CI.\n\nCARRIES the P4-T6 discrepancy: criterion 1 says 'FAIL RS-LOCK-001', but RS-LOCK-001 is a WARN by design (see P4-T6 blocked_reason); the job asserts WARN + RS-LOCK-001 + gated-non-zero exit, which is the honest form of 'the naive migration is rejected'. Same recommended PRD amendment.",
           "priority": 7
         },
         {

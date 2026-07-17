@@ -70,6 +70,32 @@ func runValidate(t *testing.T, bin, root, migrations, admin string, warnFail boo
 	return res, code
 }
 
+// expected mirrors demo/expected.json — the committed source of truth the
+// regression asserts against.
+type expected struct {
+	Naive   caseExpect `json:"naive"`
+	Rewrite caseExpect `json:"rewrite"`
+}
+
+type caseExpect struct {
+	Verdict          string   `json:"verdict"`
+	MustInclude      []string `json:"must_include_findings"`
+	GatedExitNonzero bool     `json:"gated_exit_nonzero"`
+}
+
+func loadExpected(t *testing.T, root string) expected {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(root, "demo", "expected.json"))
+	if err != nil {
+		t.Fatalf("read demo/expected.json: %v", err)
+	}
+	var e expected
+	if err := json.Unmarshal(b, &e); err != nil {
+		t.Fatalf("parse demo/expected.json: %v", err)
+	}
+	return e
+}
+
 func TestDemoLoopClosesEndToEnd(t *testing.T) {
 	admin := os.Getenv("ROWSHAPE_TEST_PG_DSN")
 	if admin == "" {
@@ -83,26 +109,30 @@ func TestDemoLoopClosesEndToEnd(t *testing.T) {
 	}
 	root := repoRoot(t)
 	bin := buildBinary(t, root)
+	exp := loadExpected(t, root)
 
 	// 1) The naive migration is rejected: WARN carrying RS-LOCK-001, and with
-	//    --warn-fail (how the demo gates) it exits non-zero.
+	//    --warn-fail (how the demo gates) it exits non-zero. Seeded for
+	//    determinism (INV-DETERMINISM), so the assertion is stable across runs.
 	naive, naiveCode := runValidate(t, bin, root, "migrations/naive", admin, true)
-	if naive.Verdict != verdict.VerdictWarn {
-		t.Errorf("naive verdict = %s, want WARN", naive.Verdict)
+	if naive.Verdict != exp.Naive.Verdict {
+		t.Errorf("naive verdict = %s, want %s", naive.Verdict, exp.Naive.Verdict)
 	}
-	if !hasFinding(naive, "RS-LOCK-001") {
-		t.Errorf("naive migration should carry RS-LOCK-001, got findings: %v", codes(naive))
+	for _, code := range exp.Naive.MustInclude {
+		if !hasFinding(naive, code) {
+			t.Errorf("naive migration should carry %s, got findings: %v", code, codes(naive))
+		}
 	}
-	if naiveCode == 0 {
+	if exp.Naive.GatedExitNonzero && naiveCode == 0 {
 		t.Errorf("naive migration should fail the gated job (exit non-zero), got exit 0")
 	}
 
 	// 2) The three-step rewrite reaches PASS.
 	rewrite, rewriteCode := runValidate(t, bin, root, "migrations/rewrite", admin, false)
-	if rewrite.Verdict != verdict.VerdictPass {
-		t.Errorf("rewrite verdict = %s, want PASS; findings: %v", rewrite.Verdict, codes(rewrite))
+	if rewrite.Verdict != exp.Rewrite.Verdict {
+		t.Errorf("rewrite verdict = %s, want %s; findings: %v", rewrite.Verdict, exp.Rewrite.Verdict, codes(rewrite))
 	}
-	if rewriteCode != 0 {
+	if rewrite.Verdict == verdict.VerdictPass && rewriteCode != 0 {
 		t.Errorf("rewrite should pass (exit 0), got exit %d", rewriteCode)
 	}
 }
