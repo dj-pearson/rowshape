@@ -79,7 +79,7 @@ func runValidate(opts *validateOptions) error {
 	if err != nil {
 		return emitToolError(opts.asJSON, toolerror.New(toolerror.FixtureParse, fmt.Sprintf("reading %s failed: %v", opts.fixturePath, err), "check the fixture path"))
 	}
-	f, err := fixture.Parse(data)
+	f, err := fixture.ParseVerified(data)
 	if err != nil {
 		return emitToolError(opts.asJSON, fixtureParseError(err))
 	}

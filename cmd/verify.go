@@ -55,7 +55,7 @@ func runVerify(opts *verifyOptions) error {
 		fmt.Fprintf(os.Stderr, "rowshape verify: reading %s failed: %v\n", opts.fixturePath, err)
 		return toolError()
 	}
-	expected, err := fixture.Parse(data)
+	expected, err := fixture.ParseVerified(data)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "rowshape verify: %v\n", err)
 		return toolError()
