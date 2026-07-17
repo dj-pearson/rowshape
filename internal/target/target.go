@@ -74,7 +74,7 @@ func NewEphemeral(ctx context.Context, adminDSN string) (*Ephemeral, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect to admin database: %w", err)
 	}
-	defer admin.Close(ctx)
+	defer func() { _ = admin.Close(ctx) }()
 
 	name := ephemeralName(ephemeralCounter.Add(1))
 	// Drop any stale database of the same name left by a crashed prior run of
@@ -111,7 +111,7 @@ func (e *Ephemeral) Close(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("connect to drop disposable database: %w", err)
 	}
-	defer admin.Close(ctx)
+	defer func() { _ = admin.Close(ctx) }()
 	// WITH (FORCE) terminates other sessions (PG13+) so the drop always succeeds.
 	if _, err := admin.Exec(ctx, "DROP DATABASE IF EXISTS "+quoteIdent(e.name)+" WITH (FORCE)"); err != nil {
 		return fmt.Errorf("drop disposable database: %w", err)

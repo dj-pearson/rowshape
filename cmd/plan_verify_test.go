@@ -30,7 +30,7 @@ func tempDB(t *testing.T) (string, func()) {
 	if err != nil {
 		t.Skipf("admin connect: %v", err)
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 
 	name := fmt.Sprintf("rowshape_pv_%d_%d", os.Getpid(), pvCounter.Add(1))
 	if _, err := conn.Exec(ctx, "CREATE DATABASE "+name); err != nil {
@@ -41,7 +41,7 @@ func tempDB(t *testing.T) (string, func()) {
 		if err != nil {
 			return
 		}
-		defer c.Close(ctx)
+		defer func() { _ = c.Close(ctx) }()
 		_, _ = c.Exec(ctx, "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)")
 	}
 	return dbURL(t, admin, name), cleanup
@@ -67,7 +67,7 @@ func exec(t *testing.T, url, sql string) {
 	if err != nil {
 		t.Fatalf("connect %s: %v", plan.RedactURL(url), err)
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 	if _, err := conn.Exec(ctx, sql); err != nil {
 		t.Fatalf("exec %q: %v", sql, err)
 	}
@@ -80,7 +80,7 @@ func columnExists(t *testing.T, url, table, col string) bool {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 	schema, tbl := "public", table
 	if i := strings.IndexByte(table, '.'); i >= 0 {
 		schema, tbl = table[:i], table[i+1:]

@@ -219,7 +219,7 @@ func applyStatements(ctx context.Context, t target.Target, stmts []string) (*val
 	if err != nil {
 		return nil, toolerror.New(toolerror.ConnectFailed, "could not connect to the target", "check the target is reachable and the credentials are valid")
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 	return validate.Apply(ctx, conn, stmts), nil
 }
 

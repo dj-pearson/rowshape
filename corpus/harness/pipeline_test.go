@@ -53,7 +53,7 @@ func (p pipelineValidator) Validate(c Case) (string, []ProducedFinding, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 
 	// gen_random_uuid() is core only on PG 13+; provide it via pgcrypto so the
 	// volatile-default corpus case applies on every major.
