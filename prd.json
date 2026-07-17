@@ -476,6 +476,7 @@
         },
         {
           "id": "P1-T9",
+          "audit_note": "Criterion 1 (\"hydrate spins up a disposable Postgres (testcontainers-go default)\") is deliberately superseded by docs/DECISIONS.md D-005, not unimplemented: testcontainers-go pulls the Docker client SDK and dozens of transitive deps, which conflicts with INV-SUPPLY-CHAIN (\"single static binary, deps kept deliberately few\"), and PRD §17.2 lists the target mechanism as an open question. Ephemeral — a throwaway database on any reachable Postgres, needing only a libpq connection — is the shipped default and gives the same observable behaviour the story asks for. The Target interface keeps testcontainers/pg_tmp/embedded a clean swap-in. Verified by audit, no defect. ONE SMALL DISCREPANCY: D-005 says \"Three implementations ship\", but Container (the docker-CLI target) is unreachable from the CLI — cmd/ never calls target.NewContainer, and hydrate offers only --target and --ephemeral. It is a swap-in point, not a shipped feature; either expose it behind a flag or reword D-005, which currently reads as though a user can select it.",
           "title": "Disposable hydrate target orchestration",
           "description": "Provide the disposable Postgres target for hydrate: default via testcontainers-go (Docker), and accept a user-provided --target URL. Records open-question 17.2 (testcontainers vs embedded/pg_tmp); ship testcontainers-go as the default now and leave the swap point clean. The container is thrown away after use.",
           "depends_on": ["P1-T7"],
