@@ -113,7 +113,7 @@ func generateTable(f *fixture.Fixture, name string, tbl fixture.Table, seed int6
 			case isFK:
 				// fk[ord] is the assigned parent ordinal; map it to the id value
 				// the parent's identity column actually generated for that ordinal.
-				v = parentIDValue(f, fkRefs[col], fk[ord])
+				v = parentIDValue(f, fkRefs[col], fk[ord], rowCounts[parentTable(fkRefs[col].To)])
 			default:
 				v = generateValue(seed, name, col, c, ord)
 			}
@@ -339,15 +339,45 @@ func fakeUUID(n int64) string {
 // the two in step whatever the range is — and if the fixture carries no facts for
 // the parent column, generation falls back to the ordinal, which is what the id
 // would be in that case anyway.
-func parentIDValue(f *fixture.Fixture, ref fixture.Reference, parentOrdinal int64) int64 {
+func parentIDValue(f *fixture.Fixture, ref fixture.Reference, parentOrdinal, parentN int64) int64 {
 	col, ok := parentIDColumn(f, ref)
 	if !ok {
 		return parentOrdinal
+	}
+	// An ordinal at or beyond parentN is a deliberate orphan (assignForeignKeys
+	// hands these out to honour orphan_fraction). It must be an id NO parent has,
+	// and "beyond the largest one generated" is the only choice that holds
+	// whatever the column's range is: min + (ordinal % span) wraps, so picking an
+	// unused ordinal is not enough when the span is narrower than the parent
+	// count — the wrap would land on a real parent and the orphan would quietly
+	// become valid.
+	if parentOrdinal >= parentN && parentN > 0 {
+		return maxParentID(col, parentN) + 1 + (parentOrdinal - parentN)
 	}
 	if v, ok := numericInRange(col, parentOrdinal).(int64); ok {
 		return v
 	}
 	return parentOrdinal
+}
+
+// maxParentID is the largest id the parent table generated across ordinals
+// [0, parentN).
+func maxParentID(col fixture.Column, parentN int64) int64 {
+	var max int64
+	for ord := int64(0); ord < parentN; ord++ {
+		v, ok := numericInRange(col, ord).(int64)
+		if !ok {
+			return parentN // no numeric range: ids are the ordinals themselves
+		}
+		if ord == 0 || v > max {
+			max = v
+		}
+		// The values cycle with period span, so one lap is enough.
+		if lo, hi, ok := numericBounds(col); ok && ord >= hi-lo {
+			break
+		}
+	}
+	return max
 }
 
 // parentIDColumn resolves ref.To ("public.users.id") to the referenced column's

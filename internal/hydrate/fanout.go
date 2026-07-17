@@ -34,13 +34,23 @@ func assignForeignKeys(seed int64, table string, ref fixture.Reference, childN, 
 	}
 
 	counts := targetCounts(parentN, childN, declaredChild, ref.Fanout)
+	orphanGroups := orphanGroupCount(counts, childN, ref.OrphanFraction)
 
 	// Fill child slots parent-by-parent following the constructed counts. This is
 	// deterministic and reproduces the per-parent count distribution exactly.
+	//
+	// The first orphanGroups slots are handed ordinals at or beyond parentN, which
+	// parentIDValue maps to ids no parent has. counts is ascending, so these are
+	// the SMALLEST groups: orphans in real data are stragglers, not whales, and
+	// taking from the bottom leaves p50/p95/max where they were.
 	idx := int64(0)
-	for p := int64(0); p < parentN && idx < childN; p++ {
+	for p := int64(0); p < int64(len(counts)) && idx < childN; p++ {
+		ordinal := p
+		if p < orphanGroups {
+			ordinal = parentN + p // no parent has this id
+		}
 		for k := int64(0); k < counts[p] && idx < childN; k++ {
-			out[idx] = p
+			out[idx] = ordinal
 			idx++
 		}
 	}
@@ -248,4 +258,47 @@ func maxInt64(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+// orphanGroupCount returns how many of the (ascending) count groups must point at
+// a parent that does not exist, so the hydrated orphan_fraction matches the
+// fixture's.
+//
+// hydrate ignored orphan_fraction entirely, so P1-T7's clause "satisfy declared
+// constraints UNLESS orphan_fraction>0 demands otherwise" was unimplemented: the
+// corpus case that exists for "the VALIDATE that trips on pre-existing orphans"
+// hydrated a database with none, and VALIDATE CONSTRAINT would have succeeded on
+// it. The FAIL was right, but it came from reading the fixture, not from running
+// anything.
+//
+// This does NOT fight the fan-out. `pull` measures fan-out with GROUP BY on the
+// foreign key (internal/profile/fanout.go), so its "parents" are FK VALUES, not
+// parent rows — an orphan group is simply a value with no match. The group-size
+// distribution is untouched; some groups just point elsewhere. What changes is
+// how many real parents end up childless, which the facts already imply.
+func orphanGroupCount(counts []int64, childN int64, of *fixture.Fact[float64]) int64 {
+	if of == nil || of.Value <= 0 || childN <= 0 {
+		return 0
+	}
+	want := int64(math.Round(of.Value * float64(childN)))
+	if want <= 0 {
+		return 0
+	}
+	var rows, groups int64
+	for i := 0; i < len(counts) && rows < want; i++ {
+		if counts[i] <= 0 {
+			continue
+		}
+		rows += counts[i]
+		groups++
+	}
+	// Never orphan every group: a reference whose children ALL dangle is not what
+	// a fraction below 1 describes, and it would leave no fan-out to speak of.
+	if groups >= int64(len(counts)) {
+		groups = int64(len(counts)) - 1
+	}
+	if groups < 0 {
+		groups = 0
+	}
+	return groups
 }

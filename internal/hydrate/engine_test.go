@@ -445,3 +445,151 @@ func TestFanoutHeavyTailIsReproduced(t *testing.T) {
 			len(nonEmpty), parents-len(nonEmpty), parents)
 	}
 }
+
+// TestOrphanFractionIsReproduced: P1-T7's clause "satisfy declared constraints
+// UNLESS orphan_fraction>0 demands otherwise" was unimplemented — hydrate never
+// read the field. Measured on the corpus's own validate_orphans fixture: it
+// declared orphan_fraction 0.004 (exact, via scan) and hydrated 800,000 children
+// with ZERO orphans, so `ALTER TABLE ... VALIDATE CONSTRAINT` would have SUCCEEDED
+// on the very case that exists for "the VALIDATE that trips on pre-existing
+// orphans" (PRD §12). The FAIL was right, but read off the fixture rather than
+// produced by running anything.
+//
+// This does not fight the fan-out, which is why it is possible at all: `pull`
+// measures fan-out with GROUP BY on the foreign key, so its "parents" are FK
+// VALUES — an orphan group is a value with no match. Group sizes are untouched;
+// only how many real parents end up childless changes, which the facts imply.
+func TestOrphanFractionIsReproduced(t *testing.T) {
+	f := &fixture.Fixture{
+		Tables: map[string]fixture.Table{
+			"public.users": {
+				Rows: fixture.Fact[int64]{Value: 10000},
+				Columns: map[string]fixture.Column{
+					"id": {Type: "bigint", Unique: &fixture.Fact[bool]{Value: true, Confidence: fixture.Exact},
+						Range: &fixture.Range{Min: 1, Max: 10000}},
+				},
+			},
+			"public.orders": {
+				Rows: fixture.Fact[int64]{Value: 80000},
+				Columns: map[string]fixture.Column{
+					"id":      {Type: "bigint", Unique: &fixture.Fact[bool]{Value: true, Confidence: fixture.Exact}, Range: &fixture.Range{Min: 1, Max: 80000}},
+					"user_id": {Type: "bigint"},
+				},
+				References: []fixture.Reference{{
+					Column: "user_id", To: "public.users.id",
+					Fanout:         &fixture.Fanout{Mean: 8, P50: 3, P95: 40, Max: 900, Confidence: fixture.Measured},
+					OrphanFraction: &fixture.Fact[float64]{Value: 0.004, Confidence: fixture.Exact},
+				}},
+			},
+		},
+	}
+
+	res, err := Generate(f, Options{Seed: 1, Scale: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parents := map[int64]bool{}
+	var fks []int64
+	for _, tb := range res.Tables {
+		idx := map[string]int{}
+		for i, c := range tb.Columns {
+			idx[c] = i
+		}
+		for _, row := range tb.Rows {
+			switch tb.Name {
+			case "public.users":
+				parents[row[idx["id"]].(int64)] = true
+			case "public.orders":
+				fks = append(fks, row[idx["user_id"]].(int64))
+			}
+		}
+	}
+	if len(fks) == 0 {
+		t.Fatal("no children generated")
+	}
+
+	var orphans int
+	for _, v := range fks {
+		if !parents[v] {
+			orphans++
+		}
+	}
+	got := float64(orphans) / float64(len(fks))
+	t.Logf("declared orphan_fraction 0.004 -> hydrated %.4f (%d of %d)", got, orphans, len(fks))
+
+	if orphans == 0 {
+		t.Fatal("no orphans hydrated: a fixture declaring orphan_fraction > 0 describes rows that " +
+			"already violate the FK, and VALIDATE CONSTRAINT must fail on this data rather than succeed")
+	}
+	// Within half a percent of the declared fraction — the count is quantised by
+	// whole groups, so it cannot be exact for every input.
+	if diff := got - 0.004; diff > 0.005 || diff < -0.005 {
+		t.Errorf("hydrated orphan_fraction = %.4f, want ~0.004", got)
+	}
+}
+
+// TestNoOrphansWhenFractionIsZero: the other direction, and the one that matters
+// more. A fixture proving orphan_fraction 0 (exact, via constraint) must hydrate
+// clean — inventing an orphan there makes `ADD FOREIGN KEY` fail on hydrated data
+// and rowshape report a FAIL it manufactured.
+func TestNoOrphansWhenFractionIsZero(t *testing.T) {
+	f := &fixture.Fixture{
+		Tables: map[string]fixture.Table{
+			"public.users": {
+				Rows: fixture.Fact[int64]{Value: 500},
+				Columns: map[string]fixture.Column{
+					"id": {Type: "bigint", Unique: &fixture.Fact[bool]{Value: true, Confidence: fixture.Exact},
+						Range: &fixture.Range{Min: 1, Max: 500}},
+				},
+			},
+			"public.orders": {
+				Rows: fixture.Fact[int64]{Value: 2000},
+				Columns: map[string]fixture.Column{
+					"id":      {Type: "bigint", Unique: &fixture.Fact[bool]{Value: true, Confidence: fixture.Exact}, Range: &fixture.Range{Min: 1, Max: 2000}},
+					"user_id": {Type: "bigint"},
+				},
+				References: []fixture.Reference{{
+					Column: "user_id", To: "public.users.id",
+					Fanout:         &fixture.Fanout{Mean: 4, P50: 2, P95: 8, Max: 40, Confidence: fixture.Measured},
+					OrphanFraction: &fixture.Fact[float64]{Value: 0, Confidence: fixture.Exact},
+				}},
+			},
+		},
+	}
+	res, err := Generate(f, Options{Seed: 1, Scale: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parents := map[int64]bool{}
+	var orphans int
+	for _, tb := range res.Tables {
+		idx := map[string]int{}
+		for i, c := range tb.Columns {
+			idx[c] = i
+		}
+		if tb.Name == "public.users" {
+			for _, row := range tb.Rows {
+				parents[row[idx["id"]].(int64)] = true
+			}
+		}
+	}
+	for _, tb := range res.Tables {
+		if tb.Name != "public.orders" {
+			continue
+		}
+		idx := 0
+		for i, c := range tb.Columns {
+			if c == "user_id" {
+				idx = i
+			}
+		}
+		for _, row := range tb.Rows {
+			if !parents[row[idx].(int64)] {
+				orphans++
+			}
+		}
+	}
+	if orphans != 0 {
+		t.Errorf("%d orphans hydrated against a fixture proving orphan_fraction 0 (exact)", orphans)
+	}
+}
