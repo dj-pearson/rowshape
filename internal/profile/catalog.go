@@ -263,10 +263,24 @@ func rowEstimate(reltuples float64) fixture.Fact[int64] {
 
 // columns reads column structure. It returns the column map plus the on-disk
 // order (attnum ascending) so downstream emitters can be deterministic.
+//
+// pg_attribute.attgenerated arrived with generated columns in PG12. On 10 and 11
+// the column does not exist and selecting it is a hard error — `pull` could not
+// read a catalog at all on those servers:
+//
+//	ERROR: column a.attgenerated does not exist (SQLSTATE 42703)
+//
+// rowshape claims PG 11-17, so that was `pull` not working on a supported
+// version. Below 12 the concept does not exist, so it degrades to a constant
+// empty string — the same shape as the indnullsnotdistinct guard below.
 func (r *reader) columns(ctx context.Context, oid uint32) (map[string]fixture.Column, []string, error) {
-	const q = `
+	generated := `''` // PG < 12: no generated columns
+	if r.serverMajor >= 12 {
+		generated = "a.attgenerated::text"
+	}
+	q := `
 SELECT a.attnum, a.attname, format_type(a.atttypid, a.atttypmod),
-       a.attnotnull, a.attidentity::text, a.attgenerated::text
+       a.attnotnull, a.attidentity::text, ` + generated + `
 FROM pg_attribute a
 WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped
 ORDER BY a.attnum`
