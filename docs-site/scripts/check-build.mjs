@@ -98,6 +98,50 @@ async function checkJSBudget(pages) {
 	return over;
 }
 
+// The narrow, defensible privacy claim from PRD §8.1. The privacy page must
+// reproduce it verbatim and must NOT make the broader "no production values
+// leave" claim, which is false (PRD §11). Checked against the source Markdown
+// (not the built HTML) so smart-quotes/entities don't confuse the match.
+const PRIVACY_PAGE = 'src/content/docs/privacy/index.md';
+const NARROW_CLAIM =
+	'a fixture contains no rows from your database; it contains statistics computed ' +
+	'from them; at --privacy standard some of those reveal the extremes of numeric ' +
+	'and date columns; at --privacy strict none do.';
+
+/** Normalize prose for a robust substring match: drop markdown emphasis/code
+ * markers and collapse whitespace. */
+function normalizeProse(s) {
+	return s
+		.toLowerCase()
+		.replace(/[`*_]/g, '')
+		.replace(/\s+/g, ' ')
+		.trim();
+}
+
+async function checkPrivacyClaim() {
+	const problems = [];
+	if (!existsSync(PRIVACY_PAGE)) {
+		return [`privacy page missing at ${PRIVACY_PAGE}`];
+	}
+	const text = normalizeProse(await readFile(PRIVACY_PAGE, 'utf8'));
+	if (!text.includes(normalizeProse(NARROW_CLAIM))) {
+		problems.push('privacy page does not reproduce the PRD §8.1 narrow claim verbatim');
+	}
+	// The broader claim may only appear disavowed. Every mention must have "false"
+	// nearby; otherwise the page is asserting it.
+	const broad = 'no production values leave';
+	let i = text.indexOf(broad);
+	while (i !== -1) {
+		const window = text.slice(i, i + broad.length + 80);
+		if (!window.includes('false')) {
+			problems.push('privacy page states the broader "no production values leave" claim without disavowing it as false');
+			break;
+		}
+		i = text.indexOf(broad, i + broad.length);
+	}
+	return problems;
+}
+
 async function main() {
 	if (!existsSync(DIST)) {
 		console.error(`no ${DIST}/ — run \`npm run build\` first`);
@@ -115,8 +159,14 @@ async function main() {
 	console.log('');
 
 	const broken = await checkLinks(pages);
+	const privacy = await checkPrivacyClaim();
 
 	let failed = false;
+	if (privacy.length) {
+		failed = true;
+		console.error(`${privacy.length} privacy-claim problem(s):`);
+		for (const p of privacy) console.error(`  ${p}`);
+	}
 	if (broken.length) {
 		failed = true;
 		console.error(`${broken.length} broken internal link(s):`);
