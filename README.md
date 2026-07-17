@@ -16,6 +16,27 @@ go build ./...        # builds the single `rowshape` binary
 go vet ./...
 ```
 
+## Test
+
+```sh
+go test ./...         # unit tests — the Postgres-backed tests SKIP silently
+```
+
+**A green `go test ./...` does not mean the suite ran.** Everything that touches a
+real database — the catalog reads, `validate` end-to-end, the disposable-target
+lifecycle, the corpus triples, and the Week-6 pathology gate — skips unless you
+point it at a Postgres:
+
+```sh
+export ROWSHAPE_TEST_PG_DSN='postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable'
+go test ./... -count=1
+```
+
+Without it those tests report nothing, which reads exactly like passing. CI sets
+the DSN and runs the corpus across the PG 10–17 matrix
+([`corpus.yml`](.github/workflows/corpus.yml)) — treat CI, not a local run, as the
+verdict on anything database-shaped.
+
 ## Commands
 
 `rowshape` exposes: `init`, `pull`, `hydrate`, `validate`, `explain`, `plan`,

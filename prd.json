@@ -918,10 +918,11 @@
             "A regression on any major fails CI."
           ],
           "verification": ["CI matrix green across all seven majors"],
-          "artifacts": [".github/workflows/corpus.yml"],
+          "artifacts": [".github/workflows/corpus.yml", "internal/target/target.go (version-aware drop)"],
           "type": "ops",
           "passes": true,
           "status": "done",
+          "note": "CORRECTED: this story was marked passes:true while the corpus matrix was RED on PG 10, 11 and 12 on every run since it landed — acceptance criterion 1 ('CI runs the corpus against PG 11,12,13,14,15,16,17') was false for two of the seven supported majors. Found by checking actual CI history (`gh run list`) rather than trusting local `go test ./...`, which passes because every Postgres-backed test skips silently unless ROWSHAPE_TEST_PG_DSN is set — the same vacuous-green pattern that hid the P3-T10 hook tests and the RedactURL leak. ROOT CAUSE: `DROP DATABASE ... WITH (FORCE)` is PG13+; on 11/12 it is a syntax error, so 'reset disposable database: ERROR: syntax error at or near \"WITH\"' killed every triple before it validated anything. This was a PRODUCT bug, not only a test one — internal/target/target.go used the clause on the --ephemeral path, so `rowshape validate --ephemeral` against a PG 11/12 server failed outright; the comment there already said '(PG13+)' but the guard was never written. Fixed with target.dropDatabase, which reads server_version_num (integer form, e.g. 110022/160004) and uses WITH (FORCE) on 13+ or terminate-backends-then-drop on 11/12 (what FORCE does internally). The two test helpers (cmd/plan_verify_test.go, cmd/mcp/tool_plan_against_test.go) carried the identical assumption and were fixed the same way. This is precisely the failure PRD §14/§12 named as the reason to build the matrix BEFORE the findings — 'writing findings, demoing them, then discovering which were wrong on PG 11'. PG 11 and 12 had never been exercised. PG 10 stays in the matrix deliberately (D-006/D-007: the catalog fast-path boundary lands in 11, so 10 is what makes the version-conditional cases diverge). Verified on real CI, not locally: this environment has no Docker daemon and no local Postgres, so the fix was pushed to a branch and confirmed against the actual PG 10-17 matrix.",
           "priority": 13
         },
         {
