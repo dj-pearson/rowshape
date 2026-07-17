@@ -1,0 +1,122 @@
+# rowshape — the type-checker for database migrations, as a GitHub Action.
+#
+# Runs `rowshape validate` in your CI against production-shaped data hydrated from
+# a committed fixture, and returns the SAME machine-readable Verdict the CLI and
+# MCP server return (PRD §10, INV-VERDICT-SHAPE). This action is a thin wrapper
+# over the signed release binary (P0-T4) — it adds no finding logic. It needs no
+# production credential: point `ephemeral` at a disposable Postgres (e.g. a CI
+# `services:` container), and `validate` hydrates a throwaway database from the
+# fixture and never touches the fixture's source host (INV-BLAST-RADIUS-ZERO).
+#
+# Exit-code gating (PRD §10):
+#   PASS      -> job passes
+#   FAIL      -> job fails
+#   WARN-only -> job passes by default; set warn-as-fail: true to block on WARN
+#   tool err  -> job fails
+name: rowshape validate
+description: Validate a database migration against production-shaped data and gate CI on the verdict.
+author: Pearson Media LLC
+
+branding:
+  icon: database
+  color: purple
+
+inputs:
+  fixture:
+    description: Path to the committed rowshape.yaml fixture.
+    required: false
+    default: rowshape.yaml
+  migrations:
+    description: Migration .sql file or directory to validate.
+    required: false
+    default: migrations
+  ephemeral:
+    description: >-
+      Admin connection URL for a disposable Postgres (e.g. a CI services
+      container). validate creates a throwaway database, hydrates the fixture
+      into it, applies the migration, and drops it. No production credential.
+    required: false
+    default: ""
+  target:
+    description: >-
+      Validate against this live database URL instead of hydrating (its data is
+      ground truth). Mutually exclusive with `ephemeral`.
+    required: false
+    default: ""
+  warn-as-fail:
+    description: Fail the job on a WARN-only verdict (default false — WARN informs but does not block).
+    required: false
+    default: "false"
+  json:
+    description: Capture the machine-readable JSON verdict to a file for downstream steps.
+    required: false
+    default: "true"
+  runner:
+    description: Override migration runner detection (alembic|prisma|drizzle|rawsql).
+    required: false
+    default: ""
+  seed:
+    description: Deterministic hydration seed.
+    required: false
+    default: ""
+  scale:
+    description: Fraction of declared rows to hydrate (default 1.0).
+    required: false
+    default: ""
+  args:
+    description: Extra space-separated flags passed through to `rowshape validate`.
+    required: false
+    default: ""
+  version:
+    description: rowshape release to install (e.g. v1.2.3). Default 'latest'. Ignored when `binary` is set.
+    required: false
+    default: latest
+  binary:
+    description: >-
+      Path to a prebuilt rowshape binary. When set, the install step is skipped —
+      use this if you install rowshape yourself (brew/go install) or in tests.
+    required: false
+    default: ""
+  repo:
+    description: GitHub repo to download the release from (advanced; default rowshape/rowshape).
+    required: false
+    default: rowshape/rowshape
+
+outputs:
+  verdict:
+    description: The verdict — PASS, WARN, or FAIL (empty on a tool error).
+    value: ${{ steps.run.outputs.verdict }}
+  exit-code:
+    description: The raw `rowshape validate` exit code (0 PASS, 1 FAIL, 2 WARN, 3 tool error).
+    value: ${{ steps.run.outputs.exit-code }}
+  verdict-json:
+    description: Path to the captured JSON verdict file (when json=true).
+    value: ${{ steps.run.outputs.verdict-json }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install rowshape
+      if: inputs.binary == ''
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_REPO: ${{ inputs.repo }}
+      run: bash "${GITHUB_ACTION_PATH}/.github/actions/rowshape/install.sh"
+
+    - name: Run rowshape validate
+      id: run
+      shell: bash
+      env:
+        INPUT_FIXTURE: ${{ inputs.fixture }}
+        INPUT_MIGRATIONS: ${{ inputs.migrations }}
+        INPUT_EPHEMERAL: ${{ inputs.ephemeral }}
+        INPUT_TARGET: ${{ inputs.target }}
+        INPUT_WARN_AS_FAIL: ${{ inputs.warn-as-fail }}
+        INPUT_JSON: ${{ inputs.json }}
+        INPUT_RUNNER: ${{ inputs.runner }}
+        INPUT_SEED: ${{ inputs.seed }}
+        INPUT_SCALE: ${{ inputs.scale }}
+        INPUT_ARGS: ${{ inputs.args }}
+        INPUT_BINARY: ${{ inputs.binary }}
+      run: bash "${GITHUB_ACTION_PATH}/.github/actions/rowshape/run.sh"

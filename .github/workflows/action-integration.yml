@@ -1,0 +1,46 @@
+name: Action integration
+
+# Integration test for the rowshape GitHub Action (P4-T1). Two layers run here:
+# the hermetic wrapper tests (exit-code mapping, flag forwarding, installer
+# naming) need no database; TestActionEndToEnd builds the real binary and drives
+# it through the Action's run.sh against committed corpus fixtures using the
+# disposable Postgres service below — a green run on a PASS case, a red run on a
+# FAIL case, and the configurable WARN — with no production credential (PRD §10,
+# §13; INV-BLAST-RADIUS-ZERO).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  action-integration:
+    name: rowshape action e2e
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+      - name: Action wrapper + end-to-end tests
+        env:
+          # A disposable CI Postgres — not a production credential. validate
+          # hydrates a throwaway database from the committed fixture.
+          ROWSHAPE_TEST_PG_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+        run: go test ./test/action/... -count=1 -v
