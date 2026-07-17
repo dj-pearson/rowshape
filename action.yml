@@ -120,3 +120,19 @@ runs:
         INPUT_ARGS: ${{ inputs.args }}
         INPUT_BINARY: ${{ inputs.binary }}
       run: bash "${GITHUB_ACTION_PATH}/.github/actions/rowshape/run.sh"
+
+    # Render the SAME Verdict as inline PR annotations + a check summary (P4-T2).
+    # Runs even on a FAIL (always()) so the findings are visible on the PR, but
+    # only when a JSON verdict was captured. The run step already set the job's
+    # pass/fail outcome; this only surfaces the detail.
+    - name: Annotate PR from the verdict
+      if: always() && inputs.json == 'true' && steps.run.outputs.verdict-json != ''
+      shell: bash
+      env:
+        INPUT_BINARY: ${{ inputs.binary }}
+        VERDICT_JSON: ${{ steps.run.outputs.verdict-json }}
+      run: |
+        bin="${ROWSHAPE_BIN:-${INPUT_BINARY:-rowshape}}"
+        if [ -f "$VERDICT_JSON" ]; then
+          "$bin" annotate "$VERDICT_JSON"
+        fi

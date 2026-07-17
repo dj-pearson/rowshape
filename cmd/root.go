@@ -40,6 +40,7 @@ func NewRootCmd() *cobra.Command {
 		newVerifyCmd(),
 		newInspectCmd(),
 		newMCPCmd(),
+		newAnnotateCmd(),
 	)
 	return root
 }

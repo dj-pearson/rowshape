@@ -83,8 +83,26 @@ the merge; with `warn-as-fail: true` the Action passes `--warn-fail` to
 | `exit-code`    | The raw `validate` exit code (`0/1/2/3`). |
 | `verdict-json` | Path to the captured JSON verdict file (when `json: true`). |
 
-The captured JSON is the same struct across CLI/MCP/Action; a follow-up step
-renders file/line PR annotations from it (P4-T2).
+The captured JSON is the same struct across CLI/MCP/Action; the Action's
+annotate step renders file/line PR annotations and a check summary from it.
+
+## PR annotations & check summary
+
+After `validate` runs, the Action calls `rowshape annotate <verdict.json>`,
+which renders the **same** Verdict struct (no bespoke formatter) into GitHub's
+two review surfaces:
+
+- **Inline annotations** — one workflow command per finding that carries a
+  `location`, placed at the exact file and line (`::error`/`::warning`/`::notice`
+  by severity). Findings without a location can't be placed inline; they still
+  appear in the summary.
+- **Check summary** — appended to `$GITHUB_STEP_SUMMARY`: the overall verdict,
+  the fixture it was computed against, and a table of every finding's code,
+  severity, estimate bucket, and remediation.
+
+It runs even on a FAIL (so the findings are visible on the PR); the job's
+pass/fail outcome was already decided by the run step. You can also use it
+standalone: `rowshape validate ... --json | rowshape annotate`.
 
 ## Using a binary you install yourself
 
@@ -106,6 +124,10 @@ earlier step), skip the download by pointing `binary` at it:
   runner (naming mirrors `.goreleaser.yaml` and `npm/install.js`).
 - `.github/actions/rowshape/run.sh` — translates inputs to `validate` flags and
   maps the exit code onto the CI gate.
+- `rowshape annotate` (`cmd/annotate.go`, `internal/annotate/`) — renders a JSON
+  verdict into inline annotations + the check summary, reusing `verdict.Result`.
 - `test/action/action_test.go` — hermetic wrapper tests (exit mapping, flag
   forwarding, installer naming) plus a DB-backed end-to-end run against corpus
   fixtures. Wired into CI by `.github/workflows/action-integration.yml`.
+- `internal/annotate/annotate_test.go`, `cmd/annotate_test.go` — assert
+  finding.location → file/line and that the summary carries codes + remediation.
