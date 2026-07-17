@@ -1,0 +1,10 @@
+rowshape_fixture: "1"
+meta:
+  id: bad-range-on-text
+  engine: {name: postgres, version: "16"}
+tables:
+  public.users:
+    rows: {value: 1000, confidence: exact}
+    columns:
+      # A range on a text column leaks real values (min/max are production data).
+      email: {type: text, nullable: false, range: {min: "aaron@example.com", max: "zoe@example.com"}}

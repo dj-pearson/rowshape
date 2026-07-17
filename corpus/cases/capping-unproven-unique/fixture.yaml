@@ -1,0 +1,15 @@
+rowshape_fixture: "1"
+meta:
+  id: capping-unproven-unique
+  engine: {name: postgres, version: "16"}
+  privacy: standard
+  profile: {mode: fast, escalated: []}
+tables:
+  public.users:
+    rows: {value: 1200000, confidence: exact}
+    columns:
+      id: {type: bigint, nullable: false, unique: {value: true, confidence: exact, via: constraint}, generated: identity}
+      # NO `unique` fact: uniqueness is unproven. distinct is only estimated, and a
+      # sample can never establish uniqueness (INV-UNIQUENESS).
+      email: {type: text, nullable: false, distinct: {value: 1199000, confidence: estimated}, format: email}
+    constraints: [{name: users_pkey, kind: primary_key, columns: [id]}]

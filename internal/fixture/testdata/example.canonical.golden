@@ -1,0 +1,27 @@
+meta:
+  engine: {name: postgres, version: 16.3}
+  generator: rowshape/0.1.0
+  id: prod@2026-07-14
+  privacy: standard
+  profile:
+    escalated:
+      - public.users.email
+      - public.orders.external_ref
+    mode: fast
+    scanned_at: "2026-07-14T09:12:44Z"
+  source: sha256:41b0
+rowshape_fixture: "1"
+tables:
+  public.orders:
+    references: [{column: user_id, fanout: {confidence: measured, max: 12902, mean: 8.4, p50: 3, p95: 41}, on_delete: cascade, orphan_fraction: {confidence: exact, value: 0, via: scan}, to: public.users.id}]
+    rows: {confidence: exact, value: 8400000}
+  public.users:
+    bytes: 890000000
+    columns:
+      created_at: {distinct: {confidence: estimated, value: 1198412, via: pg_stats}, null_fraction: 0, nullable: false, range: {max: '2026-07-14T08:59:12Z', min: '2021-03-01T00:00:00Z'}, type: timestamptz}
+      email: {distinct: {confidence: measured, error: 0.02, value: 1161600, via: hll}, format: email, length: {max: 254, mean: 24.1, min: 6, p95: 38}, null_fraction: {confidence: exact, value: 0.032}, nullable: true, type: text, unique: {confidence: exact, value: false, via: scan}}
+      id: {distinct: {confidence: exact, value: 1200000, via: unique_index}, generated: identity, null_fraction: {confidence: exact, value: 0}, nullable: false, type: bigint, unique: {confidence: exact, value: true, via: constraint}}
+      status: {distinct: {confidence: exact, value: 4}, format: enum_like, frequencies: [0.71, 0.11, 0.06, 0.12], null_fraction: {confidence: exact, value: 0}, nullable: false, type: text, values: [active, trialing, past_due, canceled]}
+    constraints: [{columns: [id], kind: primary_key, name: users_pkey}, {columns: [email], kind: unique, name: users_email_key, nulls_distinct: true}, {expression: 'status = ANY (ARRAY[''active''::text])', kind: check, name: users_status_check, validated: true}]
+    indexes: [{bloat_estimate: 0.12, bytes: 48000000, columns: [email], method: btree, name: users_email_idx, partial: WHERE deleted_at IS NULL, unique: true}]
+    rows: {confidence: exact, value: 1200000}

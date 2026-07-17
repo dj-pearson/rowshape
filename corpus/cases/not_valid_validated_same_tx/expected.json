@@ -1,0 +1,10 @@
+{
+  "description": "NOT VALID then VALIDATE in one transaction defeats the split \u2014 the validating scan runs under lock.",
+  "verdict": "WARN",
+  "findings": [
+    {
+      "code": "RS-CONSTRAINT",
+      "severity": "warn"
+    }
+  ]
+}

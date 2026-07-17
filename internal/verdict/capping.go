@@ -1,0 +1,259 @@
+package verdict
+
+import (
+	"strings"
+
+	"github.com/rowshape/rowshape/internal/fixture"
+)
+
+// Engine caps the verdict a finding can produce by the confidence of the fixture
+// facts it rests on (RFC §7.4, INV-CONFIDENCE-CAPPING — the one thing that must
+// never be wrong, because a wrong PASS is unrecoverable).
+//
+// The load-bearing design choice: the confidence of every dependency is read
+// FROM THE FIXTURE, keyed by the fact path a finding declares in depends_on. A
+// finding names a fact; it never asserts the fact's confidence. There is no API
+// that accepts a caller-supplied confidence for a dependency, so a finding
+// structurally cannot downgrade (or upgrade) a dependency's confidence to reach
+// a stronger verdict — the RFC §7.4 rule enforced in code, not by convention.
+type Engine struct {
+	fx *fixture.Fixture
+}
+
+// NewEngine builds a capping engine reading confidences from fx.
+func NewEngine(fx *fixture.Fixture) *Engine { return &Engine{fx: fx} }
+
+// absent is the confidence of a dependency the fixture does not carry. It ranks
+// below every named level (fixture.Confidence.rank), so an unresolvable or
+// missing dependency is the weakest possible reading and can never license PASS
+// (RFC §7.4: "declared / absent → WARN").
+const absent = fixture.Confidence("")
+
+// Ceiling returns the strongest verdict a finding resting on confidence c may
+// produce (RFC §7.4 table): PASS at exact/measured, WARN at estimated, declared,
+// or absent.
+func Ceiling(c fixture.Confidence) string {
+	if c.AtLeast(fixture.Measured) {
+		return VerdictPass
+	}
+	return VerdictWarn
+}
+
+// DependencyConfidence returns the minimum confidence across the fixture facts a
+// finding declares in depends_on (RFC §7.4). Each path is resolved from the
+// fixture; a declared-but-unresolvable path (the fact is absent) drives the
+// minimum to absent — the weakest reading. A finding with NO declared
+// dependencies rests on no uncertain fact and is not capped (exact).
+//
+// This is the ONLY source of a dependency's confidence. There is no parameter by
+// which a caller asserts one — that is the structural guarantee.
+func (e *Engine) DependencyConfidence(deps []string) fixture.Confidence {
+	if len(deps) == 0 {
+		return fixture.Exact
+	}
+	min := fixture.Exact
+	for _, d := range deps {
+		min = fixture.Min(min, e.factConfidence(d))
+	}
+	return min
+}
+
+// Cap applies confidence capping to one finding (RFC §7.4). want is the verdict
+// the finding argues for: PASS for a clean certification, WARN, or FAIL for a
+// detected problem. Cap:
+//
+//   - reads the minimum confidence across the finding's declared DependsOn from
+//     the fixture and records it on the finding's Confidence field;
+//   - downgrades a PASS resting on facts weaker than measured to WARN, marking
+//     the finding warn and ensuring its Remediation names the resolving command;
+//   - leaves WARN and FAIL untouched.
+//
+// It returns the verdict the finding actually produces and the possibly-updated
+// finding. Capping only ever prevents over-certification: it turns a wrong PASS
+// into a loud, actionable WARN and never weakens a detected failure.
+func (e *Engine) Cap(want string, f Finding) (string, Finding) {
+	minConf := e.DependencyConfidence(f.DependsOn)
+	f.Confidence = string(minConf)
+
+	got := capToCeiling(want, Ceiling(minConf))
+	if got == VerdictWarn && want == VerdictPass {
+		if f.Severity == "" || f.Severity == SeverityInfo {
+			f.Severity = SeverityWarn
+		}
+		if resolve := e.ResolveCommand(f.DependsOn); resolve != "" && !strings.Contains(f.Remediation, resolve) {
+			f.Remediation = joinResolve(f.Remediation, resolve)
+		}
+	}
+	return got, f
+}
+
+// ResolveCommand returns the command that would raise the weakest declared
+// dependency to a certifying confidence — the "here is how to turn this WARN into
+// a PASS" string (RFC §7.4, e.g. `rowshape pull --exact public.users.email`).
+func (e *Engine) ResolveCommand(deps []string) string {
+	target := e.weakestTarget(deps)
+	if target == "" {
+		return ""
+	}
+	return "rowshape pull --exact " + target
+}
+
+// capToCeiling downgrades a PASS that exceeds the ceiling to WARN; it never
+// touches WARN or FAIL. Capping only prevents over-certification.
+func capToCeiling(want, ceiling string) string {
+	if want == VerdictPass && ceiling == VerdictWarn {
+		return VerdictWarn
+	}
+	return want
+}
+
+// factConfidence resolves one fixture fact path to its confidence, reading it
+// from the fixture. Supported paths: `<schema>.<table>.rows`,
+// `<schema>.<table>.<column>.{unique,null_fraction,distinct}`. An unresolvable
+// path yields absent — the weakest reading — so an unknown dependency can never
+// license PASS.
+func (e *Engine) factConfidence(path string) fixture.Confidence {
+	if e.fx == nil {
+		return absent
+	}
+	table, rest, ok := e.splitTable(path)
+	if !ok {
+		return absent
+	}
+	tbl := e.fx.Tables[table]
+	if rest == "rows" {
+		return tbl.Rows.Confidence
+	}
+	col, fact, ok := cut(rest)
+	if !ok {
+		return absent
+	}
+	// orphan_fraction lives on a reference (keyed by local column), not on the
+	// column profile, so it resolves even when the FK column has no column entry
+	// (RFC §6.6).
+	if fact == "orphan_fraction" {
+		for _, ref := range tbl.References {
+			if ref.Column == col && ref.OrphanFraction != nil {
+				return ref.OrphanFraction.Confidence
+			}
+		}
+		return absent
+	}
+	c, ok := tbl.Columns[col]
+	if !ok {
+		return absent
+	}
+	switch fact {
+	case "unique":
+		if c.Unique == nil {
+			return absent
+		}
+		return c.Unique.Confidence
+	case "null_fraction":
+		if c.NullFraction == nil {
+			return absent
+		}
+		return c.NullFraction.Confidence
+	case "distinct":
+		if c.Distinct == nil {
+			return absent
+		}
+		return c.Distinct.Confidence
+	}
+	return absent
+}
+
+// weakestTarget returns the escalation target (schema.table[.column]) of the
+// weakest declared dependency, ties broken by declaration order.
+func (e *Engine) weakestTarget(deps []string) string {
+	if len(deps) == 0 {
+		return ""
+	}
+	bestDep, bestConf := deps[0], e.factConfidence(deps[0])
+	for _, d := range deps[1:] {
+		if c := e.factConfidence(d); !c.AtLeast(bestConf) { // strictly weaker
+			bestDep, bestConf = d, c
+		}
+	}
+	return e.factTarget(bestDep)
+}
+
+// factTarget reduces a fact path to the column (or table) `rowshape pull --exact`
+// escalates: `public.users.email.unique` → `public.users.email`,
+// `public.users.rows` → `public.users`.
+func (e *Engine) factTarget(path string) string {
+	table, rest, ok := e.splitTable(path)
+	if !ok {
+		return path
+	}
+	if rest == "" || rest == "rows" {
+		return table
+	}
+	if col, _, ok := cut(rest); ok {
+		return table + "." + col
+	}
+	return table + "." + rest
+}
+
+// splitTable finds the longest table key that prefixes path (table keys are
+// qualified, e.g. "public.users") and returns it with the remaining selector.
+func (e *Engine) splitTable(path string) (table, rest string, ok bool) {
+	if e.fx == nil {
+		return "", "", false
+	}
+	best := ""
+	for k := range e.fx.Tables {
+		if (path == k || strings.HasPrefix(path, k+".")) && len(k) > len(best) {
+			best = k
+		}
+	}
+	if best == "" {
+		return "", "", false
+	}
+	if path == best {
+		return best, "", true
+	}
+	return best, path[len(best)+1:], true
+}
+
+// cut splits "a.b.c" into ("a", "b.c") at the first dot.
+func cut(s string) (head, tail string, ok bool) {
+	i := strings.IndexByte(s, '.')
+	if i < 0 {
+		return s, "", false
+	}
+	return s[:i], s[i+1:], true
+}
+
+// joinResolve appends the resolving command to a remediation as a "Resolve:"
+// clause, matching the RFC §7.4 rendering.
+func joinResolve(remediation, resolve string) string {
+	clause := "Resolve: " + resolve
+	if strings.TrimSpace(remediation) == "" {
+		return clause
+	}
+	return remediation + " " + clause
+}
+
+// Combine folds the verdicts individual findings produce into the overall result
+// verdict: FAIL dominates WARN dominates PASS (PRD §10). An empty set is PASS.
+func Combine(verdicts ...string) string {
+	worst := VerdictPass
+	for _, v := range verdicts {
+		if verdictRank(v) > verdictRank(worst) {
+			worst = v
+		}
+	}
+	return worst
+}
+
+func verdictRank(v string) int {
+	switch v {
+	case VerdictFail:
+		return 2
+	case VerdictWarn:
+		return 1
+	default:
+		return 0
+	}
+}

@@ -1,0 +1,14 @@
+rowshape_fixture: "1"
+meta:
+  id: corpus-volatile-default
+  engine: {name: postgres, version: "16"}
+  privacy: standard
+  profile: {mode: fast, escalated: []}
+tables:
+  public.orders:
+    rows: {value: 5000000, confidence: exact}
+    bytes: 2400000000
+    columns:
+      id: {type: bigint, nullable: false, unique: {value: true, confidence: exact, via: constraint}, generated: identity}
+      amount_cents: {type: integer, nullable: false, distinct: 5000}
+    constraints: [{name: orders_pkey, kind: primary_key, columns: [id]}]

@@ -1,0 +1,13 @@
+rowshape_fixture: "1"
+meta:
+  id: conformance-hydratable
+  engine: {name: postgres, version: "16"}
+  privacy: standard
+  profile: {mode: exact, escalated: []}
+tables:
+  public.accounts:
+    rows: {value: 500000, confidence: exact}
+    columns:
+      id: {type: bigint, nullable: false, unique: {value: true, confidence: exact, via: constraint}}
+      note: {type: text, nullable: true, null_fraction: {value: 0.2, confidence: exact}}
+    constraints: [{name: accounts_pkey, kind: primary_key, columns: [id]}]

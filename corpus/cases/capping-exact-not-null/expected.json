@@ -1,0 +1,5 @@
+{
+  "description": "SET NOT NULL against an EXACT 0% null_fraction can PASS — capping does not touch proven facts (§7.4 boundary).",
+  "verdict": "PASS",
+  "findings": []
+}

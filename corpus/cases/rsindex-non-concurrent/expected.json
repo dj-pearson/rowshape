@@ -1,0 +1,7 @@
+{
+  "description": "Non-concurrent CREATE INDEX on a 7M-row table blocks writes for the whole build — RS-INDEX WARN recommending CONCURRENTLY.",
+  "verdict": "WARN",
+  "findings": [
+    {"code": "RS-INDEX", "severity": "warn"}
+  ]
+}

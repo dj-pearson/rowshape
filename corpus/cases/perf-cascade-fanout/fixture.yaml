@@ -1,0 +1,24 @@
+rowshape_fixture: "1"
+meta:
+  id: perf-cascade-fanout
+  engine: {name: postgres, version: "16"}
+  privacy: standard
+  profile: {mode: fast, escalated: []}
+tables:
+  public.customers:
+    rows: {value: 900000, confidence: exact}
+    columns:
+      id: {type: bigint, nullable: false, unique: {value: true, confidence: exact, via: constraint}}
+      last_seen_at: {type: timestamp with time zone, nullable: true}
+    constraints: [{name: customers_pkey, kind: primary_key, columns: [id]}]
+  public.invoices:
+    rows: {value: 14000000, confidence: exact}
+    columns:
+      id: {type: bigint, nullable: false}
+      customer_id: {type: bigint, nullable: false}
+    references:
+      - column: customer_id
+        to: public.customers.id
+        on_delete: cascade
+        fanout: {mean: 15.5, p50: 4, p95: 90, max: 21000, confidence: measured}
+        orphan_fraction: {value: 0, confidence: exact, via: constraint}

@@ -1,0 +1,13 @@
+rowshape_fixture: "1"
+meta:
+  id: corpus-set-not-null
+  engine: {name: postgres, version: "16"}
+  privacy: standard
+  profile: {mode: exact, escalated: []}
+tables:
+  public.users:
+    rows: {value: 400000, confidence: exact}
+    columns:
+      id: {type: bigint, nullable: false, unique: {value: true, confidence: exact, via: constraint}, generated: identity}
+      email: {type: text, nullable: true, null_fraction: {value: 0.032, confidence: exact}, distinct: {value: 387000, confidence: measured, via: hll, error: 0.008}, format: email}
+    constraints: [{name: users_pkey, kind: primary_key, columns: [id]}]

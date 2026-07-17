@@ -1,0 +1,51 @@
+name: Conformance
+
+# The fixture spec's strategic value is that OTHERS can emit it (PRD §3, §16).
+# This workflow holds rowshape — and any third party who runs it — to the
+# RFC-0001 §13 conformance MUSTs, and validates the reference fixtures against the
+# published JSON Schema with a standard, off-the-shelf validator.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.x"
+
+jobs:
+  conformance:
+    name: fixture-spec conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Run the conformance suite (emitter / hydrator / validator MUSTs)
+        run: go test ./fixture-spec/...
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install a standard JSON Schema validator
+        run: pip install check-jsonschema
+
+      - name: JSON Schema validates every reference and corpus fixture
+        run: |
+          check-jsonschema --schemafile fixture-spec/schema/rowshape.schema.json \
+            fixture-spec/conformance/fixtures/valid/*.yaml \
+            corpus/cases/*/fixture.yaml
+
+      - name: JSON Schema rejects a non-conformant fixture (unique from a sample)
+        run: |
+          if check-jsonschema --schemafile fixture-spec/schema/rowshape.schema.json \
+               fixture-spec/conformance/fixtures/invalid/unique-from-sample.yaml; then
+            echo "::error::the schema accepted a fixture claiming unique from a sample"
+            exit 1
+          fi
+          echo "correctly rejected the non-conformant fixture"

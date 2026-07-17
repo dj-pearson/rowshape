@@ -1,0 +1,20 @@
+# Pathology fixture: a nullable column at 3.2% null.
+#
+# This is the classic migration trap (RFC §6.1): a column that is NULLABLE but
+# only 3.2% null looks safe in staging and then a `SET NOT NULL` fails on the
+# ~640 legacy null rows in production. hydrate must reproduce that 3.2% so a
+# validator can see it. The Week-6 kill criterion (PRD §14.1) proves the ratio
+# survives the pull -> rowshape.yaml -> hydrate round-trip.
+rowshape_fixture: "1"
+meta:
+  id: pathology-email-null
+  engine: {name: postgres, version: "16"}
+  privacy: standard
+  profile: {mode: fast, escalated: []}
+tables:
+  public.accounts:
+    rows: 20000
+    columns:
+      id: {type: bigint, nullable: false, unique: {value: true, confidence: exact, via: constraint}}
+      email: {type: text, nullable: true, null_fraction: 0.032, distinct: 19360, format: email}
+    constraints: [{name: accounts_pkey, kind: primary_key, columns: [id]}]

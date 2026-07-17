@@ -1,0 +1,7 @@
+{
+  "description": "DROP TABLE removes all 88M rows with no lossless rollback — RS-REVERSE, a WARN with the two-phase-drop recipe.",
+  "verdict": "WARN",
+  "findings": [
+    {"code": "RS-REVERSE", "severity": "warn"}
+  ]
+}

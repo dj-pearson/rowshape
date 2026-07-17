@@ -64,6 +64,31 @@ Tracked here so resolutions are recorded where code can cite them.
 
 ---
 
+## D-005 — Disposable hydrate target (OQ-TARGET, P1-T9)
+
+**Decision:** A single `internal/target.Target` interface abstracts the database
+`hydrate` loads into, so the disposable mechanism can be swapped without touching
+the synthesis engine. Three implementations ship:
+
+- **`Ephemeral`** (default disposable target) — creates a throwaway database on a
+  reachable Postgres server and drops it on teardown. Dependency-light: it needs
+  only a libpq connection, no Docker daemon and no container SDK.
+- **`Provided`** — hydrate loads into a user-supplied `--target` URL; teardown
+  only closes connections, never drops the database.
+- **`Container`** — a Docker-based disposable target (throwaway `postgres`
+  container) for full OS-level isolation, invoked through the `docker` CLI.
+
+**Why not testcontainers-go as the default (RFC §17.2 / OQ-TARGET):**
+`testcontainers-go` pulls in the Docker client SDK and dozens of transitive
+dependencies, which conflicts with **INV-SUPPLY-CHAIN** ("single static binary,
+deps kept deliberately few"). The `Target` interface keeps testcontainers-go — or
+`pg_tmp` / an embedded Postgres — a clean swap-in behind the same contract, so the
+open question stays genuinely open while the shipped default stays dependency-light.
+The ephemeral-database default provides the same observable behaviour the story
+requires: a disposable Postgres is spun up and torn down after use.
+
+---
+
 ## D-004 — Cloud traction gate (P5-T7)
 
 Cloud (registry, audit, drift, attestation, billing) does NOT start until the
@@ -77,3 +102,66 @@ CLI shows organic pull-through (PRD §14 / §14.1 week-20 kill criterion).
 A negative gate result is recorded as an explicit **stop / reassess** decision —
 not silently ignored, not a reason to push harder on momentum alone. Cloud tasks
 P5-T8..P5-T14 stay `blocked` until this gate is explicitly marked passed here.
+
+---
+
+## D-006 — Version-conditional extrapolation boundary is PG 11, not 11↔16 (P2-T5)
+
+**Context:** P2-T5 acceptance criterion 4 asks for "a version-conditional case
+[that] differs correctly between PG 11 and PG 16." Per RFC §9.1 the operation
+whose cost is version-conditional is `ADD COLUMN ... DEFAULT`: PG **11+**
+fast-paths a *non-volatile* default into the catalog (O(1), instant) instead of
+rewriting the table; a *volatile* default rewrites on every version, and
+`SET NOT NULL` full-scans on every version.
+
+**Decision:** The catalog fast-path landed in PG 11, so PG 11 and PG 16 behave
+**identically** for this operation — correctly, not by omission. The genuine
+divergence is at the **10 → 11** boundary: PG 10 rewrites the whole table (a
+heavy, user-visible bucket) while PG 11 and PG 16 are a catalog-only instant.
+
+`internal/estimate` therefore asserts version-conditional divergence across the
+**real** boundary (PG 10 vs 11 vs 16 in `TestVersionConditionalDivergence`),
+including that PG 11 == PG 16. Fabricating a false 11-vs-16 difference — or
+modeling the PG 12 `SET NOT NULL`/`CHECK` scan-skip, which the P2-T5 description
+explicitly excludes ("SET NOT NULL still full-scans") — would contradict the
+spec, so neither was done (loop rule: spec wins; never fake a pass).
+
+The corpus PG-version matrix (P2-T13, `ROWSHAPE_PG_VERSION` 11–17) is where
+version-conditioned corpus *runs* live; the model's version-conditionality is
+proven here in the estimate unit tests named by P2-T5's verification.
+
+## D-007 — Corpus version matrix extended to PG 10 to exercise the real boundary (P5-T3)
+
+**Context:** P5-T3 asks for corpus cases that "cover version-divergent behaviors
+… across PG 11-17" and cost models that "produce version-correct buckets on each
+major." But D-006 established that within PG **11–17** the operations rowshape
+models do **not** diverge: the non-volatile-`DEFAULT` catalog fast-path landed in
+PG 11, so PG 11 == PG 17 for `ADD COLUMN … DEFAULT`; a volatile default rewrites
+on every version; `SET NOT NULL` full-scans on every version; a bare (non-`CHECK`
+-assisted) `SET NOT NULL` gains nothing from the PG 12 optimization. Fabricating a
+false 11-vs-17 divergence would contradict the spec (loop rule: spec wins; never
+fake a pass).
+
+**Decision:** The genuine version boundary is **10 → 11**, so the version matrix
+is extended down to PG **10** (`.github/workflows/corpus.yml` now runs 10–17). A
+single new corpus case, `version-add-column-default`, carries the same migration
+across that boundary: `ADD COLUMN … DEFAULT '<const>'` is a catalog-only instant
+(PASS) on PG 11+ but a full-table `ACCESS EXCLUSIVE` rewrite (RS-LOCK WARN) on PG
+10. This is the RFC §9.1 point made executable — the older databases most likely
+to hold scary migrations are exactly where the model must not be confidently
+wrong.
+
+To express "right on one major, wrong on another" the corpus format gains an
+optional per-major override: `expected.json` may carry a `version_verdicts` map
+(keyed by the major the matrix drives, e.g. `"10"`) that overrides the default
+verdict/findings for that major only. `Expected.ForMajor(major)` resolves it, and
+`TestCorpusVerdicts` compares against the resolved expectation for the major under
+test. Every other case keeps a single verdict that holds across the whole matrix.
+
+The model's per-major verdict is also proven **offline** (no live server) in
+`internal/findings/version_matrix_test.go`, which drives the case through
+`BuildResult` for PG 10–17 and asserts WARN on 10, PASS on 11–17. Deepening the
+model further (e.g. modeling the PG 12 `CHECK`-assisted `SET NOT NULL` scan-skip)
+would require a new duration finding for a *different* migration shape (a
+pre-existing validated `CHECK (col IS NOT NULL)`); it is deliberately left for a
+follow-up rather than bolted onto this boundary case.

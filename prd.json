@@ -327,8 +327,8 @@
           "verification": ["go test ./internal/fixture/... (round-trip + confidence-ordering tests)"],
           "artifacts": ["internal/fixture/model.go", "internal/fixture/confidence.go", "internal/fixture/model_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 1
         },
         {
@@ -345,8 +345,8 @@
           "verification": ["go test ./internal/fixture/... (golden canonical-form + digest-stability tests, run on linux+darwin+windows in CI)"],
           "artifacts": ["internal/fixture/canonical.go", "internal/fixture/digest.go", "internal/fixture/testdata/*.golden"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 2
         },
         {
@@ -365,8 +365,8 @@
           "verification": ["go test against a testcontainers Postgres with a seeded schema", "assert superuser refusal without --i-know"],
           "artifacts": ["cmd/pull.go", "internal/profile/catalog.go", "internal/profile/catalog_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 3
         },
         {
@@ -385,8 +385,8 @@
           "verification": ["go test ./internal/profile/... (text/bytea range-omission, format-class, jsonb skeleton, confidence-tagging)"],
           "artifacts": ["internal/profile/columns.go", "internal/profile/format_class.go", "internal/profile/columns_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 4
         },
         {
@@ -405,8 +405,8 @@
           "verification": ["go test ./internal/profile/... (per-level field matrix from RFC §8.2, k-threshold, redact overrides, source-hash)"],
           "artifacts": ["internal/profile/privacy.go", "internal/profile/privacy_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 5
         },
         {
@@ -424,8 +424,8 @@
           "verification": ["rowshape pull --from $TEST_URL -> rowshape.yaml; rowshape (re)digest matches; yaml lint; size check on a synthetic 200-table schema"],
           "artifacts": ["internal/fixture/emit.go", "cmd/init.go", "cmd/pull.go (wiring)"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 6
         },
         {
@@ -444,8 +444,8 @@
           "verification": ["go test ./internal/hydrate/... (determinism across platforms in CI matrix, null_fraction tolerance, fan-out distribution assertion, scale-prefix stability)"],
           "artifacts": ["cmd/hydrate.go", "internal/hydrate/engine.go", "internal/hydrate/prng.go", "internal/hydrate/engine_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 7
         },
         {
@@ -461,8 +461,8 @@
           "verification": ["go test ./internal/hydrate/... (scale test asserting declared vs materialized counts diverge correctly)"],
           "artifacts": ["internal/hydrate/scale.go", "internal/hydrate/scale_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 8
         },
         {
@@ -479,8 +479,8 @@
           "verification": ["go test ./internal/target/... (container lifecycle up/teardown; provided-URL path)"],
           "artifacts": ["internal/target/target.go", "internal/target/testcontainers.go", "internal/target/target_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 9
         },
         {
@@ -498,8 +498,8 @@
           "artifacts": ["test/pathology/email_null.yaml", "test/pathology/fanout_tail.yaml", "test/pathology/pathology_test.go"],
           "type": "code/gate",
           "gate": "kill_criteria Week 6",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 10
         },
         {
@@ -516,8 +516,8 @@
           "verification": ["go test against a seeded skewed-fanout DB: p95/max recovered within tolerance; orphan_fraction exact on a DB with known orphans"],
           "artifacts": ["internal/engine/postgres/fanout.go", "internal/engine/postgres/fanout_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 11
         },
         {
@@ -534,8 +534,8 @@
           "verification": ["go test: hydrated distribution reproduces an 80/20 skew within tolerance; a partitioned source emits the partitions block; strict drops histogram bounds"],
           "artifacts": ["internal/engine/postgres/histogram.go", "internal/engine/postgres/partitions.go", "internal/engine/postgres/skew_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 12
         }
       ]
@@ -570,8 +570,8 @@
           "verification": ["go test ./internal/profile/hll/... (accuracy within bound; memory bounded; no-extension path)"],
           "artifacts": ["internal/profile/hll/hll.go", "internal/profile/hll/hll_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 1
         },
         {
@@ -589,8 +589,8 @@
           "verification": ["go test ./internal/profile/... (probe correctness on unique + non-unique columns; omission path)"],
           "artifacts": ["internal/profile/uniqueness.go", "internal/profile/uniqueness_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 2
         },
         {
@@ -607,8 +607,8 @@
           "verification": ["go test ./internal/profile/... (escalation predicate selects the right column set; escalated list + mode recorded)"],
           "artifacts": ["internal/profile/escalation.go", "internal/profile/escalation_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 3
         },
         {
@@ -625,8 +625,8 @@
           "verification": ["go test ./internal/profile/... (cap triggers omission + WARN; no silent skip)"],
           "artifacts": ["internal/profile/escalation.go (cap)", "internal/profile/escalation_cap_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 4
         },
         {
@@ -643,8 +643,8 @@
           "verification": ["go test ./internal/profile/... (exact-mode confidence levels; aggregate-only output)"],
           "artifacts": ["internal/profile/mode_exact.go", "internal/profile/mode_exact_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 5
         },
         {
@@ -661,8 +661,8 @@
           "verification": ["go test ./cmd/... (inspect --leaks on a fixture with seeded value-derived fields lists exactly them)"],
           "artifacts": ["cmd/inspect.go", "internal/fixture/leaks.go", "cmd/inspect_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 6
         }
       ]
@@ -696,8 +696,8 @@
           "verification": ["corpus test harness runs green on the seeded triples (against PG 16 initially)"],
           "artifacts": ["corpus/README.md", "corpus/cases/*/{migration,fixture.yaml,expected.json}", "corpus/harness/*"],
           "type": "code/asset",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 1
         },
         {
@@ -714,8 +714,8 @@
           "verification": ["corpus capping suite present; goes GREEN only once P2-T4 lands"],
           "artifacts": ["corpus/cases/capping-*/*"],
           "type": "test",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 2
         },
         {
@@ -734,8 +734,8 @@
           "verification": ["go test ./internal/verdict/... (JSON golden vs PRD §10; single-struct/two-marshaler test; exit-code table; DSSE predicate shape; remediation-required)"],
           "artifacts": ["internal/verdict/verdict.go", "internal/verdict/render_human.go", "internal/verdict/dsse.go", "internal/verdict/verdict_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 3
         },
         {
@@ -753,8 +753,8 @@
           "verification": ["go test ./internal/verdict/... + corpus capping suite green"],
           "artifacts": ["internal/verdict/capping.go", "internal/verdict/capping_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 4
         },
         {
@@ -772,8 +772,8 @@
           "verification": ["go test ./internal/estimate/... (model table; version-conditional divergence; no-version refusal; bucket output)"],
           "artifacts": ["internal/estimate/models.go", "internal/estimate/versioned.go", "internal/estimate/estimate_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 5
         },
         {
@@ -790,8 +790,8 @@
           "verification": ["go test ./internal/runner/... (detection fixtures per tool; shell-out invocation)"],
           "artifacts": ["internal/runner/detect.go", "internal/runner/{alembic,prisma,drizzle,rawsql}.go", "internal/runner/detect_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 6
         },
         {
@@ -810,8 +810,8 @@
           "verification": ["go test ./cmd/... (end-to-end validate on a corpus triple); assert host-match refusal; assert no cloud egress"],
           "artifacts": ["cmd/validate.go", "internal/validate/capture.go", "cmd/validate_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 7
         },
         {
@@ -829,8 +829,8 @@
           "verification": ["corpus RS-LOCK cases green across PG matrix"],
           "artifacts": ["internal/findings/rslock.go", "internal/findings/rslock_test.go", "corpus/cases/rslock-*/*"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 8
         },
         {
@@ -848,8 +848,8 @@
           "verification": ["corpus RS-DATA cases green; capping suite (P2-T2) satisfied by RS-DATA-014"],
           "artifacts": ["internal/findings/rsdata.go", "internal/findings/rsdata_test.go", "corpus/cases/rsdata-*/*"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 9
         },
         {
@@ -866,8 +866,8 @@
           "verification": ["corpus RS-CONSTRAINT cases green across matrix"],
           "artifacts": ["internal/findings/rsconstraint.go", "internal/findings/rsconstraint_test.go", "corpus/cases/rsconstraint-*/*"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 10
         },
         {
@@ -884,8 +884,8 @@
           "verification": ["corpus RS-INDEX cases green across matrix"],
           "artifacts": ["internal/findings/rsindex.go", "internal/findings/rsindex_test.go", "corpus/cases/rsindex-*/*"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 11
         },
         {
@@ -902,8 +902,8 @@
           "verification": ["go test ./cmd/... (explain covers every registered finding code)"],
           "artifacts": ["cmd/explain.go", "internal/findings/registry.go", "cmd/explain_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 12
         },
         {
@@ -920,8 +920,8 @@
           "verification": ["CI matrix green across all seven majors"],
           "artifacts": [".github/workflows/corpus.yml"],
           "type": "ops",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 13
         },
         {
@@ -938,8 +938,8 @@
           "verification": ["go test ./internal/estimate/... (two-point fit; confidence upgrade only under --calibrate)"],
           "artifacts": ["internal/estimate/calibrate.go", "cmd/validate.go (flag)", "internal/estimate/calibrate_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 14
         },
         {
@@ -956,8 +956,8 @@
           "verification": ["go test ./cmd/... (plan diff; verify read-only enforcement; fact-upgrade on live target)"],
           "artifacts": ["cmd/plan.go", "cmd/verify.go", "cmd/plan_verify_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 15
         },
         {
@@ -974,8 +974,8 @@
           "verification": ["conformance CI green against rowshape; suite rejects seeded non-conformant fixtures; JSON Schema validates all reference fixtures"],
           "artifacts": ["fixture-spec/schema/rowshape.schema.json", "fixture-spec/conformance/**", "fixture-spec/conformance/README.md"],
           "type": "code/asset",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 16
         },
         {
@@ -992,8 +992,8 @@
           "verification": ["go test: each failure mode yields exit 3 + structured reason; unknown-major fixture refused; FAIL vs tool-error never conflated"],
           "artifacts": ["internal/toolerror/toolerror.go", "cmd/validate_toolerror_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 17
         }
       ]
@@ -1028,8 +1028,8 @@
           "verification": ["go test ./cmd/... (runner detection across Alembic/Prisma/Drizzle/raw-SQL fixtures; idempotent re-run; no DB connection attempted)"],
           "artifacts": ["cmd/init.go", "cmd/init_detect.go", "cmd/init_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 1
         },
         {
@@ -1046,8 +1046,8 @@
           "verification": ["go test ./cmd/mcp/... (server boots, lists exactly four tools, completes initialize handshake against an in-process client)"],
           "artifacts": ["cmd/mcp.go", "cmd/mcp/server.go", "cmd/mcp/server_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 2
         },
         {
@@ -1064,8 +1064,8 @@
           "verification": ["go test ./cmd/mcp/... (describe_shape returns per-table shape + confidence; refuses to dump full fixture without a table target)"],
           "artifacts": ["cmd/mcp/tool_describe_shape.go", "cmd/mcp/tool_describe_shape_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 3
         },
         {
@@ -1082,8 +1082,8 @@
           "verification": ["go test ./cmd/mcp/... (validate_migration returns the shared Verdict; compact codes; capping preserved end-to-end)"],
           "artifacts": ["cmd/mcp/tool_validate_migration.go", "cmd/mcp/tool_validate_migration_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 4
         },
         {
@@ -1100,8 +1100,8 @@
           "verification": ["go test ./cmd/mcp/... (explain_finding matches CLI explain output; unknown code handled gracefully)"],
           "artifacts": ["cmd/mcp/tool_explain_finding.go", "cmd/mcp/tool_explain_finding_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 5
         },
         {
@@ -1118,8 +1118,8 @@
           "verification": ["go test ./cmd/mcp/... (plan_against returns dry-run diff; write-refusal enforced)"],
           "artifacts": ["cmd/mcp/tool_plan_against.go", "cmd/mcp/tool_plan_against_test.go"],
           "type": "code",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 6
         },
         {
@@ -1387,8 +1387,8 @@
           "verification": ["corpus harness green on RS-PERF cases across the PG matrix; capping preserved"],
           "artifacts": ["corpus/cases/perf-*/**", "internal/findings/perf.go", "internal/findings/perf_test.go"],
           "type": "code/asset",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 1
         },
         {
@@ -1405,8 +1405,8 @@
           "verification": ["corpus harness green on RS-REVERSE cases; remediation present on every error"],
           "artifacts": ["corpus/cases/reverse-*/**", "internal/findings/reverse.go", "internal/findings/reverse_test.go"],
           "type": "code/asset",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 2
         },
         {
@@ -1423,8 +1423,8 @@
           "verification": ["corpus matrix CI green across PG 11-17 on the expanded case set"],
           "artifacts": ["corpus/cases/version-*/**", "internal/extrapolate/models.go"],
           "type": "code/asset",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
           "priority": 3
         },
         {

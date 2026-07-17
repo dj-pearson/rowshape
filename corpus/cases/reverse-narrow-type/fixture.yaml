@@ -1,0 +1,13 @@
+rowshape_fixture: "1"
+meta:
+  id: reverse-narrow-type
+  engine: {name: postgres, version: "16"}
+  privacy: standard
+  profile: {mode: fast, escalated: []}
+tables:
+  public.ledger:
+    rows: {value: 2500000, confidence: exact}
+    columns:
+      id: {type: bigint, nullable: false, unique: {value: true, confidence: exact, via: constraint}}
+      amount: {type: bigint, nullable: false}
+    constraints: [{name: ledger_pkey, kind: primary_key, columns: [id]}]

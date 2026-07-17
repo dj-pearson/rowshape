@@ -1,0 +1,7 @@
+{
+  "description": "VALIDATE CONSTRAINT on a FK with pre-existing orphans (orphan_fraction 0.4%, exact) fails.",
+  "verdict": "FAIL",
+  "findings": [
+    {"code": "RS-DATA", "severity": "error"}
+  ]
+}

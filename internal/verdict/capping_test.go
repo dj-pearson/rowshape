@@ -1,0 +1,190 @@
+package verdict
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/rowshape/rowshape/internal/fixture"
+)
+
+// mustFixture parses a fixture from YAML or fails the test.
+func mustFixture(t *testing.T, yaml string) *fixture.Fixture {
+	t.Helper()
+	f, err := fixture.Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parse fixture: %v", err)
+	}
+	return f
+}
+
+// The four RFC §7.4 capping scenarios, mirroring the corpus capping-* cases:
+// a PASS a finding wants to assert is allowed only when the fixture fact it
+// rests on is proven (exact/measured); an estimated or absent fact caps it to a
+// resolving WARN.
+const (
+	fxEstimatedNotNull = `rowshape_fixture: "1"
+meta: {id: t, engine: {name: postgres, version: "16"}}
+tables:
+  public.users:
+    rows: {value: 400000, confidence: exact}
+    columns:
+      email: {type: text, nullable: true, null_fraction: {value: 0.0, confidence: estimated}}
+`
+	fxExactNotNull = `rowshape_fixture: "1"
+meta: {id: t, engine: {name: postgres, version: "16"}}
+tables:
+  public.users:
+    rows: {value: 400000, confidence: exact}
+    columns:
+      email: {type: text, nullable: true, null_fraction: {value: 0.0, confidence: exact}}
+`
+	fxUnprovenUnique = `rowshape_fixture: "1"
+meta: {id: t, engine: {name: postgres, version: "16"}}
+tables:
+  public.users:
+    rows: {value: 1200000, confidence: exact}
+    columns:
+      email: {type: text, nullable: false, distinct: {value: 1199000, confidence: estimated}}
+`
+	fxProvenUnique = `rowshape_fixture: "1"
+meta: {id: t, engine: {name: postgres, version: "16"}}
+tables:
+  public.users:
+    rows: {value: 1200000, confidence: exact}
+    columns:
+      email: {type: text, nullable: false, unique: {value: true, confidence: exact, via: probe}}
+`
+)
+
+// TestCapMatchesCorpusScenarios: a finding wanting PASS produces PASS only when
+// its dependency is proven, and WARN (naming the resolving command) when the
+// dependency is estimated or absent — the four corpus capping cases (RFC §7.4).
+func TestCapMatchesCorpusScenarios(t *testing.T) {
+	cases := []struct {
+		name        string
+		fx          string
+		dep         string
+		wantVerdict string
+		wantResolve bool
+	}{
+		{"estimated-not-null", fxEstimatedNotNull, "public.users.email.null_fraction", VerdictWarn, true},
+		{"exact-not-null", fxExactNotNull, "public.users.email.null_fraction", VerdictPass, false},
+		{"unproven-unique", fxUnprovenUnique, "public.users.email.unique", VerdictWarn, true},
+		{"proven-unique", fxProvenUnique, "public.users.email.unique", VerdictPass, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := NewEngine(mustFixture(t, c.fx))
+			f := Finding{Code: "RS-DATA-014", Severity: SeverityInfo, Title: "ADD constraint", DependsOn: []string{c.dep}}
+			got, out := e.Cap(VerdictPass, f)
+			if got != c.wantVerdict {
+				t.Errorf("verdict = %s, want %s", got, c.wantVerdict)
+			}
+			if c.wantResolve {
+				if out.Severity != SeverityWarn {
+					t.Errorf("capped finding severity = %s, want warn", out.Severity)
+				}
+				if !strings.Contains(out.Remediation, "pull --exact") {
+					t.Errorf("capped WARN remediation %q must name the resolving command (pull --exact)", out.Remediation)
+				}
+				if !strings.Contains(out.Remediation, "public.users.email") {
+					t.Errorf("resolve command %q should target the weak column public.users.email", out.Remediation)
+				}
+			} else {
+				if got != VerdictPass {
+					t.Errorf("proven dependency must allow PASS, got %s", got)
+				}
+			}
+		})
+	}
+}
+
+// TestCapCannotBeRaisedByFinding is the structural guarantee (acceptance
+// criterion 3): a finding that fills in a bogus high Confidence for itself cannot
+// use it to escape capping. The engine reads the dependency's confidence from the
+// FIXTURE and overwrites the finding's field — there is no API path by which the
+// finding's asserted confidence reaches the ceiling computation.
+func TestCapCannotBeRaisedByFinding(t *testing.T) {
+	e := NewEngine(mustFixture(t, fxUnprovenUnique)) // email.unique is absent → weakest
+	f := Finding{
+		Code:       "RS-DATA-014",
+		Severity:   SeverityInfo,
+		DependsOn:  []string{"public.users.email.unique"},
+		Confidence: string(fixture.Exact), // a finding lying about its own confidence
+	}
+	got, out := e.Cap(VerdictPass, f)
+	if got != VerdictWarn {
+		t.Fatalf("a finding must not raise its verdict by asserting confidence: got %s, want WARN", got)
+	}
+	// The engine replaced the fabricated confidence with the fixture's reading
+	// (absent → empty string), never trusting the finding's own claim.
+	if out.Confidence == string(fixture.Exact) {
+		t.Errorf("engine trusted the finding's self-asserted confidence %q instead of reading the fixture", out.Confidence)
+	}
+}
+
+// TestCeilingTable pins the RFC §7.4 confidence→verdict table.
+func TestCeilingTable(t *testing.T) {
+	cases := []struct {
+		c    fixture.Confidence
+		want string
+	}{
+		{fixture.Exact, VerdictPass},
+		{fixture.Measured, VerdictPass},
+		{fixture.Estimated, VerdictWarn},
+		{fixture.Declared, VerdictWarn},
+		{absent, VerdictWarn},
+	}
+	for _, c := range cases {
+		if got := Ceiling(c.c); got != c.want {
+			t.Errorf("Ceiling(%q) = %s, want %s", c.c, got, c.want)
+		}
+	}
+}
+
+// TestDependencyConfidenceMin: the min across several deps drives the ceiling.
+func TestDependencyConfidenceMin(t *testing.T) {
+	e := NewEngine(mustFixture(t, fxEstimatedNotNull))
+	// rows is exact, null_fraction is estimated → min is estimated.
+	min := e.DependencyConfidence([]string{"public.users.rows", "public.users.email.null_fraction"})
+	if min != fixture.Estimated {
+		t.Errorf("min confidence = %q, want estimated", min)
+	}
+	// No declared dependencies → not capped (exact), so a structural finding PASSes.
+	if got := e.DependencyConfidence(nil); got != fixture.Exact {
+		t.Errorf("no-dependency confidence = %q, want exact (uncapped)", got)
+	}
+}
+
+// TestCapDoesNotWeakenFailures: capping never turns a detected problem (FAIL/WARN)
+// into a weaker verdict — it only prevents a wrong PASS.
+func TestCapDoesNotWeakenFailures(t *testing.T) {
+	e := NewEngine(mustFixture(t, fxUnprovenUnique)) // weakest possible deps
+	fail, _ := e.Cap(VerdictFail, Finding{Code: "RS-LOCK-001", Severity: SeverityError, Remediation: "x", DependsOn: []string{"public.users.email.unique"}})
+	if fail != VerdictFail {
+		t.Errorf("FAIL must pass through capping unchanged, got %s", fail)
+	}
+	warn, _ := e.Cap(VerdictWarn, Finding{Code: "RS-PERF-002", Severity: SeverityWarn, DependsOn: []string{"public.users.email.unique"}})
+	if warn != VerdictWarn {
+		t.Errorf("WARN must pass through capping unchanged, got %s", warn)
+	}
+}
+
+// TestCombine: overall verdict is the worst finding verdict.
+func TestCombine(t *testing.T) {
+	cases := []struct {
+		in   []string
+		want string
+	}{
+		{nil, VerdictPass},
+		{[]string{VerdictPass, VerdictPass}, VerdictPass},
+		{[]string{VerdictPass, VerdictWarn}, VerdictWarn},
+		{[]string{VerdictWarn, VerdictFail}, VerdictFail},
+		{[]string{VerdictFail, VerdictPass}, VerdictFail},
+	}
+	for _, c := range cases {
+		if got := Combine(c.in...); got != c.want {
+			t.Errorf("Combine(%v) = %s, want %s", c.in, got, c.want)
+		}
+	}
+}

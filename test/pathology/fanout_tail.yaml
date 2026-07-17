@@ -1,0 +1,30 @@
+# Pathology fixture: a long-tailed fan-out.
+#
+# "Orders per user" is not a uniform 20 — one whale has 800, while the median
+# user has 5 (RFC §6.6). That long tail is what turns a cascade delete into an
+# outage, and it is the field no other tool captures. hydrate must reproduce the
+# DISTRIBUTION shape (max >> mean), not just the mean. The Week-6 kill criterion
+# proves the tail survives pull -> rowshape.yaml -> hydrate.
+rowshape_fixture: "1"
+meta:
+  id: pathology-fanout-tail
+  engine: {name: postgres, version: "16"}
+  privacy: standard
+  profile: {mode: fast, escalated: []}
+tables:
+  public.users:
+    rows: 1000
+    columns:
+      id: {type: bigint, nullable: false, unique: {value: true, confidence: exact, via: constraint}}
+    constraints: [{name: users_pkey, kind: primary_key, columns: [id]}]
+  public.orders:
+    rows: 20000
+    columns:
+      id: {type: bigint, nullable: false, unique: {value: true, confidence: exact, via: constraint}}
+      user_id: {type: bigint, nullable: false}
+    constraints: [{name: orders_pkey, kind: primary_key, columns: [id]}]
+    references:
+      - column: user_id
+        to: public.users.id
+        on_delete: cascade
+        fanout: {mean: 20, p50: 5, p95: 100, max: 800, confidence: measured}

@@ -1,0 +1,5 @@
+{
+  "description": "ADD CONSTRAINT UNIQUE against uniqueness proven exact can PASS — the §7.4 boundary on the safe side.",
+  "verdict": "PASS",
+  "findings": []
+}

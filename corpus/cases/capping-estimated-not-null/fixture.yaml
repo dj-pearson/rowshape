@@ -1,0 +1,14 @@
+rowshape_fixture: "1"
+meta:
+  id: capping-estimated-not-null
+  engine: {name: postgres, version: "16"}
+  privacy: standard
+  profile: {mode: fast, escalated: []}
+tables:
+  public.users:
+    rows: {value: 400000, confidence: exact}
+    columns:
+      id: {type: bigint, nullable: false, unique: {value: true, confidence: exact, via: constraint}, generated: identity}
+      # null_fraction is ESTIMATED (0% by the planner's sample) — NOT proven.
+      email: {type: text, nullable: true, null_fraction: {value: 0.0, confidence: estimated}, distinct: 399000, format: email}
+    constraints: [{name: users_pkey, kind: primary_key, columns: [id]}]

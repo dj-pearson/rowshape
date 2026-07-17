@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 
+	// Registers the RS-* finding analyzers with the validate pipeline (P2-T8+).
+	_ "github.com/rowshape/rowshape/internal/findings"
 	"github.com/rowshape/rowshape/internal/verdict"
 	"github.com/spf13/cobra"
 )
@@ -38,6 +40,7 @@ func NewRootCmd() *cobra.Command {
 		newExplainCmd(),
 		newPlanCmd(),
 		newVerifyCmd(),
+		newInspectCmd(),
 		newMCPCmd(),
 	)
 	return root
