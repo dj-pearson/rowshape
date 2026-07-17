@@ -1,0 +1,15 @@
+{
+  "name": "add-not-null-email (v2 rule)",
+  "rule_version": 2,
+  "rule_label": "v2",
+  "events": [
+    {"type": "describe_shape", "tables": ["public.users"]},
+    {"type": "write_sql", "path": "migrations/naive/001_add_email.sql"},
+    {"type": "validate", "verdict": "WARN", "findings": ["RS-LOCK-001"]},
+    {"type": "explain", "code": "RS-LOCK-001"},
+    {"type": "write_sql", "path": "migrations/rewrite/001_add_email_nullable.sql"},
+    {"type": "write_sql", "path": "migrations/rewrite/003_enforce_not_null.sql"},
+    {"type": "validate", "verdict": "PASS", "findings": []},
+    {"type": "open_pr"}
+  ]
+}

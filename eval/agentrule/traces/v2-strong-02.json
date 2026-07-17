@@ -1,0 +1,14 @@
+{
+  "name": "add-unique-index (v2 rule)",
+  "rule_version": 2,
+  "rule_label": "v2",
+  "events": [
+    {"type": "describe_shape", "tables": ["public.orders"]},
+    {"type": "write_sql", "path": "migrations/001_unique_ref.sql"},
+    {"type": "validate", "verdict": "FAIL", "findings": ["RS-DATA-014"]},
+    {"type": "explain", "code": "RS-DATA-014"},
+    {"type": "write_sql", "path": "migrations/001_dedupe_then_unique.sql"},
+    {"type": "validate", "verdict": "PASS", "findings": []},
+    {"type": "open_pr"}
+  ]
+}

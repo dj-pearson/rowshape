@@ -1,0 +1,10 @@
+{
+  "name": "add-not-null-email (weakened rule)",
+  "rule_version": 0,
+  "rule_label": "weakened",
+  "events": [
+    {"type": "write_sql", "path": "migrations/naive/001_add_email.sql"},
+    {"type": "validate", "verdict": "WARN", "findings": ["RS-LOCK-001"]},
+    {"type": "open_pr"}
+  ]
+}

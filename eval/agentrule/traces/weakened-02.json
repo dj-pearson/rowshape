@@ -1,0 +1,9 @@
+{
+  "name": "drop-column (weakened rule)",
+  "rule_version": 0,
+  "rule_label": "weakened",
+  "events": [
+    {"type": "write_sql", "path": "migrations/002_drop_legacy.sql"},
+    {"type": "open_pr"}
+  ]
+}

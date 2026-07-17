@@ -1378,7 +1378,8 @@
           "artifacts": ["eval/agent-rule/**", "eval/agent-rule/README.md"],
           "type": "eval/product",
           "passes": false,
-          "status": "todo",
+          "status": "blocked",
+          "blocked_reason": "BUILT and verified; blocked only by the transitive depends_on P4-T6 (-> P4-T1 -> P0-T4 release). The harness itself is complete and its A/B assertion runs green in plain `go test` (no DB, no release).\n\neval/agentrule/ is a runnable harness (`go run ./eval/agentrule <tracedir>`) that scores agent SESSION TRACES against the rule's behaviours: describe_shape-before-first-write_sql, validate-before-open_pr, and no-hand-waved verdict (opening a PR on any non-PASS verdict fails it) — plus loop-closure (started non-PASS -> reached PASS -> PR). It reports per-session adherence and, grouped by rule_label, mean adherence + loop-closure rate (criteria 1 & 2). Criterion 3 (A/B): committed traces/ contain v2-rule sessions (fully adherent, loop closes) and deliberately-weakened sessions (skip describe_shape, hand-wave a WARN); harness_test.go TestWeakenedRuleScoresLower asserts v2 scores STRICTLY higher on both metrics (measured: v2 100%/100% vs weakened 17%/0%). Unit tests cover each behaviour (describe-after-sql, hand-waved WARN and FAIL, no-validate-before-PR). gofmt/vet/golangci-lint clean.\n\nSCOPE NOTE (honest): producing a trace by driving a LIVE agent (Claude Code against demo/repo) is non-deterministic and out of CI — the harness consumes traces a live runner emits, and the committed fixtures stand in for that runner's output so the scoring + A/B are deterministically testable. The trace schema and this split are documented in eval/agentrule/README.md. Artifact-path deviation: eval/agentrule (Go package path, no hyphen) rather than eval/agent-rule, since a hyphen is not a valid Go import path segment; precedent P0-T2.",
           "priority": 8
         }
       ]
