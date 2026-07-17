@@ -34,8 +34,28 @@ go test ./... -count=1
 
 Without it those tests report nothing, which reads exactly like passing. CI sets
 the DSN and runs the corpus across the PG 10–17 matrix
-([`corpus.yml`](.github/workflows/corpus.yml)) — treat CI, not a local run, as the
-verdict on anything database-shaped.
+([`corpus.yml`](.github/workflows/corpus.yml)).
+
+### A throwaway Postgres, without Docker
+
+You don't need Docker, and you shouldn't point this at a database you care about.
+Any Postgres install ships `initdb`, so a disposable cluster on a spare port costs
+two commands and touches nothing else:
+
+```sh
+initdb -D /tmp/rowshape-pg -U postgres --auth=trust
+pg_ctl -D /tmp/rowshape-pg -o "-p 5433" -l /tmp/rowshape-pg/server.log -w start
+
+export ROWSHAPE_TEST_PG_DSN='postgres://postgres@localhost:5433/postgres?sslmode=disable'
+go test ./... -count=1
+```
+
+`trust` auth is safe here precisely because the cluster is disposable and holds
+nothing. Tear it down with `pg_ctl -D /tmp/rowshape-pg stop && rm -rf /tmp/rowshape-pg`.
+
+With the DSN set, exactly one test should skip (`TestContainerLifecycle`, which
+wants Docker). If more than that skips, your DSN isn't reaching the server — and
+the suite will still say `ok`.
 
 ## Commands
 
