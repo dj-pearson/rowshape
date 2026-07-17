@@ -80,13 +80,56 @@ func NewEphemeral(ctx context.Context, adminDSN string) (*Ephemeral, error) {
 	// Drop any stale database of the same name left by a crashed prior run of
 	// this process, then create fresh. DROP/CREATE DATABASE cannot run in a
 	// transaction, so these are plain Execs.
-	if _, err := admin.Exec(ctx, "DROP DATABASE IF EXISTS "+quoteIdent(name)+" WITH (FORCE)"); err != nil {
+	if err := dropDatabase(ctx, admin, name); err != nil {
 		return nil, fmt.Errorf("reset disposable database: %w", err)
 	}
 	if _, err := admin.Exec(ctx, "CREATE DATABASE "+quoteIdent(name)); err != nil {
 		return nil, fmt.Errorf("create disposable database: %w", err)
 	}
 	return &Ephemeral{adminCfg: adminCfg, name: name}, nil
+}
+
+// dropDatabase drops a disposable database, forcing off any lingering sessions.
+//
+// `DROP DATABASE ... WITH (FORCE)` does that in one statement, but the clause was
+// introduced in PostgreSQL 13 and is a SYNTAX ERROR on 11 and 12 — both of which
+// rowshape supports (the corpus matrix runs 11-17). So on older servers the
+// sessions are terminated explicitly first, which is what FORCE does internally,
+// and then the plain drop succeeds.
+//
+// Without this, `validate --ephemeral` against a PG 11 or 12 server fails before
+// it validates anything.
+func dropDatabase(ctx context.Context, admin *pgx.Conn, name string) error {
+	force, err := supportsDropForce(ctx, admin)
+	if err != nil {
+		return err
+	}
+	if force {
+		_, err := admin.Exec(ctx, "DROP DATABASE IF EXISTS "+quoteIdent(name)+" WITH (FORCE)")
+		return err
+	}
+
+	// Pre-13: terminate every other backend attached to the database, then drop.
+	// A session still holding the database open would otherwise make DROP fail
+	// with "database is being accessed by other users".
+	if _, err := admin.Exec(ctx,
+		`SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+		 WHERE datname = $1 AND pid <> pg_backend_pid()`, name); err != nil {
+		return err
+	}
+	_, err = admin.Exec(ctx, "DROP DATABASE IF EXISTS "+quoteIdent(name))
+	return err
+}
+
+// supportsDropForce reports whether the server is PG 13+, where DROP DATABASE
+// accepts WITH (FORCE). server_version_num is an integer like 110022 (11.22) or
+// 160004 (16.4), which is why it is read instead of parsing the version string.
+func supportsDropForce(ctx context.Context, admin *pgx.Conn) (bool, error) {
+	var num int
+	if err := admin.QueryRow(ctx, "SHOW server_version_num").Scan(&num); err != nil {
+		return false, fmt.Errorf("reading server version: %w", err)
+	}
+	return num >= 130000, nil
 }
 
 // Name returns the disposable database name.
@@ -112,8 +155,10 @@ func (e *Ephemeral) Close(ctx context.Context) error {
 		return fmt.Errorf("connect to drop disposable database: %w", err)
 	}
 	defer func() { _ = admin.Close(ctx) }()
-	// WITH (FORCE) terminates other sessions (PG13+) so the drop always succeeds.
-	if _, err := admin.Exec(ctx, "DROP DATABASE IF EXISTS "+quoteIdent(e.name)+" WITH (FORCE)"); err != nil {
+	// Forces off lingering sessions so the drop always succeeds — via WITH (FORCE)
+	// on PG 13+, and by terminating backends explicitly on 11/12, where that
+	// clause does not parse.
+	if err := dropDatabase(ctx, admin, e.name); err != nil {
 		return fmt.Errorf("drop disposable database: %w", err)
 	}
 	e.name = ""
