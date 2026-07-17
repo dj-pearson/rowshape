@@ -39,6 +39,8 @@ These are external ops actions. Each must be confirmed by the owner
 | Domain | `rowshape.com` | ☐ pending | _capture registrar confirmation_ |
 | GitHub org | `rowshape` | ☐ pending | _create org; move repos under it_ |
 | npm package | `rowshape` | ☐ pending | _placeholder publish of the npx wrapper package name_ |
+| GitHub repo | `rowshape/fixture-spec` | ☐ pending | _create public repo; RFC-0001 + README + LICENSE (P0-T2)_ |
+| GitHub repo | `rowshape/homebrew-tap` | ☐ pending | _tap the goreleaser cask targets (P0-T4)_ |
 | Go module path | `github.com/rowshape/rowshape` | ☑ decided | D-001 above |
 
 Until the three external reservations are confirmed, **P0-T1 stays `blocked`**
@@ -165,3 +167,53 @@ model further (e.g. modeling the PG 12 `CHECK`-assisted `SET NOT NULL` scan-skip
 would require a new duration finding for a *different* migration shape (a
 pre-existing validated `CHECK (col IS NOT NULL)`); it is deliberately left for a
 follow-up rather than bolted onto this boundary case.
+
+---
+
+## D-008 — Release + deploy infrastructure gate (P0-T4, P0-T5, P4-T1, P4-T3)
+
+All buildable work for the release pipeline, the GitHub Action, and the docs site
+is **complete and locally verified**; the remaining steps are owner-only and
+cannot be performed from the build environment. They gate a large set of stories
+from flipping to `passes: true` (the loop rule: never fake-pass).
+
+**One-time owner setup (order matters):**
+
+1. Reserve the namespaces + create the repos in D-002 (org must exist first).
+2. Add repository/organization **secrets** for the release + deploy workflows:
+   - `NPM_TOKEN` — publish the npm wrapper (`.github/workflows/release.yml`).
+   - `HOMEBREW_TAP_GITHUB_TOKEN` — push the cask to `rowshape/homebrew-tap`
+     (without it the release SUCCEEDS but the tap silently does not update).
+   - cosign keyless signing uses CI OIDC (`id-token: write` — already in the
+     workflow; no secret, but requires the workflow to run under the org).
+   - `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` — deploy the docs site
+     (`.github/workflows/docs-deploy.yml`); create the Cloudflare Pages project.
+3. Push the first release tag: `git tag v0.1.0 && git push --tags` → the release
+   workflow builds all 5 platform/arch archives, SBOM + cosign, the Homebrew cask,
+   the ghcr image, and publishes npm.
+
+**What unblocks once the org exists + a tag is published:**
+`P0-T4`, `P0-T5` become verifiable; `P4-T1` (the Action fetches a released binary)
+and the DB-backed e2e (`test/action`, `test/demo`) run for real; `P4-T3` docs
+deploy once Cloudflare secrets exist. Until then these stay `blocked`.
+
+---
+
+## D-009 — Two PRD wording amendments pending owner sign-off (P4-T3, P4-T6, P4-T7)
+
+Two acceptance criteria are, as literally written, **impossible against the
+correct implementation**. They were NOT reinterpreted or relaxed unilaterally
+(loop rule: never weaken an acceptance criterion to make a task pass); they are
+recorded here for an owner decision, each with a recommendation. Deciding them is
+what lets the affected docs/demo stories flip to `passes: true`.
+
+| ID | Criterion (as written) | Why it can't hold | Recommendation |
+|----|------------------------|-------------------|----------------|
+| **§9 zero-JS** (P4-T3) | "ships zero client JS (Starlight default)" | Starlight emits 8.6–11.1 KiB/page of progressive-enhancement JS; there is no supported zero-JS mode. | Amend to "**no framework runtime; client JS under a per-page budget enforced in CI**" — already implemented (`check-build.mjs`, 32 KiB/page). |
+| **§13 FAIL RS-LOCK-001** (P4-T6, P4-T7) | naive migration "→ FAIL RS-LOCK-001" | `RS-LOCK-001` is `WARN` **by design** (a rewrite is an availability problem, not data corruption; capping only lowers severity). FAIL is reserved for RS-DATA integrity findings. | Amend to "**rejected on RS-LOCK-001 (WARN gated to fail)**". The demo gates the WARN via `--warn-fail` + the agent rule, so the loop still rejects the naive migration. |
+
+Corollary already handled in the demo (no decision needed, recorded for context):
+the three-step rewrite enforces NOT NULL via a **validated `CHECK`**, not a final
+`SET NOT NULL`, because rowshape correctly cannot certify `SET NOT NULL` on a
+column absent from the fixture (it caps to WARN). This is the tool being more
+honest than the PRD shorthand; the validated CHECK is the equivalent it can prove.
