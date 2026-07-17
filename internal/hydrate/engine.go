@@ -100,7 +100,7 @@ func generateTable(f *fixture.Fixture, name string, tbl fixture.Table, seed int6
 	fkRefs := map[string]fixture.Reference{}
 	for _, ref := range tbl.References {
 		parentRows := rowCounts[parentTable(ref.To)]
-		fkAssign[ref.Column] = assignForeignKeys(seed, name, ref, n, parentRows)
+		fkAssign[ref.Column] = assignForeignKeys(seed, name, ref, n, parentRows, tbl.Rows.Value)
 		fkRefs[ref.Column] = ref
 	}
 

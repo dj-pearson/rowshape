@@ -1,6 +1,7 @@
 package hydrate
 
 import (
+	"math"
 	"reflect"
 	"sort"
 	"strings"
@@ -340,4 +341,107 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// TestFanoutHeavyTailIsReproduced pins the moat field at PRODUCTION skew.
+//
+// Nothing covered this. The Week-6 gate's fixture is a 40x tail (max 800 / mean
+// 20) and the model coped; real production skew is 1942x — one whale owning 40%
+// of the rows — and there the old model collapsed: declared p50 2 / p95 4 / max
+// 7942 hydrated as p50 0 / p95 0 / max 1244, with 95% of parents childless. Only
+// the mean survived, which is exactly what P1-T7 says is not enough, on the field
+// PRD §6.6 calls the one no other tool captures.
+//
+// Heavy tails are the pathology rowshape exists to catch, so the model has to be
+// right precisely where it was weakest.
+func TestFanoutHeavyTailIsReproduced(t *testing.T) {
+	// The shape of the real pulled fixture: 5k parents, 20k children, one whale.
+	f := &fixture.Fixture{
+		Tables: map[string]fixture.Table{
+			"public.users": {
+				Rows: fixture.Fact[int64]{Value: 5000},
+				Columns: map[string]fixture.Column{
+					"id": {Type: "bigint", Unique: &fixture.Fact[bool]{Value: true, Confidence: fixture.Exact},
+						Range: &fixture.Range{Min: 1, Max: 5000}},
+				},
+			},
+			"public.orders": {
+				Rows: fixture.Fact[int64]{Value: 20000},
+				Columns: map[string]fixture.Column{
+					"id":      {Type: "bigint", Unique: &fixture.Fact[bool]{Value: true, Confidence: fixture.Exact}, Range: &fixture.Range{Min: 1, Max: 20000}},
+					"user_id": {Type: "bigint"},
+				},
+				References: []fixture.Reference{{
+					Column: "user_id", To: "public.users.id",
+					Fanout:         &fixture.Fanout{Mean: 4.09, P50: 2, P95: 4, Max: 7942, Confidence: fixture.Measured},
+					OrphanFraction: &fixture.Fact[float64]{Value: 0, Confidence: fixture.Exact},
+				}},
+			},
+		},
+	}
+
+	res, err := Generate(f, Options{Seed: 42, Scale: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	counts := map[int64]int64{}
+	var children int64
+	var parents int
+	for _, tb := range res.Tables {
+		idx := map[string]int{}
+		for i, c := range tb.Columns {
+			idx[c] = i
+		}
+		switch tb.Name {
+		case "public.users":
+			parents = len(tb.Rows)
+		case "public.orders":
+			for _, row := range tb.Rows {
+				counts[row[idx["user_id"]].(int64)]++
+				children++
+			}
+		}
+	}
+
+	// The population the fixture's facts describe is parents WITH children: pull
+	// measures them with GROUP BY on the foreign key, so childless parents are not
+	// in it. Measuring the wrong population is how the Week-6 gate stayed blind.
+	var nonEmpty []int64
+	for _, c := range counts {
+		nonEmpty = append(nonEmpty, c)
+	}
+	sort.Slice(nonEmpty, func(i, j int) bool { return nonEmpty[i] < nonEmpty[j] })
+	if len(nonEmpty) == 0 {
+		t.Fatal("no children assigned")
+	}
+	pct := func(p float64) int64 { return nonEmpty[int(p*float64(len(nonEmpty)-1))] }
+	mean := float64(children) / float64(len(nonEmpty))
+	p50, p95, mx := pct(0.50), pct(0.95), nonEmpty[len(nonEmpty)-1]
+
+	t.Logf("declared: mean 4.09 p50 2 p95 4 max 7942 over ~4894 non-empty of 5000")
+	t.Logf("hydrated: mean %.2f p50 %d p95 %d max %d over %d non-empty of %d",
+		mean, p50, p95, mx, len(nonEmpty), parents)
+
+	// The mean alone is the trap: a hydration that dumps every child onto two
+	// parents reproduces it exactly and reproduces nothing else.
+	if p50 != 2 {
+		t.Errorf("p50 = %d, want 2 — the median parent's fan-out is the shape claim a mean cannot make", p50)
+	}
+	if p95 != 4 {
+		t.Errorf("p95 = %d, want 4", p95)
+	}
+	if mx != 7942 {
+		t.Errorf("max = %d, want 7942 — the whale IS the cascade-delete pathology (PRD §6.6)", mx)
+	}
+	if math.Abs(mean-4.09) > 0.1 {
+		t.Errorf("mean = %.2f, want ~4.09", mean)
+	}
+	// mean = children/nonEmpty, so the count of parents that get anything is
+	// implied by the facts: 20000/4.09 ~= 4890. Collapsing onto a handful leaves
+	// the rest childless and is the failure this test exists for.
+	if len(nonEmpty) < 4800 || len(nonEmpty) > 4950 {
+		t.Errorf("non-empty parents = %d, want ~4894 (childN/mean) — %d of %d parents got nothing",
+			len(nonEmpty), parents-len(nonEmpty), parents)
+	}
 }
