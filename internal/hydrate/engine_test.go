@@ -237,3 +237,107 @@ func indexOf(ss []string, s string) int {
 	}
 	return -1
 }
+
+// TestForeignKeysPointAtRealParents: hydrate must not invent orphans.
+//
+// A real `pull` emits a range for every numeric column (RFC §6.2), so a real
+// fixture's id column has one and numericInRange generates `min + (ordinal %
+// span)` — for range {1, N} that is 1..N, not 0..N-1. parentIDValue used to
+// return the ordinal, so children referenced 0..N-1 while parents were 1..N, and
+// user_id=0 pointed at nothing.
+//
+// Both fixtures declare orphan_fraction {0, exact, via: constraint} — the FK is
+// PROVEN to have no orphans. Hydrate inventing one means a migration adding
+// `FOREIGN KEY (user_id) REFERENCES users(id)` fails on hydrated data and
+// rowshape reports a FAIL it manufactured itself.
+//
+// The no-fan-out case is the one that pins it. With a fan-out fact the rescale in
+// scaledTargetCounts can zero out the low quantiles, so parent ordinal 0 is never
+// handed out and the off-by-one hides; the uniform spread (out[i] = i % parentN)
+// always uses ordinal 0. An earlier version of this test only had the fan-out
+// case and passed against the bug.
+func TestForeignKeysPointAtRealParents(t *testing.T) {
+	build := func(fo *fixture.Fanout) *fixture.Fixture {
+		return &fixture.Fixture{
+			Tables: map[string]fixture.Table{
+				"public.users": {
+					Rows: fixture.Fact[int64]{Value: 100},
+					Columns: map[string]fixture.Column{
+						// The shape a real pull emits: unique, and WITH a range.
+						"id": {Type: "bigint", Unique: &fixture.Fact[bool]{Value: true, Confidence: fixture.Exact},
+							Range: &fixture.Range{Min: 1, Max: 100}},
+					},
+				},
+				"public.orders": {
+					Rows: fixture.Fact[int64]{Value: 400},
+					Columns: map[string]fixture.Column{
+						"id":      {Type: "bigint", Unique: &fixture.Fact[bool]{Value: true, Confidence: fixture.Exact}, Range: &fixture.Range{Min: 1, Max: 400}},
+						"user_id": {Type: "bigint"},
+					},
+					References: []fixture.Reference{{
+						Column: "user_id", To: "public.users.id",
+						Fanout:         fo,
+						OrphanFraction: &fixture.Fact[float64]{Value: 0, Confidence: fixture.Exact},
+					}},
+				},
+			},
+		}
+	}
+
+	cases := []struct {
+		name string
+		fo   *fixture.Fanout
+	}{
+		{"uniform spread (no fan-out fact)", nil},
+		{"with a fan-out distribution", &fixture.Fanout{Mean: 4, P50: 2, P95: 8, Max: 40, Confidence: fixture.Measured}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := Generate(build(tc.fo), Options{Seed: 42, Scale: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			parentIDs := map[int64]bool{}
+			var childFKs []int64
+			for _, tb := range res.Tables {
+				idx := map[string]int{}
+				for i, c := range tb.Columns {
+					idx[c] = i
+				}
+				for _, row := range tb.Rows {
+					switch tb.Name {
+					case "public.users":
+						parentIDs[row[idx["id"]].(int64)] = true
+					case "public.orders":
+						childFKs = append(childFKs, row[idx["user_id"]].(int64))
+					}
+				}
+			}
+			if len(parentIDs) == 0 || len(childFKs) == 0 {
+				t.Fatal("nothing generated; this case proves nothing")
+			}
+
+			var orphans []int64
+			for _, fk := range childFKs {
+				if !parentIDs[fk] {
+					orphans = append(orphans, fk)
+				}
+			}
+			if len(orphans) > 0 {
+				t.Errorf("%d of %d foreign keys reference a parent that does not exist (e.g. %v) — the "+
+					"fixture declares orphan_fraction 0 (exact), so hydrate invented the exact condition it "+
+					"proves absent. `ADD FOREIGN KEY` would fail on this data and rowshape would report a "+
+					"FAIL it manufactured.", len(orphans), len(childFKs), orphans[:minInt(3, len(orphans))])
+			}
+		})
+	}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
