@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 
 	"github.com/rowshape/rowshape/internal/fixture"
 )
@@ -55,12 +56,34 @@ func ParsePrivacy(s string) (Privacy, error) {
 
 // HashSource returns meta.source: a salted SHA-256 hash of the source host,
 // never the hostname itself (RFC §8.4). An empty host yields an empty source.
+//
+// The host is normalized first so that one machine hashes to one value. Without
+// it, `DB.Internal` and `db.internal` — the same host, since DNS is
+// case-insensitive — produce different hashes, and validate's host-match refusal
+// (INV-BLAST-RADIUS-ZERO) fails to fire between them. Normalizing here rather
+// than only at comparison time is what makes the two directions symmetric: a hash
+// cannot be inverted, so if the odd spelling is the one recorded in meta.source,
+// no amount of work at check time can recover it.
 func HashSource(host string) string {
 	if host == "" {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(sourceSalt + "\x00" + host))
+	sum := sha256.Sum256([]byte(sourceSalt + "\x00" + NormalizeHost(host)))
 	return fixture.DigestPrefix + hex.EncodeToString(sum[:])
+}
+
+// NormalizeHost reduces the spellings of one host to a single form: lowercase
+// (DNS is case-insensitive, RFC 4343), no trailing FQDN dot, no IPv6 brackets.
+//
+// It deliberately does NOT resolve DNS. A hostname and its IP are the same
+// machine, but learning that means a network call from inside a safety check, and
+// an answer that can change between the check and the connection.
+func NormalizeHost(host string) string {
+	h := strings.ToLower(strings.TrimSpace(host))
+	h = strings.TrimSuffix(h, ".")
+	h = strings.TrimPrefix(h, "[")
+	h = strings.TrimSuffix(h, "]")
+	return h
 }
 
 // ApplyPrivacy enforces a privacy level over a fixture in place (RFC §8.2). It is

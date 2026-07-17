@@ -39,16 +39,74 @@ var ErrHostMatchesSource = errors.New("validate: refusing to run against the fix
 
 // CheckHost enforces the host-match refusal (PRD §11). fixtureSource is
 // meta.source (a salted host hash); targetHost is the plain host of the target
-// URL. It refuses when the target hashes to the source. Empty inputs are safe
-// (an ephemeral local target has no source to collide with).
+// URL. It refuses when the target is the host the fixture was pulled from. Empty
+// inputs are safe (an ephemeral local target has no source to collide with).
+//
+// A host is not a string. Comparing one hash of the target against the source
+// missed every equivalent spelling, and the bypass was not hypothetical: a
+// fixture pulled from `localhost`, validated with --ephemeral against
+// `127.0.0.1`, sailed past this refusal and began creating a database on the very
+// server the fixture came from. `DB.Internal` vs `db.internal` (DNS is
+// case-insensitive) and a trailing FQDN dot did the same.
+//
+// The fix is in two halves, and it needs both. profile.HashSource normalizes the
+// host before hashing, so one machine hashes to one value however it was spelled
+// — that half has to be at emit time, because a hash cannot be inverted, and if
+// the odd spelling is the one already recorded in meta.source, no work here can
+// recover it. This half then hashes the target under every spelling that is
+// definitionally the same machine, which normalization alone cannot unify:
+// `localhost` and `127.0.0.1` normalize to themselves and are still one host.
+// Any match refuses.
+//
+// What this deliberately does NOT do is resolve DNS. `db.internal` and the IP it
+// points at are the same machine, but finding that out means a network call from
+// a safety check, and an answer that can change between the check and the
+// connection. The refusal is the last line, not the only one: it is why
+// `--ephemeral` wants a disposable server, not a hostname that merely looks
+// different from production.
 func CheckHost(fixtureSource, targetHost string) error {
 	if fixtureSource == "" || targetHost == "" {
 		return nil
 	}
-	if profile.HashSource(targetHost) == fixtureSource {
-		return ErrHostMatchesSource
+	for _, alias := range hostAliases(targetHost) {
+		if profile.HashSource(alias) == fixtureSource {
+			return ErrHostMatchesSource
+		}
 	}
 	return nil
+}
+
+// hostAliases returns the spellings under which targetHost must be checked: the
+// host exactly as given (so a fixture written from that spelling still matches),
+// its DNS-normalized form, and — when it is loopback — every other way of naming
+// this machine.
+func hostAliases(host string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(h string) {
+		if h != "" && !seen[h] {
+			seen[h] = true
+			out = append(out, h)
+		}
+	}
+
+	add(host) // verbatim: matches fixtures already written with this spelling
+	add(profile.NormalizeHost(host))
+
+	if isLoopback(profile.NormalizeHost(host)) {
+		// These are the same machine by definition, so a fixture pulled from any
+		// of them must refuse a target named by any other.
+		for _, l := range []string{"localhost", "127.0.0.1", "::1", "[::1]"} {
+			add(l)
+		}
+	}
+	return out
+}
+
+// isLoopback reports whether h names this machine. 127.0.0.0/8 is loopback in
+// its entirety, not just 127.0.0.1.
+func isLoopback(h string) bool {
+	return h == "localhost" || h == "::1" || h == "0:0:0:0:0:0:0:1" || strings.HasPrefix(h, "127.")
 }
 
 // BuildResult assembles the Verdict from a capture: it runs each analyzer,
