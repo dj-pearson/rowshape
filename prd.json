@@ -1136,8 +1136,9 @@
           "verification": ["go test ./cmd/mcp/... (schema-budget guard passes for all four tools)", "manual: both READMEs cross-link"],
           "artifacts": ["cmd/mcp/schema_budget_test.go", "README.md", "docs/mcp.md"],
           "type": "code/docs",
-          "passes": false,
-          "status": "todo",
+          "passes": true,
+          "status": "done",
+          "note": "Budgets set from measurement, not guesswork: per-tool 700 chars (~175 tokens) against an actual 310-510, and 2400 chars (~2400/4 = ~600 tokens) for the whole four-tool session tax against an actual 1734 (~433). Characters are the unit — a stable proxy needing no tokenizer, ~chars/4 for this mixed English+JSON. The guard was proven to BITE: fattening describe_shape's `table` description with one realistic over-helpful sentence pushed it to 779 and failed the test with a message that names the fix (cut a parameter / shorten / move behind explain_finding) rather than inviting a budget raise. Two payload guards accompany it: describe_shape's default answer is size-capped at 4096 chars (index-only shape was already asserted in tool_describe_shape_test.go; this guards the SIZE, which erodes silently), and validate_migration findings are asserted to carry a named explain path and to inline none of remediation/detail/evidence/explanation. Cross-links landed both ways: rowshape README gained a 'For agents' section + MCPFold under Related repos, and MCPFold's README gained a 'The other half: servers that don't overspend' subsection under Why mcpfold naming rowshape a flagship consumer (that repo is separate — dj-pearson/MCPFold — and its edit is committed there independently). docs/mcp.md documents all four tools, the capping guarantee on the MCP surface, and the budget table. Verified: go test ./cmd/mcp/ green, full go test ./... green, gofmt clean, go vet clean, all relative doc links resolve.",
           "priority": 7
         },
         {
