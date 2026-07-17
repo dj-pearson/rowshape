@@ -63,7 +63,7 @@ func nonConcurrentFinding(f *fixture.Fixture, c *validate.Capture, i int, table 
 		Explain:     "rowshape explain RS-INDEX-001",
 	}
 	if hasVersion {
-		fnd.Estimate = estimateFor(c, i, estimate.BTreeBuild, table, tbl.Rows.Value, tbl.Rows.Confidence)
+		fnd.Estimate = estimateFor(c, i, estimate.BTreeBuild, table, tbl.Rows.Value, tbl.Rows.Confidence, tableKnown(f, table))
 	}
 	return fnd
 }

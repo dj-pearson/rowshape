@@ -85,7 +85,7 @@ func sameTxFinding(f *fixture.Fixture, c *validate.Capture, i int, table, name s
 		Explain:     "rowshape explain RS-CONSTRAINT-001",
 	}
 	if hasVersion {
-		fnd.Estimate = estimateFor(c, i, estimate.ConstraintValidation, table, tbl.Rows.Value, tbl.Rows.Confidence)
+		fnd.Estimate = estimateFor(c, i, estimate.ConstraintValidation, table, tbl.Rows.Value, tbl.Rows.Confidence, tableKnown(f, table))
 	}
 	return fnd
 }

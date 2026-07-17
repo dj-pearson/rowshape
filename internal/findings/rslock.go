@@ -66,12 +66,23 @@ func (rsLock) finding(f *fixture.Fixture, c *validate.Capture, i int, st validat
 
 	// Durations are buckets with the basis attached, never point estimates
 	// (INV-DURATIONS-BUCKETS). Extrapolation refuses without an engine version.
+	known := tableKnown(f, table)
+	var est *verdict.Estimate
 	if hasVersion {
-		est := estimateFor(c, i, op, table, declared, tbl.Rows.Confidence)
+		est = estimateFor(c, i, op, table, declared, tbl.Rows.Confidence, known)
+	}
+	switch {
+	case est != nil:
 		fnd.Estimate = est
 		fnd.Title = fmt.Sprintf("%s lock on %s, %s rewrite of %s rows", lockMode, shortTable(table), est.Bucket, humanCount(declared))
 		fnd.Detail = fmt.Sprintf("%s holds %s and rewrites all %d rows.", kind, lockMode, declared)
-	} else {
+	case !known:
+		// The lock is real — it is read off the SQL — but the row count is not
+		// ours to guess. Say the table is missing instead of reporting the
+		// `instant` that rows=0 would produce.
+		fnd.Title = fmt.Sprintf("%s lock on %s rewrites the table (duration not extrapolated: %s is not in the fixture)", lockMode, shortTable(table), table)
+		fnd.Detail = fmt.Sprintf("%s holds %s and rewrites the whole table. %s carries no facts in this fixture, so the row count is unknown and the duration is not extrapolated. Re-run `rowshape pull` to include it, or qualify the table name if it exists under a different schema.", kind, lockMode, table)
+	default:
 		fnd.Title = fmt.Sprintf("%s lock on %s rewrites %s rows (duration not extrapolated: no engine version)", lockMode, shortTable(table), humanCount(declared))
 		fnd.Detail = fmt.Sprintf("%s holds %s and rewrites all %d rows. meta.engine.version is absent, so the duration is not extrapolated (RFC §9.1).", kind, lockMode, declared)
 	}

@@ -217,3 +217,58 @@ func TestUnqualifiedTableGetsTheSameEstimate(t *testing.T) {
 			"tell a user an outage is %q.", unqualified, qualified, unqualified)
 	}
 }
+
+// TestUnknownTableRefusesToExtrapolate: a table the fixture has no facts for must
+// not get a duration bucket.
+//
+// The arithmetic is happy to answer: rows=0 rewrites in no time, so an unknown
+// table reports `instant`. That is indistinguishable from a genuinely empty table
+// and is the wrong answer for the likeliest cause — a typo, a table never pulled,
+// or a name that exists in two schemas. Telling someone an unknown migration is
+// instant is worse than telling them nothing, so this mirrors RFC §9.1's refusal
+// to extrapolate without engine.version: omit the estimate and say why.
+func TestUnknownTableRefusesToExtrapolate(t *testing.T) {
+	f := &fixture.Fixture{
+		Meta: fixture.Meta{Engine: fixture.Engine{Name: "postgres", Version: "16"}},
+		Tables: map[string]fixture.Table{
+			"public.orders": {Rows: fixture.Fact[int64]{Value: 50_000_000, Confidence: fixture.Exact}},
+		},
+	}
+	c := &validate.Capture{
+		Success: true,
+		Statements: []validate.Statement{
+			{SQL: `ALTER TABLE public.widgets ADD COLUMN note text DEFAULT clock_timestamp()::text NOT NULL`, DurationMs: 40},
+		},
+		TableRows: map[string]int64{"public.orders": 2000},
+	}
+
+	found := (rsLock{}).Analyze(f, c)
+	if len(found) == 0 {
+		t.Fatal("the rewrite is visible in the SQL, so the finding must still be reported")
+	}
+	fnd := found[0]
+
+	if fnd.Estimate != nil {
+		t.Errorf("estimate = %q for a table the fixture has no facts for; rows=0 makes any rewrite look "+
+			"`instant`, which is the wrong answer told confidently (RFC §9.1: refuse to extrapolate "+
+			"without a basis)", fnd.Estimate.Bucket)
+	}
+	// A refusal that does not say why is a dead end.
+	if !strings.Contains(fnd.Title, "not extrapolated") {
+		t.Errorf("the title should say the duration was not extrapolated, got: %s", fnd.Title)
+	}
+	if !strings.Contains(fnd.Detail, "rowshape pull") {
+		t.Errorf("the detail should say how to fix it, got: %s", fnd.Detail)
+	}
+
+	// The known table still gets its estimate — the refusal must not silence the
+	// tool generally.
+	c.Statements[0].SQL = `ALTER TABLE public.orders ADD COLUMN note text DEFAULT clock_timestamp()::text NOT NULL`
+	known := (rsLock{}).Analyze(f, c)
+	if len(known) == 0 || known[0].Estimate == nil {
+		t.Fatal("a known table must still be estimated")
+	}
+	if known[0].Estimate.Bucket == "instant" {
+		t.Errorf("control: a 50M-row rewrite should not be instant, got %q", known[0].Estimate.Bucket)
+	}
+}
