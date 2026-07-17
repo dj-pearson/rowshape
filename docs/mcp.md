@@ -96,6 +96,50 @@ and it survives every upgrade; edit inside them and the next `--agent` wins.
 The rule is budgeted too, at ~500 tokens — it's read on every turn, and prose
 attracts "just one more sentence" forever.
 
+### The pre-commit hook
+
+The rule is an instruction, and instructions get skipped. The hook is the backstop
+that doesn't depend on the agent having read anything.
+
+If your repo uses the [pre-commit framework](https://pre-commit.com)
+(`.pre-commit-config.yaml`), rowshape adds a `repo: local` entry to it — that file
+is committed, so the whole team gets the backstop. Otherwise it installs
+`.git/hooks/pre-commit`, which is local to you.
+
+It will not touch a `.git/hooks/pre-commit` it didn't write. Your hook is your
+workflow; replacing it to install a backstop is worse than not installing one.
+
+**What it does:**
+
+| `rowshape validate` | Hook | Why |
+| --- | --- | --- |
+| `0` PASS | allows | — |
+| `2` WARN-only | allows | WARN is surfaced, not a gate. Use `--warn-fail` in CI. |
+| `1` FAIL | **blocks** | A reproduction, not an opinion. |
+| `3` tool error | allows, loudly | Not a verdict — see below. |
+
+It only runs when a **migration is actually staged**, matched per detected runner
+(`versions/*.py` for Alembic, `prisma/migrations/`, `drizzle/*.sql`, `migrations/*.sql`).
+`validate` hydrates a database; making a README typo pay for that is how a hook
+earns its deletion.
+
+**On exit 3.** A tool error means rowshape *couldn't answer* — usually Docker
+isn't running. That's not a verdict, so it doesn't block. Blocking every commit on
+a developer's machine because a daemon is down is exactly what gets the hook
+deleted or `--no-verify` aliased forever, and then the backstop is gone for the
+FAILs too. A commit isn't a deploy, and CI still gates the merge.
+
+**Uninstall** — the hook documents this in its own header, where you'll be looking
+when it blocks you:
+
+```sh
+rm .git/hooks/pre-commit        # native hook
+git commit --no-verify          # bypass once
+```
+
+For the framework, delete the `rowshape-validate` entry from
+`.pre-commit-config.yaml`.
+
 ## The tools
 
 | Tool | What it's for |

@@ -67,11 +67,27 @@ func runInitAgent(dir string, force bool, w io.Writer) error {
 		}
 	}
 
+	// 3. The pre-commit hook — the backstop for when the agent ignores the rule.
+	switch status, where, err := writeHook(dir); {
+	case err != nil:
+		fmt.Fprintf(w, "rowshape init: %v\n", err)
+		failed = true
+	case where == "":
+		fmt.Fprintf(w, "rowshape init: not a git repo — skipped the pre-commit hook\n")
+	case status == statusUnchanged:
+		fmt.Fprintf(w, "rowshape init: %s already runs `rowshape validate`\n", where)
+	default:
+		verb := "wrote"
+		if status == statusUpdated {
+			verb = "updated"
+		}
+		fmt.Fprintf(w, "rowshape init: %s %s — `rowshape validate` runs before each commit that touches a migration\n", verb, where)
+	}
+
 	if failed {
-		// One unwritable client config is a tool error: the user asked to be wired
-		// up and we did not fully deliver. Say so with exit code 3 rather than
-		// reporting success and leaving them to discover it when the agent never
-		// calls a tool.
+		// One unwritable file is a tool error: the user asked to be wired up and we
+		// did not fully deliver. Say so with exit code 3 rather than reporting
+		// success and leaving them to discover it when the agent never calls a tool.
 		return toolError()
 	}
 
