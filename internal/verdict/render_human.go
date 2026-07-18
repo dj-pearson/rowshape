@@ -41,9 +41,7 @@ func (r Result) WriteHuman(w io.Writer) {
 			fmt.Fprintf(w, "    %s\n", f.Detail)
 		}
 		if f.Estimate != nil {
-			e := f.Estimate
-			fmt.Fprintf(w, "    duration: %s (extrapolated from %d rows in %dms, %s model, %d rows declared)\n",
-				e.Bucket, e.BasisRows, e.BasisMs, e.Model, e.DeclaredRows)
+			fmt.Fprintf(w, "    duration: %s\n", f.Estimate.human())
 		}
 		if len(f.DependsOn) > 0 {
 			fmt.Fprintf(w, "    rests on: %s [confidence: %s]\n", strings.Join(f.DependsOn, ", "), humanConfidence(f.Confidence))
@@ -100,4 +98,33 @@ func humanConfidence(c string) string {
 		return "absent"
 	}
 	return c
+}
+
+// human renders a duration estimate with its extrapolation basis attached
+// (INV-DURATIONS-BUCKETS): a bucket alone is not an answer, the reader needs to
+// know what it was projected from.
+//
+// CR-T9: this used to print the row basis unconditionally, so a BYTE-based
+// estimate — a REINDEX bucketed from the index's on-disk size, which never
+// touches a row count — rendered as "extrapolated from 0 rows in 0ms". Those
+// zeros were not measurements; they were the struct's zero values being read as
+// facts, on the one line whose job is to say how the answer was reached.
+//
+// The discriminator needs no new field, which is why this is a RENDERING fix and
+// the DSSE-signable Estimate struct is untouched: findings.estimateFor floors its
+// basis at 1ms for every row-based estimate, so BasisMs == 0 can only mean "this
+// estimate did not come from a row/time basis". A genuine measured zero is not
+// representable there and so cannot be confused with it.
+func (e *Estimate) human() string {
+	if e.BasisMs == 0 && e.BasisRows == 0 {
+		// Not a row/time extrapolation. Name the model instead of inventing a
+		// basis — "from the reindex_bytes model" is honest and still tells the
+		// reader where the number came from.
+		if e.Model != "" {
+			return fmt.Sprintf("%s (from the %s model; not extrapolated from a row count)", e.Bucket, e.Model)
+		}
+		return e.Bucket
+	}
+	return fmt.Sprintf("%s (extrapolated from %d rows in %dms, %s model, %d rows declared)",
+		e.Bucket, e.BasisRows, e.BasisMs, e.Model, e.DeclaredRows)
 }
