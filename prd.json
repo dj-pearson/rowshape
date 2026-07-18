@@ -1769,9 +1769,10 @@
             "internal/toolerror/toolerror_test.go"
           ],
           "type": "test",
-          "passes": false,
-          "status": "todo",
-          "priority": 17
+          "passes": true,
+          "status": "done",
+          "priority": 17,
+          "note": "Closed. internal/toolerror had no test file at all, despite carrying the exit-3 contract the GitHub Action and MCP clients branch on. Unlike internal/verdict, nothing pinned its JSON shape, so a field rename was a silent breaking change to a public contract — catchable only by a consumer noticing their parser had stopped working.\n\nSeven tests, each pinning a property that is on the wire: the full JSON object (compared as a WHOLE, including field COUNT, because a spot check would not notice a field that quietly disappeared); that the payload carries `error` and never `verdict` nor any of the words PASS/WARN/FAIL, which is the entire reason the struct exists — a consumer must distinguish \"the tool could not run\" from \"the migration is unsafe\" without heuristics; that an empty hint is omitted rather than serialized as \"\"; the wire value of all seven categories plus Kind and Contract; that ExitCode is 3 for EVERY category rather than just the common ones; that the human form renders the same struct and produces no dangling \"hint:\" line; and that it satisfies error with a self-describing message.\n\nMutation-tested: renaming the `category` JSON tag to `kind` turns two tests RED.\n\nNote this also gives CR-T23 (exit code 3 duplicated as a literal in two packages) a safety net — that refactor is behavior-preserving by definition, and now there is a test that would notice if it were not. CR-T23 remains blocked pending frozen-package sign-off.\n\nVerified: gofmt/vet clean, golangci-lint 0 issues."
         },
         {
           "id": "CR-T18",
