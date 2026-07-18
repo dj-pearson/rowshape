@@ -488,7 +488,7 @@
             "The target abstraction is a single interface so pg_tmp/embedded can be swapped without touching the engine."
           ],
           "verification": ["go test ./internal/target/... (container lifecycle up/teardown; provided-URL path)"],
-          "artifacts": ["internal/target/target.go", "internal/target/testcontainers.go", "internal/target/target_test.go"],
+          "artifacts": ["internal/target/target.go", "internal/target/container.go", "internal/target/target_test.go"],
           "type": "code",
           "passes": true,
           "status": "done",
@@ -525,7 +525,7 @@
             "Fan-out is measured by aggregation over FK relationships, never inferred from column stats or the catalog alone."
           ],
           "verification": ["go test against a seeded skewed-fanout DB: p95/max recovered within tolerance; orphan_fraction exact on a DB with known orphans"],
-          "artifacts": ["internal/engine/postgres/fanout.go", "internal/engine/postgres/fanout_test.go"],
+          "artifacts": ["internal/profile/fanout.go", "internal/profile/fanout_test.go"],
           "type": "code",
           "passes": true,
           "status": "done",
@@ -543,7 +543,7 @@
             "Histogram bounds honor privacy — dropped under strict (RFC §8.2), since bounds are literally real values."
           ],
           "verification": ["go test: hydrated distribution reproduces an 80/20 skew within tolerance; a partitioned source emits the partitions block; strict drops histogram bounds"],
-          "artifacts": ["internal/engine/postgres/histogram.go", "internal/engine/postgres/partitions.go", "internal/engine/postgres/skew_test.go"],
+          "artifacts": ["internal/profile/histogram.go", "internal/profile/partitions.go", "internal/profile/skew_test.go"],
           "type": "code",
           "passes": true,
           "status": "done",
@@ -1798,7 +1798,7 @@
           ],
           "artifacts": [
             "internal/target/container.go",
-            "internal/target/container_test.go"
+            "internal/target/target_test.go"
           ],
           "type": "code",
           "passes": true,
@@ -1855,7 +1855,7 @@
           ],
           "artifacts": [
             "internal/runner/drizzle.go",
-            "internal/runner/drizzle_test.go"
+            "internal/runner/env_test.go"
           ],
           "type": "code",
           "passes": true,
@@ -2007,7 +2007,7 @@
           ],
           "artifacts": [
             "cmd/init_agent_mcp.go",
-            "cmd/init_agent_mcp_test.go"
+            "cmd/init_agent_test.go"
           ],
           "type": "code",
           "passes": true,
@@ -2102,7 +2102,7 @@
           ],
           "artifacts": [
             "internal/profile/",
-            "internal/profile/exact_test.go"
+            "internal/profile/mode_exact_test.go"
           ],
           "type": "code",
           "passes": true,
@@ -2337,7 +2337,7 @@
             "Codes are permanent and namespaced (RS-PERF-NNN) per PRD §10."
           ],
           "verification": ["corpus harness green on RS-PERF cases across the PG matrix; capping preserved"],
-          "artifacts": ["corpus/cases/perf-*/**", "internal/findings/perf.go", "internal/findings/perf_test.go"],
+          "artifacts": ["corpus/cases/perf-*/**", "internal/findings/rsperf.go", "internal/findings/rsperf_test.go"],
           "type": "code/asset",
           "passes": true,
           "status": "done",
@@ -2373,7 +2373,7 @@
             "The matrix CI runs the expanded corpus on every supported major."
           ],
           "verification": ["corpus matrix CI green across PG 11-17 on the expanded case set"],
-          "artifacts": ["corpus/cases/version-*/**", "internal/extrapolate/models.go"],
+          "artifacts": ["corpus/cases/version-*/**", "internal/estimate/models.go"],
           "type": "code/asset",
           "passes": true,
           "status": "done",
