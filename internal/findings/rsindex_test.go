@@ -155,3 +155,129 @@ tables:
 		t.Errorf("CREATE INDEX CONCURRENTLY must not be flagged for locking, got %+v", got)
 	}
 }
+
+// --- CR-T2: unqualified table names -----------------------------------------
+//
+// rsindex skipped resolveTable, so `CREATE INDEX ON orders (...)` missed the
+// fixture key `public.orders`, read the zero value, and reported `instant` for a
+// build on a 50M-row table. Unlike rsperf (where the finding vanished), here the
+// finding survives and states a confidently wrong duration, which is worse: the
+// user gets an answer, and it is the reassuring one.
+
+func indexFixture(t *testing.T) *fixture.Fixture {
+	t.Helper()
+	f, err := fixture.Parse([]byte(`rowshape_fixture: "1"
+meta: {id: t, engine: {name: postgres, version: "16"}}
+tables:
+  public.orders:
+    rows: {value: 50000000, confidence: exact}
+    columns:
+      id: {type: bigint, nullable: false}
+      email: {type: text, nullable: false, unique: {value: false, confidence: exact, via: probe}}
+    indexes:
+      - {name: orders_email_idx, method: btree, columns: [email], bytes: 4200000000, bloat_estimate: 0.45}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// indexCapture mirrors what a real validate run carries and a bare fixture does
+// not: a hydrated row count and a measured duration. Without both, estimateFor
+// extrapolates from declared==hydrated and every bucket is `instant` — which is
+// how a version of this test could pass against the very bug it targets.
+func indexCapture(sql string) *validate.Capture {
+	return &validate.Capture{
+		Success:    true,
+		Statements: []validate.Statement{{SQL: sql, DurationMs: 40}},
+		TableRows:  map[string]int64{"public.orders": 2000},
+	}
+}
+
+func indexFindingByCode(f *fixture.Fixture, c *validate.Capture, code string) *verdict.Finding {
+	for _, fnd := range (rsIndex{}).Analyze(f, c) {
+		if fnd.Code == code {
+			return &fnd
+		}
+	}
+	return nil
+}
+
+// TestUnqualifiedCreateIndexGetsTheSameEstimate is the rsindex twin of
+// rslock's TestUnqualifiedTableGetsTheSameEstimate.
+func TestUnqualifiedCreateIndexGetsTheSameEstimate(t *testing.T) {
+	f := indexFixture(t)
+
+	bucketFor := func(t *testing.T, table string) string {
+		t.Helper()
+		fnd := indexFindingByCode(f, indexCapture("CREATE INDEX ix ON "+table+" (id)"), "RS-INDEX-001")
+		if fnd == nil || fnd.Estimate == nil {
+			return ""
+		}
+		return fnd.Estimate.Bucket
+	}
+
+	qualified := bucketFor(t, "public.orders")
+	unqualified := bucketFor(t, "orders")
+	t.Logf("qualified=%q unqualified=%q", qualified, unqualified)
+
+	// Guard the guard.
+	if qualified == "" || qualified == "instant" {
+		t.Fatalf("qualified estimate = %q; a 50M-row index build extrapolated from 40ms/2k rows must "+
+			"be alarming or this test cannot detect the bug", qualified)
+	}
+	if unqualified != qualified {
+		t.Errorf("estimate for `CREATE INDEX ix ON orders (id)` = %q, but the qualified form = %q — "+
+			"the same build on the same 50M-row table. The unqualified form read rows=0.",
+			unqualified, qualified)
+	}
+}
+
+// TestUnqualifiedUniqueIndexKeepsItsVerdict: uniqueness is looked up per table,
+// so an unresolved name made a column with PROVEN duplicates look merely
+// unproven — downgrading a definite failure (this index cannot build) into a
+// soft "not confirmed".
+func TestUnqualifiedUniqueIndexKeepsItsVerdict(t *testing.T) {
+	f := indexFixture(t)
+
+	qualified := indexFindingByCode(f, indexCapture("CREATE UNIQUE INDEX ix ON public.orders (email)"), "RS-INDEX-010")
+	unqualified := indexFindingByCode(f, indexCapture("CREATE UNIQUE INDEX ix ON orders (email)"), "RS-INDEX-010")
+
+	if qualified == nil || qualified.Severity != verdict.SeverityError {
+		t.Fatalf("qualified form must be a proven-duplicate error, got %+v", qualified)
+	}
+	if unqualified == nil {
+		t.Fatal("unqualified CREATE UNIQUE INDEX produced no RS-INDEX-010")
+	}
+	if unqualified.Severity != qualified.Severity {
+		t.Errorf("severity for the unqualified form = %q, qualified = %q — the same index on the same "+
+			"column with proven duplicates", unqualified.Severity, qualified.Severity)
+	}
+}
+
+// TestUnqualifiedReindexTableResolves: REINDEX TABLE names a TABLE, so it needs
+// resolution. REINDEX INDEX names an index, matched against index names rather
+// than fixture table keys, and must NOT be resolved — the two cases share a
+// parser and are deliberately treated differently.
+func TestUnqualifiedReindexTableResolves(t *testing.T) {
+	f := indexFixture(t)
+
+	qualified := indexFindingByCode(f, indexCapture("REINDEX TABLE public.orders"), "RS-INDEX-020")
+	unqualified := indexFindingByCode(f, indexCapture("REINDEX TABLE orders"), "RS-INDEX-020")
+
+	if qualified == nil {
+		t.Fatal("qualified REINDEX TABLE produced no RS-INDEX-020; cannot detect the bug")
+	}
+	if unqualified == nil {
+		t.Fatal("`REINDEX TABLE orders` produced NO RS-INDEX-020, but the qualified form did")
+	}
+	if unqualified.DependsOn[0] != qualified.DependsOn[0] {
+		t.Errorf("depends_on differs: unqualified=%v qualified=%v", unqualified.DependsOn, qualified.DependsOn)
+	}
+
+	// REINDEX INDEX still resolves by index name, unaffected by table resolution.
+	if fnd := indexFindingByCode(f, indexCapture("REINDEX INDEX orders_email_idx"), "RS-INDEX-020"); fnd == nil {
+		t.Error("REINDEX INDEX <index-name> must still be found by index name")
+	}
+}

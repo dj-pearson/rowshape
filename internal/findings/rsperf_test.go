@@ -116,3 +116,114 @@ func TestRSPerfDependsOnAndCapped(t *testing.T) {
 		t.Errorf("confidence = %q, want exact (capped by accounts.rows)", fnd.Confidence)
 	}
 }
+
+// --- CR-T2: unqualified table names -----------------------------------------
+//
+// Every other analyzer routed SQL-derived table names through resolveTable;
+// rsperf did not. RFC §5 keys fixture tables by QUALIFIED name, so an unqualified
+// `UPDATE accounts ...` missed the key `public.accounts` — and the miss is
+// silent, because the !ok branch reads "no such table" as "not a large table".
+// The finding was not weakened, it was DROPPED. Unqualified DML is ordinary
+// hand-written SQL (Postgres resolves it via search_path), so this is the common
+// case, not the exotic one.
+
+// perfFixture: a 6M-row parent with a long-tailed cascade child — big enough to
+// trip RS-PERF-002's threshold and tailed enough to trip RS-PERF-001.
+func perfFixture(t *testing.T) *fixture.Fixture {
+	t.Helper()
+	f, err := fixture.Parse([]byte(`rowshape_fixture: "1"
+meta: {id: t, engine: {name: postgres, version: "16"}}
+tables:
+  public.accounts:
+    rows: {value: 6000000, confidence: exact}
+    columns:
+      id: {type: bigint, nullable: false}
+      status: {type: text, nullable: true}
+  public.events:
+    rows: {value: 90000000, confidence: exact}
+    columns:
+      account_id: {type: bigint, nullable: false}
+    references:
+      - {column: account_id, to: public.accounts.id, on_delete: cascade, fanout: {mean: 15, p50: 8, p95: 400, max: 250000, confidence: measured}}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// findingsByCode returns the findings rsPerf produced for a migration, keyed by
+// code, so each pathology can be compared independently (a DELETE with no WHERE
+// legitimately trips both RS-PERF-001 and RS-PERF-002).
+func perfFindingByCode(t *testing.T, f *fixture.Fixture, sql, code string) *verdict.Finding {
+	t.Helper()
+	for _, fnd := range (rsPerf{}).Analyze(f, plainCapture(sql)) {
+		if fnd.Code == code {
+			return &fnd
+		}
+	}
+	return nil
+}
+
+// TestUnqualifiedMassDMLIsStillReported: `UPDATE accounts SET ...` and
+// `UPDATE public.accounts SET ...` are the same statement on the same 6M-row
+// table. Before resolution the unqualified form produced NO finding at all.
+func TestUnqualifiedMassDMLIsStillReported(t *testing.T) {
+	f := perfFixture(t)
+
+	qualified := perfFindingByCode(t, f, "UPDATE public.accounts SET status = 'active';", "RS-PERF-002")
+	unqualified := perfFindingByCode(t, f, "UPDATE accounts SET status = 'active';", "RS-PERF-002")
+
+	// Guard the guard: if the qualified form does not fire, the comparison proves
+	// nothing.
+	if qualified == nil {
+		t.Fatal("qualified UPDATE produced no RS-PERF-002; this test cannot detect the bug")
+	}
+	if unqualified == nil {
+		t.Fatal("`UPDATE accounts` produced NO RS-PERF-002, but `UPDATE public.accounts` did — " +
+			"the unqualified name missed the fixture key and the finding was silently dropped")
+	}
+	// Same table means same evidence, and DependsOn must cite the canonical key.
+	qev, _ := qualified.Evidence.(map[string]any)
+	uev, _ := unqualified.Evidence.(map[string]any)
+	if qev["rows"] != uev["rows"] {
+		t.Errorf("rows evidence differs: qualified=%v unqualified=%v", qev["rows"], uev["rows"])
+	}
+	if len(unqualified.DependsOn) != 1 || unqualified.DependsOn[0] != "public.accounts.rows" {
+		t.Errorf("depends_on = %v, want [public.accounts.rows] (the canonical fixture key, which is "+
+			"what a DSSE-signed attestation should cite)", unqualified.DependsOn)
+	}
+}
+
+// TestUnqualifiedDeleteStillFindsCascadeFanout: the cascade check compares the
+// DELETE's target against `refParent(ref.To)`, which is always qualified because
+// it comes from the fixture. An unqualified target could never match, so
+// RS-PERF-001 was dropped for exactly the statement most likely to cause the
+// outage it describes.
+func TestUnqualifiedDeleteStillFindsCascadeFanout(t *testing.T) {
+	f := perfFixture(t)
+
+	qualified := perfFindingByCode(t, f, "DELETE FROM public.accounts;", "RS-PERF-001")
+	unqualified := perfFindingByCode(t, f, "DELETE FROM accounts;", "RS-PERF-001")
+
+	if qualified == nil {
+		t.Fatal("qualified DELETE produced no RS-PERF-001; this test cannot detect the bug")
+	}
+	if unqualified == nil {
+		t.Fatal("`DELETE FROM accounts` produced NO RS-PERF-001, but `DELETE FROM public.accounts` did")
+	}
+	if qualified.Title != unqualified.Title {
+		t.Errorf("same statement, different finding:\n qualified: %s\n unqualified: %s",
+			qualified.Title, unqualified.Title)
+	}
+}
+
+// TestUnresolvableTableProducesNoPerfFinding: resolution must not INVENT a match.
+// A table the fixture has never seen stays unresolved, finds no facts, and
+// produces no finding — rather than being answered from some other table.
+func TestUnresolvableTableProducesNoPerfFinding(t *testing.T) {
+	f := perfFixture(t)
+	if fnd := perfFindingByCode(t, f, "UPDATE typo_nonexistent SET status = 'x';", "RS-PERF-002"); fnd != nil {
+		t.Errorf("an unknown table must not produce a finding, got %+v", fnd)
+	}
+}

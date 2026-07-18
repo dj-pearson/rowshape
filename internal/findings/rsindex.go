@@ -32,6 +32,11 @@ func (rsIndex) Analyze(f *fixture.Fixture, c *validate.Capture) []verdict.Findin
 		upper := strings.ToUpper(clean)
 
 		if unique, concurrent, table, cols, ok := parseCreateIndex(clean, upper); ok {
+			// Resolve at the caller (RFC §5), as every other analyzer does. Without
+			// it `CREATE INDEX ON orders (...)` missed the fixture key
+			// `public.orders`, and the zero-value table meant rows=0 — reported as
+			// an `instant` build for what may be a huge table.
+			table = resolveTable(f, table)
 			if !concurrent {
 				out = append(out, nonConcurrentFinding(f, c, i, table, hasVersion))
 			}
@@ -41,6 +46,12 @@ func (rsIndex) Analyze(f *fixture.Fixture, c *validate.Capture) []verdict.Findin
 			continue
 		}
 		if name, isTable, concurrent, ok := parseReindex(clean, upper); ok && !concurrent {
+			// Only REINDEX TABLE names a table. REINDEX INDEX names an INDEX, which
+			// findIndex matches against index names rather than fixture table keys,
+			// so resolving it there would be wrong.
+			if isTable {
+				name = resolveTable(f, name)
+			}
 			if fnd, ok := reindexFinding(f, name, isTable); ok {
 				out = append(out, fnd)
 			}

@@ -1,0 +1,7 @@
+{
+  "description": "An UPDATE naming the table WITHOUT its schema (`accounts`, not `public.accounts`) must produce the same RS-PERF finding as the qualified form. Guards the resolveTable gap fixed in CR-T2, where the unqualified name missed the fixture key and the finding was dropped entirely rather than weakened.",
+  "verdict": "WARN",
+  "findings": [
+    {"code": "RS-PERF", "severity": "warn"}
+  ]
+}

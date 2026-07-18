@@ -35,8 +35,13 @@ func (rsPerf) Analyze(f *fixture.Fixture, c *validate.Capture) []verdict.Finding
 		// "UPDATE" or "DELETE FROM" must not be parsed as the statement.
 		clean := collapseSpaces(stripSQLComments(st.SQL))
 		upper := strings.ToUpper(clean)
+		// Resolution happens here, at the caller: the parsers stay pure and every
+		// SQL-derived table name is mapped onto the fixture's own key before it is
+		// compared or looked up (RFC §5). Without it `DELETE FROM accounts` never
+		// matches the fixture's `public.accounts`, and RS-PERF-001 is silently
+		// dropped rather than reported.
 		if parent, ok := deleteTarget(upper, clean); ok {
-			out = append(out, cascadeFanoutFindings(f, parent)...)
+			out = append(out, cascadeFanoutFindings(f, resolveTable(f, parent))...)
 		}
 		if fnd, ok := massDMLFinding(f, upper, clean); ok {
 			out = append(out, fnd)
@@ -51,6 +56,11 @@ func massDMLFinding(f *fixture.Fixture, upper, sql string) (verdict.Finding, boo
 	if !ok {
 		return verdict.Finding{}, false
 	}
+	// An unresolved name misses f.Tables entirely, and the !ok branch below reads
+	// that as "not a large table" — so an unqualified UPDATE on a 6M-row table
+	// produced no finding at all. Resolving also puts the canonical fixture key
+	// into DependsOn, which is what the attestation should cite.
+	table = resolveTable(f, table)
 	tbl, ok := f.Tables[table]
 	if !ok || tbl.Rows.Value < massDMLThreshold {
 		return verdict.Finding{}, false

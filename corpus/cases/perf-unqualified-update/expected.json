@@ -1,7 +1,10 @@
 {
-  "description": "UPDATE with no WHERE rewrites all 6M rows — RS-PERF WARN.",
+  "description": "UPDATE with no WHERE rewrites all 6M rows — RS-PERF WARN. NOTE: \"unqualified\" here means the missing WHERE clause, the usual SQL sense. It does NOT mean an unqualified TABLE NAME — this migration deliberately writes the qualified `public.accounts`. The table-name case is perf-unqualified-table-name; the two were easy to confuse and one was mistaken for coverage of the other during review.",
   "verdict": "WARN",
   "findings": [
-    {"code": "RS-PERF", "severity": "warn"}
+    {
+      "code": "RS-PERF",
+      "severity": "warn"
+    }
   ]
 }
