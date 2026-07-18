@@ -186,3 +186,66 @@ tables:
 			qualified.Title, unqualified.Title)
 	}
 }
+
+// --- CR-T22: identAfter must skip IF EXISTS ---------------------------------
+//
+// `ALTER TABLE t DROP COLUMN IF EXISTS c` returned "IF" as the column name, so
+// the finding named a column that does not exist. The reversibility conclusion
+// (dropping a column loses its data) happened to stay correct, which is why this
+// survived — but the evidence was wrong on a document that gets signed.
+func TestIdentAfterSkipsIfExists(t *testing.T) {
+	cases := []struct {
+		sql  string
+		want string
+	}{
+		{"ALTER TABLE public.users DROP COLUMN legacy_note", "legacy_note"},
+		{"ALTER TABLE public.users DROP COLUMN IF EXISTS legacy_note", "legacy_note"},
+		{"ALTER TABLE public.users DROP COLUMN if exists legacy_note", "legacy_note"},
+		{"ALTER TABLE public.users DROP COLUMN IF  EXISTS legacy_note;", "legacy_note"},
+		{`ALTER TABLE public.users DROP COLUMN IF EXISTS "legacy_note";`, "legacy_note"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.sql, func(t *testing.T) {
+			clean := collapseSpaces(stripSQLComments(tc.sql))
+			if got := identAfter(clean, strings.ToUpper(clean), "DROP COLUMN"); got != tc.want {
+				t.Errorf("identAfter = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDropColumnIfExistsNamesTheRealColumn drives it end to end, since the
+// finding's title and evidence are what a reviewer actually reads.
+func TestDropColumnIfExistsNamesTheRealColumn(t *testing.T) {
+	f, err := fixture.Parse([]byte(`rowshape_fixture: "1"
+meta: {id: t, engine: {name: postgres, version: "16"}}
+tables:
+  public.users:
+    rows: {value: 900000, confidence: exact}
+    columns:
+      legacy_note: {type: text, nullable: true}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	find := func(sql string) *verdict.Finding {
+		for _, fnd := range (rsReverse{}).Analyze(f, plainCapture(sql)) {
+			if fnd.Code == "RS-REVERSE-001" {
+				return &fnd
+			}
+		}
+		return nil
+	}
+
+	plain := find("ALTER TABLE public.users DROP COLUMN legacy_note;")
+	ifExists := find("ALTER TABLE public.users DROP COLUMN IF EXISTS legacy_note;")
+	if plain == nil || ifExists == nil {
+		t.Fatalf("both forms must produce RS-REVERSE-001 (plain=%v ifExists=%v)", plain, ifExists)
+	}
+	if strings.Contains(ifExists.Title, "IF") {
+		t.Errorf("title names the SQL keyword instead of the column: %q", ifExists.Title)
+	}
+	if ifExists.Title != plain.Title {
+		t.Errorf("IF EXISTS changed the finding:\n plain:     %s\n if exists: %s", plain.Title, ifExists.Title)
+	}
+}

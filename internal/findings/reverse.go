@@ -128,10 +128,30 @@ func identAfter(clean, upper, keyword string) string {
 		return ""
 	}
 	fields := strings.Fields(clean[i+len(keyword):])
+	// Skip the optional IF EXISTS / IF NOT EXISTS that Postgres allows between
+	// the keyword and the identifier. Without this, `DROP COLUMN IF EXISTS c`
+	// returned "IF" as the column name, so the finding described a column that
+	// does not exist — wrong evidence on a DSSE-signed document, even where the
+	// reversibility conclusion happens to stay correct.
+	fields = skipIfExists(fields)
 	if len(fields) == 0 {
 		return ""
 	}
 	return strings.Trim(strings.TrimRight(fields[0], ";,"), `"`)
+}
+
+// skipIfExists drops a leading IF EXISTS or IF NOT EXISTS, case-insensitively
+// and whatever the spacing, since strings.Fields has already collapsed it.
+func skipIfExists(fields []string) []string {
+	if len(fields) >= 2 && strings.EqualFold(fields[0], "IF") {
+		switch {
+		case strings.EqualFold(fields[1], "EXISTS"):
+			return fields[2:]
+		case len(fields) >= 3 && strings.EqualFold(fields[1], "NOT") && strings.EqualFold(fields[2], "EXISTS"):
+			return fields[3:]
+		}
+	}
+	return fields
 }
 
 // columnBeforeTypeChange returns the column of an ALTER COLUMN ... TYPE clause.

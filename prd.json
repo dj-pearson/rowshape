@@ -1914,9 +1914,10 @@
             "internal/findings/reverse_test.go"
           ],
           "type": "code",
-          "passes": false,
-          "status": "todo",
-          "priority": 22
+          "passes": true,
+          "status": "done",
+          "priority": 22,
+          "note": "Closed. identAfter now skips an optional IF EXISTS / IF NOT EXISTS between the keyword and the identifier, case-insensitively.\n\nMutation-tested: reverting returns \"IF\" (and \"if\" for the lowercase spelling) as the column name, so the finding named a SQL keyword rather than a column.\n\nWHY THIS SURVIVED THIS LONG is the interesting part: the reversibility CONCLUSION was still right. Dropping a column loses its data whatever the column is called, so the verdict, severity and remediation were all correct — only the evidence was wrong. That is the failure mode this codebase's own discipline is aimed at: a finding whose headline is wrong while its answer is right passes every test that only asserts the answer. The end-to-end test therefore asserts the TITLE, which is what a reviewer actually reads, not just that a finding was produced.\n\nHandled the spellings that actually occur: IF NOT EXISTS as well as IF EXISTS (the grammar allows it elsewhere and the helper is shared), lowercase, extra spacing (strings.Fields has already collapsed it), and a quoted identifier after the clause.\n\nVerified: gofmt/vet clean, golangci-lint 0 issues, internal + cmd + corpus green against live PG 18."
         },
         {
           "id": "CR-T23",
