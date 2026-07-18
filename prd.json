@@ -1797,9 +1797,10 @@
             "internal/target/container_test.go"
           ],
           "type": "code",
-          "passes": false,
-          "status": "todo",
-          "priority": 18
+          "passes": true,
+          "status": "done",
+          "priority": 18,
+          "note": "Closed. The container is now NAMED before it is asked for, and labelled `rowshape=1`.\n\nTHE WINDOW: `docker run -d` prints the id on stdout, but context cancellation kills the docker CLI, not what the daemon has already launched. Between \"the container started\" and \"we read its id\", a cancel left a running container that nothing referenced — no id, so no handle, so no cleanup. Narrow and Docker-path-only, but the failure mode is silent accumulation on a developer machine or a CI runner, with nothing pointing at the cause.\n\nGenerating the name FIRST inverts the dependency: cleanup has a handle whether or not the id ever arrived. `docker rm` accepts a name or an id interchangeably, so terminate() needed no branching, and removing a container that never started is a harmless no-op. Also added a fallback for the odd case where run succeeds but echoes no id (use the name as the handle), and the label so an operator can find strays without knowing anything: `docker ps -a --filter label=rowshape`.\n\nName is random rather than derived from the fixture: two concurrent runs (a developer and a CI job on one machine) must not collide, and unlike hydrate this is infrastructure with no determinism obligation. Recorded that reasoning in the code so nobody \"fixes\" it into something deterministic.\n\nHONEST LIMIT: Docker is not available in this environment (TestContainerLifecycle skips, exactly as the README documents), so the end-to-end cancel-during-start path is NOT verified here. What is verified without a daemon: name uniqueness over 1000 draws, the identifying prefix, and the label value the documented cleanup recipe depends on. The reasoning for the fix is structural — cleanup can no longer depend on a value that may never arrive — rather than observational.\n\nVerified: gofmt/vet clean, golangci-lint 0 issues, internal + cmd green against live PG 18."
         },
         {
           "id": "CR-T19",

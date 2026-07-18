@@ -2,6 +2,8 @@ package target
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -41,13 +43,31 @@ func NewContainer(ctx context.Context, image string) (*Container, error) {
 		image = "postgres:16"
 	}
 	const pass = "rowshape"
+
+	// The name is generated BEFORE the container is asked for, which is the whole
+	// point (CR-T18). `docker run -d` prints the id on stdout, but ctx
+	// cancellation kills the docker CLI, not what it has already launched — so in
+	// the window between "the daemon started the container" and "we read its id",
+	// a cancel left a running container nothing referenced. Naming it up front
+	// means cleanup has a handle even when the id was never received, and the
+	// label lets an operator find strays: docker ps -a --filter label=rowshape.
+	name := containerName()
 	out, err := exec.CommandContext(ctx, "docker", "run", "-d", "--rm",
+		"--name", name,
+		"--label", containerLabel,
 		"-e", "POSTGRES_PASSWORD="+pass,
 		"-P", image).Output()
 	if err != nil {
+		// Best-effort: the container may be running even though this failed.
+		// Removing by name is a no-op when it never started.
+		_ = terminate(name)
 		return nil, fmt.Errorf("docker run: %w", err)
 	}
 	id := strings.TrimSpace(string(out))
+	if id == "" {
+		// Started but no id echoed: fall back to the name so Close still works.
+		id = name
+	}
 
 	port, err := exec.CommandContext(ctx, "docker", "port", id, "5432/tcp").Output()
 	if err != nil {
@@ -105,8 +125,31 @@ func (c *Container) waitReady(ctx context.Context) error {
 	}
 }
 
-func terminate(id string) error {
-	return exec.Command("docker", "rm", "-f", id).Run()
+// containerLabel marks every container rowshape starts, so a stray one is
+// findable and removable without knowing its id:
+//
+//	docker ps -a --filter label=rowshape
+//	docker rm -f $(docker ps -aq --filter label=rowshape)
+const containerLabel = "rowshape=1"
+
+// containerName generates a unique name for a disposable container. Random
+// rather than derived from the fixture: two concurrent runs (a developer and a
+// CI job on the same machine) must not collide on a name, and unlike hydrate
+// this is infrastructure, so it carries no determinism obligation.
+func containerName() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Cannot fail in practice; a time-based fallback still avoids collision
+		// with anything already running.
+		return fmt.Sprintf("rowshape-%d", time.Now().UnixNano())
+	}
+	return "rowshape-" + hex.EncodeToString(b[:])
+}
+
+// terminate removes a container by id OR name — both are valid handles for
+// `docker rm`, which is what lets the cancel path clean up without an id.
+func terminate(idOrName string) error {
+	return exec.Command("docker", "rm", "-f", idOrName).Run()
 }
 
 // hostPortOf extracts the host port from `docker port` output like

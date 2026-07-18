@@ -235,3 +235,39 @@ func TestContainerLifecycle(t *testing.T) {
 		t.Errorf("Close: %v", err)
 	}
 }
+
+// --- CR-T18: cleanup must not depend on receiving the container id ----------
+//
+// `docker run -d` prints the id on stdout, but context cancellation kills the
+// docker CLI rather than what the daemon has already launched. In the window
+// between "container started" and "id read", a cancel left a running container
+// that nothing referenced — narrow and Docker-only, but it accumulates on a
+// developer machine or a CI runner with nothing pointing at the cause.
+//
+// The container is now named BEFORE it is asked for, so cleanup has a handle
+// either way, and labelled so a stray is findable. These tests need no Docker;
+// the end-to-end cancel path is covered by TestContainerLifecycle where a daemon
+// is available.
+
+func TestContainerNameIsUniqueAndPrefixed(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 1000; i++ {
+		n := containerName()
+		if !strings.HasPrefix(n, "rowshape-") {
+			t.Fatalf("name %q must be identifiable as ours", n)
+		}
+		if seen[n] {
+			t.Fatalf("duplicate container name %q — two concurrent runs would collide", n)
+		}
+		seen[n] = true
+	}
+}
+
+// TestContainerLabelIsQueryable pins the label an operator greps for; changing
+// it silently would break the stray-cleanup recipe documented in container.go.
+func TestContainerLabelIsQueryable(t *testing.T) {
+	if containerLabel != "rowshape=1" {
+		t.Errorf("containerLabel = %q; the cleanup recipe and "+
+			"`docker ps --filter label=rowshape` depend on this value", containerLabel)
+	}
+}
