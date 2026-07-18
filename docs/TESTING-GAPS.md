@@ -187,31 +187,40 @@ test files only — no production code changes.
 | 1 | Direct unit tests for `internal/plan` classifiers (`Items`/`classify`/`planTable`/`addColumnName`/`addsBareColumn`) — 11%→covered, all pure | S | ✅ **landed** |
 | 2 | `FuzzSplitStatements` with a seed corpus + no-blank / located-agreement / monotonic-line properties | S | ✅ **landed** |
 | 3 | Unit tests for `isTxControl` + `classifyIndexBuild` | S | ✅ **landed** |
-| 3b | De-duplicate `isTxControl` (verbatim in `internal/plan` and `internal/validate`) into a shared package so one guard covers both — a cross-package pin can't be a test because `plan`→`validate` already, so it must be a refactor | S | ✅ |
-| 4 | End-to-end exit-code assertions: validate FAIL→1, **WARN-only→2**, verify drift→1 | M | ✅ (tests only) |
-| 5 | `pull` command tests (privacy redaction, source hashing, superuser refusal, toolError paths) | M | ✅ |
-| 6 | `FuzzParseFixture` + malformed-YAML / wrong-type / duplicate-key table tests on `fixture.Parse` | M | ✅ |
-| 7 | MCP error-path tests asserting `IsError` (empty/missing/malformed inputs) for each tool | M | ✅ |
-| 8 | Offline multi-finding aggregation test through `BuildResult` (FAIL-dominates-WARN, WARN+WARN, failed-apply-floor + findings) via a multi-emitting fake analyzer | M | ✅ |
-| 9 | Fake-`pgx` unit coverage for `capture.go` apply/capture, OR document that it is integration-only by contract | L | ✅ |
-| 10 | Widen the CLI e2e (validate/plan/verify) onto the 10–17 matrix, or state explicitly why single-version is sufficient | M | infra |
-| 11 | Add `-race` to one CI job; add benchmarks for `estimate`/hydrate hot paths | M | infra |
-| 12 | Version-divergence tests for RS-INDEX-020 and RS-DATA-001 (PG 12 boundary) | M | ✅ |
+| 3b | De-duplicate `isTxControl` (verbatim in `internal/plan` and `internal/validate`) into `internal/sqlkind` so one guard covers both — a cross-package pin can't be a test because `plan`→`validate` already, so it must be a refactor | S | ✅ **landed** |
+| 4 | End-to-end exit-code assertions: validate FAIL→1, **WARN-only→2**, verify drift→1 | M | ✅ **landed** |
+| 5 | `pull` command tests (privacy redaction, source hashing, superuser refusal, toolError paths) | M | ✅ **landed** |
+| 6 | `FuzzParseFixture` + malformed-YAML / wrong-type / duplicate-key table tests on `fixture.Parse` | M | ✅ **landed** |
+| 7 | MCP error-path tests asserting `IsError` (empty/missing/malformed inputs) for each tool | M | ✅ **landed** |
+| 8 | Offline multi-finding aggregation test through `BuildResult` (FAIL-dominates-WARN, WARN+WARN, failed-apply-floor + findings) via a multi-emitting fake analyzer | M | ✅ **landed** |
+| 9 | `capture.go` apply/capture covered by a direct **integration** test against a live PG (a fake `pgx` would test a mock, not the pg_locks/SQLSTATE behavior) — 0% → 78-94% | L | ✅ **landed** |
+| 10 | Widen the CLI e2e (validate/plan/verify/pull) onto the 10–17 matrix (`corpus.yml` now runs `./cmd/...`) | M | ✅ **landed** |
+| 11 | `-race` CI job over `./internal/... ./cmd/...`; benchmarks for the `estimate` hot paths and the SQL splitter | M | ✅ **landed** |
+| 12 | Version-**invariance** tests for RS-INDEX-020 and RS-DATA-001 (they carry a "PG 12+" caveat but do NOT diverge — the audit had assumed divergence) | M | ✅ **landed** |
 
-Items 1–3 are landed alongside this document as a proof-of-concept; the rest are
-open.
+**All twelve items are landed.** The whole backlog was implemented on this branch;
+the sections above describe the gaps each one closed.
 
-## What the down-payment already found
+## Two real bugs the new tests uncovered
 
-Writing the `internal/plan` tests (item 1) immediately surfaced a real
-correctness bug, which is the point of closing an "only covered end-to-end" gap:
+Closing an "only covered end-to-end" gap is worth it precisely because the direct
+test sees what the end-to-end path walked past. Two shipped bugs surfaced:
 
-> `planTable` split the target table on whitespace only, so
-> `CREATE INDEX i ON t(col)` (no space before the `(`) parsed the table as
-> `t(col)`. Against a live schema that name never matches, so a normal index on
-> an **existing** table reported `missing-target` — `plan --against` would tell a
-> user their index targets a table that isn't there. Fixed by cutting the table
-> token at the first `(` (`internal/plan/plan.go`), with the case pinned in
-> `TestPlanTable`.
+> **1. `plan --against` misreports indexes on existing tables.** `planTable` split
+> the target table on whitespace only, so `CREATE INDEX i ON t(col)` (no space
+> before the `(`) parsed the table as `t(col)`. Against a live schema that name
+> never matches, so a normal index on an **existing** table reported
+> `missing-target` — the plan told the user their index targets a table that
+> isn't there. Fixed by cutting the table token at the first `(`
+> (`internal/plan/plan.go`), pinned in `TestPlanTable`.
 
-A gap that hides a shipped bug is the strongest argument for closing it first.
+> **2. The SQL splitter was O(n²) in time and memory.** The dollar-quote scanner
+> did `string(runes[i:])` — a full copy of the *remaining input* — on every
+> character inside a `$$…$$` body. A ~1000-statement migration took ~0.5s and
+> allocated 117 MB. The first benchmark written for the splitter (item 11) made
+> it obvious. Replaced with an allocation-free rune-prefix compare: ~0.7ms and
+> ~0.8 MB, a ~700× / 150× improvement, with `FuzzSplitStatements` and the
+> existing split tests confirming unchanged semantics.
+
+A gap that hides a shipped bug is the strongest argument for closing it — and two
+of these were performance/correctness bugs a green `go test` had happily carried.
