@@ -237,3 +237,111 @@ func TestSplitStatementsInTracksLines(t *testing.T) {
 		t.Errorf("SplitStatements should still return 2 statements, got %d", len(plain))
 	}
 }
+
+// --- CR-T6: E'...' escape strings -------------------------------------------
+//
+// The splitter had no backslash handling at all, so a Postgres escape string
+// closed early on `\'`: `SELECT E'it\'s; oops';` became TWO statements, the
+// first a syntactically broken fragment. That fragment then went to
+// capture.Apply, which produced a spurious FAIL on a perfectly valid migration.
+
+func TestSplitStatementsEscapeStrings(t *testing.T) {
+	cases := []struct {
+		name string
+		sql  string
+		want []string
+	}{
+		{
+			// The reported defect.
+			name: "escaped quote inside E-string",
+			sql:  `SELECT E'it\'s; oops';`,
+			want: []string{`SELECT E'it\'s; oops'`},
+		},
+		{
+			// \ is an escaped BACKSLASH, so the quote that follows really does
+			// close the literal. A naive "skip the char after every backslash"
+			// gets this wrong in the other direction.
+			name: "escaped backslash then a real close",
+			// Two backslashes in the SQL: an escaped BACKSLASH, so the quote that
+			// follows really does close the literal and the semicolon splits.
+			// Built by concatenation because a doubled backslash in a literal is
+			// easy to mangle in transit and this case is meaningless without
+			// exactly two.
+			sql:  `SELECT E'path` + `\` + `\` + `'; SELECT 2;`,
+			want: []string{`SELECT E'path` + `\` + `\` + `'`, `SELECT 2`},
+		},
+		{
+			name: "semicolon inside an E-string",
+			sql:  `SELECT E'a;b';`,
+			want: []string{`SELECT E'a;b'`},
+		},
+		{
+			name: "lowercase e prefix",
+			sql:  `SELECT e'it\'s; fine';`,
+			want: []string{`SELECT e'it\'s; fine'`},
+		},
+		{
+			// standard_conforming_strings: a backslash in an ORDINARY literal is
+			// a plain character, so this closes at the quote. Treating backslash
+			// as an escape everywhere would swallow it and merge the statements.
+			name: "ordinary literal ending in a backslash",
+			sql:  `SELECT 'C:\'; SELECT 2;`,
+			want: []string{`SELECT 'C:\'`, `SELECT 2`},
+		},
+		{
+			name: "doubled quote is not the end",
+			sql:  `SELECT 'it''s; fine';`,
+			want: []string{`SELECT 'it''s; fine'`},
+		},
+		{
+			// The E must be a standalone token: here it is the tail of an
+			// identifier, so the literal is an ordinary one.
+			name: "trailing E of an identifier is not an escape prefix",
+			sql:  `SELECT valueE'C:\'; SELECT 2;`,
+			want: []string{`SELECT valueE'C:\'`, `SELECT 2`},
+		},
+		{
+			name: "dollar quoting still works",
+			sql:  `CREATE FUNCTION f() RETURNS int AS $$ BEGIN RETURN 1; END $$ LANGUAGE plpgsql; SELECT 2;`,
+			want: []string{`CREATE FUNCTION f() RETURNS int AS $$ BEGIN RETURN 1; END $$ LANGUAGE plpgsql`, `SELECT 2`},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SplitStatements(tc.sql)
+			if len(got) != len(tc.want) {
+				t.Fatalf("split into %d statements, want %d:\n got:  %q\n want: %q",
+					len(got), len(tc.want), got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("statement %d = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestSplitStatementsInLinesAcrossEscapeString: the File/Line contract from
+// P2-T7 is load-bearing for PR annotations (P4-T2), and an E-string spanning
+// newlines is exactly where a scanner that mis-tracks the literal would drift.
+func TestSplitStatementsInLinesAcrossEscapeString(t *testing.T) {
+	// Built from raw-string pieces so the backslash inside the E-string is
+	// unambiguous in the Go source as well as in the SQL.
+	sql := "SELECT 1;\n\n" +
+		`SELECT E'line one\'s` + "\n" +
+		`line two; still inside';` + "\n\nSELECT 3;\n"
+	got := SplitStatementsIn("m.sql", sql)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 statements, got %d: %+v", len(got), got)
+	}
+	wantLines := []int{1, 3, 6}
+	for i, w := range wantLines {
+		if got[i].Line != w {
+			t.Errorf("statement %d at line %d, want %d (SQL %q)", i, got[i].Line, w, got[i].SQL)
+		}
+	}
+	if got[0].File != "m.sql" {
+		t.Errorf("file = %q, want m.sql", got[0].File)
+	}
+}

@@ -297,14 +297,45 @@ func SplitStatementsIn(file, sql string) []Located {
 			}
 		case c == '\'' || c == '"': // quoted string / identifier
 			quote := c
+			// A leading E marks a Postgres escape string (E'...'), where a
+			// backslash escapes the next character. This is deliberately NOT
+			// applied to an ordinary '...' literal: standard_conforming_strings
+			// has been on by default since PG 9.1, so a backslash there is a plain
+			// character, and treating it as an escape everywhere would break
+			// `SELECT 'C:\'` by swallowing its own closing quote — trading this bug
+			// for a new one.
+			escapes := quote == '\'' && opensEscapeString(runes, i)
 			buf.WriteRune(c)
 			i++
 			for i < n {
-				buf.WriteRune(runes[i])
-				if runes[i] == quote {
+				r := runes[i]
+				if escapes && r == '\\' && i+1 < n {
+					// The escaped character cannot end the literal, whatever it is:
+					// \' is a quote, \\ is a backslash that must not then escape a
+					// following quote.
+					buf.WriteRune(r)
+					buf.WriteRune(runes[i+1])
+					i += 2
+					continue
+				}
+				if r == quote {
+					// A doubled quote is an escaped quote, not the end of the
+					// literal. This previously worked by accident — the scanner
+					// closed the string and immediately reopened it on the second
+					// quote, which preserved the text and so preserved the split —
+					// but only as long as nothing depended on where the literal
+					// actually ended. Handling it explicitly costs nothing.
+					if i+1 < n && runes[i+1] == quote {
+						buf.WriteRune(r)
+						buf.WriteRune(runes[i+1])
+						i += 2
+						continue
+					}
+					buf.WriteRune(r)
 					i++
 					break
 				}
+				buf.WriteRune(r)
 				i++
 			}
 		case c == '$': // possible dollar-quote
@@ -334,6 +365,22 @@ func SplitStatementsIn(file, sql string) []Located {
 	}
 	flush()
 	return stmts
+}
+
+// opensEscapeString reports whether the quote at index i opens a Postgres escape
+// string, i.e. is immediately preceded by a standalone E (as in E'it\'s').
+//
+// The E must be its own token: in `SOME'x'` the preceding rune is also a letter,
+// but that is the tail of an identifier, not an escape-string prefix. Requiring
+// the character before the E to be a non-identifier rune keeps the two apart.
+func opensEscapeString(runes []rune, i int) bool {
+	if i == 0 || (runes[i-1] != 'E' && runes[i-1] != 'e') {
+		return false
+	}
+	if i-2 >= 0 && (isAlnum(runes[i-2]) || runes[i-2] == '_') {
+		return false
+	}
+	return true
 }
 
 // dollarTag reads a dollar-quote opening tag ($$ or $tag$) starting at i,
