@@ -305,3 +305,57 @@ is written but has not run here (no arm64 runner available in this environment,
 and pushing is gated by D-008). First green run of `determinism-matrix` on
 `ubuntu-24.04-arm` is what converts this from "correct by construction" to
 "observed".
+
+---
+
+## D-012 — Two unreachable functions deleted, and the version gate centralized (CR-T21)
+
+**Status:** decided and implemented.
+
+Two functions had no production caller — only tests, which is how they looked
+alive. Both were **deleted**, and the reasoning is recorded here because
+unreachable code that is silently removed tends to be silently reinvented.
+
+### `internal/profile.probeUniqueCount` (RFC §7.2 route 3) — deleted
+
+Production proves uniqueness exclusively via `probeUniqueExistence` (route 2),
+called from `columns.go` and `escalation.go`. Route 3 answers the same question
+and costs strictly more: `EXISTS` short-circuits on the first duplicate, while
+the count comparison scans the whole column. Both are exact, so `INV-UNIQUENESS`
+is satisfied either way and route 2 is the better of two correct options.
+
+The one thing route 3 offered that route 2 does not is the **number** of
+duplicates. Nothing consumes that today. If a future finding wants "N duplicate
+values block this unique index", route 3 is in git history and its shape is
+described in the RFC — recovering it is cheaper than carrying an untested path.
+
+### `internal/estimate.ForFixture` (+ `ErrNoVersion`) — deleted
+
+`ForFixture` enforced RFC §9.1's refusal to extrapolate without
+`meta.engine.version`. It was never called: `internal/findings.estimateFor` is
+the path every analyzer actually uses, and it is the more evolved of the two —
+it also handles the `tableKnown` refusal (the P2-T8 follow-up) and the
+`--calibrate` two-point fit, neither of which `ForFixture` knows about.
+
+Keeping a second, weaker implementation of the same rule in another package is
+how the two drift.
+
+### The gate now has ONE enforcement point
+
+Deleting `ForFixture` alone would have left the real duplication in place: the
+version check was written three times, as `if hasVersion { ... }` in `rslock`,
+`rsindex` and `rsconstraint`. That is the shape the review flagged — the gate
+enforced in N places, able to drift, and easy for a fourth analyzer to forget.
+
+`hasVersion` is now a parameter of `estimateFor`, which returns `nil` when it is
+false. The three wrappers are gone. `TestVersionGateHasOneEnforcementPoint`
+drives all three analyzers against a version-less fixture and asserts none
+attaches an estimate; it `Fatal`s rather than skips if an analyzer produces no
+finding, so it cannot pass over nothing.
+
+`hasVersion` is still computed per analyzer and still used for a *different*
+purpose in `rslock.classifyRewrite` (the version-conditional rewrite decision at
+the PG 11 boundary, D-006). That is not duplication of the estimate gate.
+
+**Verified:** no emitted verdict changed — the full corpus is green against a
+live PG, and `golangci-lint`'s `unused` check is clean.

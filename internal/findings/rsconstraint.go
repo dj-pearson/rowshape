@@ -84,9 +84,7 @@ func sameTxFinding(f *fixture.Fixture, c *validate.Capture, i int, table, name s
 		Remediation: remediation("RS-CONSTRAINT-001"),
 		Explain:     "rowshape explain RS-CONSTRAINT-001",
 	}
-	if hasVersion {
-		fnd.Estimate = estimateFor(c, i, estimate.ConstraintValidation, table, tbl.Rows.Value, tbl.Rows.Confidence, tableKnown(f, table))
-	}
+	fnd.Estimate = estimateFor(c, i, estimate.ConstraintValidation, table, tbl.Rows.Value, tbl.Rows.Confidence, tableKnown(f, table), hasVersion)
 	return fnd
 }
 

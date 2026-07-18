@@ -30,20 +30,3 @@ func (r *reader) probeUniqueExistence(ctx context.Context, schema, table, column
 	}
 	return &fixture.Fact[bool]{Value: !hasDuplicate, Confidence: fixture.Exact, Via: "probe"}, nil
 }
-
-// probeUniqueCount uses the count comparison (RFC §7.2 route 3): one integer out,
-// always a full scan, giving the duplicate COUNT rather than just existence.
-// count(c) and count(DISTINCT c) both exclude NULLs, so the difference is the
-// number of duplicated non-null values (0 ⇒ unique). It returns the fact plus the
-// duplicate count so a nonzero result can be surfaced.
-func (r *reader) probeUniqueCount(ctx context.Context, schema, table, column string) (*fixture.Fact[bool], int64, error) {
-	from := pgx.Identifier{schema, table}.Sanitize()
-	c := pgx.Identifier{column}.Sanitize()
-	q := "SELECT count(" + c + ") - count(DISTINCT " + c + ") FROM " + from
-
-	var duplicates int64
-	if err := r.tx.QueryRow(ctx, q).Scan(&duplicates); err != nil {
-		return nil, 0, err
-	}
-	return &fixture.Fact[bool]{Value: duplicates == 0, Confidence: fixture.Exact, Via: "count"}, duplicates, nil
-}

@@ -68,10 +68,7 @@ func (rsLock) finding(f *fixture.Fixture, c *validate.Capture, i int, st validat
 	// Durations are buckets with the basis attached, never point estimates
 	// (INV-DURATIONS-BUCKETS). Extrapolation refuses without an engine version.
 	known := tableKnown(f, table)
-	var est *verdict.Estimate
-	if hasVersion {
-		est = estimateFor(c, i, op, table, declared, tbl.Rows.Confidence, known)
-	}
+	est := estimateFor(c, i, op, table, declared, tbl.Rows.Confidence, known, hasVersion)
 	switch {
 	case est != nil:
 		fnd.Estimate = est

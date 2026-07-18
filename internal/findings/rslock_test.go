@@ -324,3 +324,72 @@ func TestFindingCarriesLocation(t *testing.T) {
 		t.Errorf("inline SQL must carry no location, got %+v", got)
 	}
 }
+
+// TestVersionGateHasOneEnforcementPoint: CR-T21. The RFC §9.1 refusal to
+// extrapolate without an engine version used to be checked by each analyzer
+// separately (`if hasVersion { ... }` in rslock, rsindex and rsconstraint),
+// while estimate.ForFixture implemented the same gate and was never called. The
+// gate now lives in estimateFor, so a fourth analyzer cannot forget it.
+//
+// This drives all three analyzers against a fixture with NO engine version and
+// asserts none of them attaches an estimate — the property the duplication was
+// supposed to guarantee, now asserted once for all of them.
+func TestVersionGateHasOneEnforcementPoint(t *testing.T) {
+	noVersion, err := fixture.Parse([]byte(`rowshape_fixture: "1"
+meta: {id: t, engine: {name: postgres}}
+tables:
+  public.orders:
+    rows: {value: 50000000, confidence: exact}
+    columns:
+      id: {type: bigint, nullable: false}
+      email: {type: text, nullable: false}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Split into statements the way the capture does: rsconstraint detects
+	// add-then-validate ACROSS statements, so handing it one blob asserts nothing.
+	migrations := map[string][]string{
+		"rslock":  {"ALTER TABLE public.orders ALTER COLUMN id TYPE text"},
+		"rsindex": {"CREATE INDEX ix ON public.orders (id)"},
+		"rsconstraint": {
+			"BEGIN",
+			"ALTER TABLE public.orders ADD CONSTRAINT c CHECK (id > 0) NOT VALID",
+			"ALTER TABLE public.orders VALIDATE CONSTRAINT c",
+			"COMMIT",
+		},
+	}
+	analyzers := map[string]validate.Analyzer{
+		"rslock":       rsLock{},
+		"rsindex":      rsIndex{},
+		"rsconstraint": rsConstraint{},
+	}
+
+	for name, a := range analyzers {
+		t.Run(name, func(t *testing.T) {
+			var stmts []validate.Statement
+			for _, sql := range migrations[name] {
+				stmts = append(stmts, validate.Statement{SQL: sql, DurationMs: 40})
+			}
+			c := &validate.Capture{
+				Success:    true,
+				Statements: stmts,
+				TableRows:  map[string]int64{"public.orders": 2000},
+			}
+			found := false
+			for _, fnd := range a.Analyze(noVersion, c) {
+				found = true
+				if fnd.Estimate != nil {
+					t.Errorf("%s attached an estimate (%+v) with no engine.version — RFC §9.1 refuses "+
+						"to extrapolate without one", fnd.Code, fnd.Estimate)
+				}
+			}
+			// Guard the guard: a skip here would mean the analyzer never fired and
+			// the assertion above ran over nothing.
+			if !found {
+				t.Fatal("analyzer produced no finding; this subtest would assert nothing")
+			}
+		})
+	}
+}

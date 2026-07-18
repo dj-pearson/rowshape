@@ -13,7 +13,16 @@ import (
 // points and returns a `measured` estimate (RFC §9.2); otherwise it extrapolates
 // from the single measured basis, which stays `estimated`. Returns nil when there
 // is no usable basis.
-func estimateFor(c *validate.Capture, stmtIdx int, op estimate.OpClass, table string, declaredRows int64, rowsConf fixture.Confidence, tableKnown bool) *verdict.Estimate {
+func estimateFor(c *validate.Capture, stmtIdx int, op estimate.OpClass, table string, declaredRows int64, rowsConf fixture.Confidence, tableKnown, hasVersion bool) *verdict.Estimate {
+	// Refuse to extrapolate without an engine version (RFC §9.1). CR-T21 moved
+	// this gate here from three separate `if hasVersion` wrappers in rslock,
+	// rsindex and rsconstraint: the rule now has ONE enforcement point, so a
+	// fourth analyzer cannot forget it. estimate.ForFixture was a parallel,
+	// never-called implementation of the same gate and has been deleted.
+	if !hasVersion {
+		return nil
+	}
+
 	// Refuse to extrapolate for a table the fixture does not carry.
 	//
 	// Without this, an unknown table reads the zero value and the arithmetic

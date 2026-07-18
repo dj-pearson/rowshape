@@ -80,33 +80,6 @@ func TestProbeExistence(t *testing.T) {
 	}
 }
 
-// TestProbeCount: the count comparison reaches exact and returns the duplicate
-// count (RFC §7.2 route 3).
-func TestProbeCount(t *testing.T) {
-	conn := adminConn(t)
-	seedUniqueness(t, conn)
-	r, done := uniqReader(t, conn)
-	defer done()
-	ctx := context.Background()
-
-	uniq, dups, err := r.probeUniqueCount(ctx, uniqSchema, "t", "uniq_col")
-	if err != nil {
-		t.Fatalf("count uniq_col: %v", err)
-	}
-	if !uniq.Value || dups != 0 || uniq.Via != "count" {
-		t.Errorf("uniq_col = %+v dups=%d, want unique with 0 duplicates", uniq, dups)
-	}
-
-	notUniq, dups, err := r.probeUniqueCount(ctx, uniqSchema, "t", "dup_col")
-	if err != nil {
-		t.Fatalf("count dup_col: %v", err)
-	}
-	// 5000 rows, 100 distinct values -> 4900 duplicated.
-	if notUniq.Value || dups != 4900 {
-		t.Errorf("dup_col = %+v dups=%d, want not-unique with 4900 duplicates", notUniq, dups)
-	}
-}
-
 // TestUniquenessNeverFromSample is the property test (INV-UNIQUENESS): fast-mode
 // profiling, which only samples, must NEVER produce unique:true for a column that
 // merely looks unique. uniq_col has distinct == rows but no catalog proof, so

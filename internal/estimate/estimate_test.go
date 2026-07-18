@@ -1,7 +1,6 @@
 package estimate
 
 import (
-	"errors"
 	"testing"
 
 	"github.com/rowshape/rowshape/internal/fixture"
@@ -114,30 +113,6 @@ func TestVersionConditionalDivergence(t *testing.T) {
 		if op := ClassifyAddColumnDefault(true, major); op != TableRewrite {
 			t.Errorf("volatile DEFAULT must rewrite on PG %d, got %v", major, op)
 		}
-	}
-}
-
-// TestRefusesWithoutVersion: ForFixture refuses to extrapolate when the engine
-// version is absent, rather than assuming a recent default (RFC §9.1).
-func TestRefusesWithoutVersion(t *testing.T) {
-	noVer := &fixture.Fixture{
-		Meta:   fixture.Meta{Engine: fixture.Engine{Name: "postgres"}}, // no version
-		Tables: map[string]fixture.Table{"public.t": {Rows: fixture.Fact[int64]{Value: 1_000_000, Confidence: fixture.Exact}}},
-	}
-	if _, err := ForFixture(TableRewrite, noVer, "public.t", 12_000, 90); !errors.Is(err, ErrNoVersion) {
-		t.Errorf("ForFixture must refuse without a version, got err=%v", err)
-	}
-
-	withVer := &fixture.Fixture{
-		Meta:   fixture.Meta{Engine: fixture.Engine{Name: "postgres", Version: "16"}},
-		Tables: map[string]fixture.Table{"public.t": {Rows: fixture.Fact[int64]{Value: 1_000_000, Confidence: fixture.Exact}}},
-	}
-	est, err := ForFixture(TableRewrite, withVer, "public.t", 12_000, 90)
-	if err != nil {
-		t.Fatalf("ForFixture with a version must succeed, got %v", err)
-	}
-	if est.Bucket == "" || est.DeclaredRows != 1_000_000 {
-		t.Errorf("ForFixture must use declared rows and produce a bucket, got %+v", est)
 	}
 }
 

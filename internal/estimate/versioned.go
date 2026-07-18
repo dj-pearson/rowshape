@@ -1,20 +1,9 @@
 package estimate
 
 import (
-	"errors"
-	"fmt"
 	"strconv"
 	"strings"
-
-	"github.com/rowshape/rowshape/internal/fixture"
-	"github.com/rowshape/rowshape/internal/verdict"
 )
-
-// ErrNoVersion is returned when extrapolation is attempted against a fixture with
-// no declared engine version. A validator MUST refuse rather than assume a recent
-// default — the older databases that lack a version are exactly the ones most
-// likely to have the scary migrations (RFC §9.1).
-var ErrNoVersion = errors.New("estimate: cannot extrapolate without meta.engine.version — refusing to assume an engine version (RFC §9.1)")
 
 // defaultFastPathMajor is the first Postgres major that fast-paths a NON-volatile
 // column DEFAULT into the catalog instead of rewriting the table (RFC §9.1). This
@@ -57,22 +46,4 @@ func ClassifyAddColumnDefault(volatileDefault bool, major int) OpClass {
 		return CatalogOnly
 	}
 	return TableRewrite
-}
-
-// ForFixture extrapolates op against a fixture's DECLARED rows for a table,
-// refusing when the engine version is absent (RFC §9/§9.1). basisRows/basisMs are
-// the measured basis (e.g. the rows a hydrated run rewrote and how long it took).
-// The estimate's confidence is capped by the confidence of the table's `rows`.
-func ForFixture(op OpClass, f *fixture.Fixture, table string, basisRows, basisMs int64) (verdict.Estimate, error) {
-	if f == nil {
-		return verdict.Estimate{}, ErrNoVersion
-	}
-	if _, ok := Major(f.Meta.Engine.Version); !ok {
-		return verdict.Estimate{}, ErrNoVersion
-	}
-	tbl, ok := f.Tables[table]
-	if !ok {
-		return verdict.Estimate{}, fmt.Errorf("estimate: no table %q in fixture", table)
-	}
-	return Extrapolate(op, basisRows, basisMs, tbl.Rows.Value, tbl.Rows.Confidence), nil
 }
