@@ -1496,7 +1496,8 @@
           "passes": false,
           "status": "blocked",
           "priority": 8,
-          "blocked_reason": "FROZEN PACKAGE — needs explicit owner sign-off before any change. internal/verdict is consumer-facing (npm wrapper, GitHub Action, MCP) and DSSE-signable; the review found no live bug here, only a missing structural guard. Unblock by confirming the change is additive-only and cannot alter any emitted document."
+          "blocked_reason": "FROZEN PACKAGE — needs explicit owner sign-off before any change. internal/verdict is consumer-facing (npm wrapper, GitHub Action, MCP) and DSSE-signable; the review found no live bug here, only a missing structural guard. Unblock by confirming the change is additive-only and cannot alter any emitted document.",
+          "readiness": "READINESS (CR-loop, no code changed): SAFE, ADDITIVE-ONLY — the condition the blocked_reason asks to confirm is now VERIFIED. Every severity emitted by in-repo analyzers is one of exactly three constants (verdict.SeverityError/SeverityWarn/SeverityInfo — grepped across internal/findings, no literals). wantFor is called from ONE site (internal/validate/validate.go:124) with fnd.Severity, and Cap from one site immediately after. So a guard rejecting unrecognized severities is a NO-OP for every current caller and cannot alter any emitted document. The change is purely a structural guard against a future analyzer's typo. Recommended: approve."
         },
         {
           "id": "CR-T9",
@@ -1527,7 +1528,8 @@
           "passes": false,
           "status": "blocked",
           "priority": 9,
-          "blocked_reason": "FROZEN PACKAGE — needs explicit owner sign-off. Human output is a rendering of the JSON (INV-VERDICT-SHAPE); if the fix requires pointer fields on Estimate it changes a frozen, DSSE-signable struct and must be evaluated against INV-DSSE-SHAPE first. A render-only fix that leaves the struct alone is the preferred path."
+          "blocked_reason": "FROZEN PACKAGE — needs explicit owner sign-off. Human output is a rendering of the JSON (INV-VERDICT-SHAPE); if the fix requires pointer fields on Estimate it changes a frozen, DSSE-signable struct and must be evaluated against INV-DSSE-SHAPE first. A render-only fix that leaves the struct alone is the preferred path.",
+          "readiness": "READINESS (CR-loop, no code changed): the RENDER-ONLY path the blocked_reason names as preferred is AVAILABLE and provably sufficient — no change to the DSSE-signable Estimate struct is needed. Mechanism confirmed: internal/findings/rsindex.go:175 constructs &verdict.Estimate{Bucket, Model:\"reindex_bytes\"} and leaves BasisRows/BasisMs/DeclaredRows at their zero values; render_human.go:45 then prints \"extrapolated from 0 rows in 0ms\" unconditionally. A discriminator exists that needs no new field: estimateFor floors ms1 at 1 for every ROW-based estimate, so BasisMs == 0 uniquely identifies the byte-based path and cannot collide with a genuine measured zero. Fix is confined to render_human; JSON field set unchanged; INV-DSSE-SHAPE untouched. Recommended: approve as render-only, and explicitly DECLINE any pointer-field variant."
         },
         {
           "id": "CR-T10",
@@ -1946,7 +1948,8 @@
           "passes": false,
           "status": "blocked",
           "priority": 23,
-          "blocked_reason": "FROZEN PACKAGE — needs owner sign-off. Purely mechanical and behavior-preserving, but it moves a symbol across two consumer-facing packages; confirm the import direction before starting (a new internal/exitcode avoids a verdict<->toolerror cycle)."
+          "blocked_reason": "FROZEN PACKAGE — needs owner sign-off. Purely mechanical and behavior-preserving, but it moves a symbol across two consumer-facing packages; confirm the import direction before starting (a new internal/exitcode avoids a verdict<->toolerror cycle).",
+          "readiness": "READINESS (CR-loop, no code changed): LOWEST RISK of the four, and the blocked_reason's open question is ANSWERED. No import cycle exists today — internal/verdict does not import internal/toolerror, and internal/toolerror does not import internal/verdict (the only match is a comment in the new test). The duplication is exactly two sites: verdict.ExitToolError = 3 (verdict.go:26) and toolerror.ExitCode() { return 3 } (toolerror.go:68). NEITHER is a JSON field, so the refactor provably cannot alter an emitted document. Direction confirmed: toolerror is deliberately a leaf package (its own comment notes it avoids importing `strings`), so it should not take a dependency on verdict; a new internal/exitcode is the right shape, as the blocked_reason suggested. CR-T17 now pins the exit code for all seven categories, so a behavior change would be caught. Recommended: approve first."
         },
         {
           "id": "CR-T24",
@@ -1975,7 +1978,8 @@
           "passes": false,
           "status": "blocked",
           "priority": 24,
-          "blocked_reason": "FROZEN PACKAGE — needs owner sign-off. Touches the capping engine, which this file names as the one thing that must never be wrong. The change is in the SAFE direction (weakest wins) but must not regress the existing capping suite."
+          "blocked_reason": "FROZEN PACKAGE — needs owner sign-off. Touches the capping engine, which this file names as the one thing that must never be wrong. The change is in the SAFE direction (weakest wins) but must not regress the existing capping suite.",
+          "readiness": "READINESS (CR-loop, no code changed): SAFE but touches the capping engine, so it wants the most deliberate yes. Confirmed the first-match tie-break at internal/verdict/capping.go — the orphan_fraction branch returns on the FIRST reference matching the column, rather than the weakest. Audited every corpus fixture: NO table has two references on the same column, so the case is currently UNREACHABLE and the change is a no-op for every existing test — which is both why it is safe and why nothing would catch a regression. The fix direction (weakest confidence wins) is strictly safer than first-match under INV-CONFIDENCE-CAPPING. If approved, it needs a NEW capping test constructing the two-FK shape, since the corpus cannot exercise it. Recommended: approve, with the new test as a condition."
         },
         {
           "id": "CR-T25",

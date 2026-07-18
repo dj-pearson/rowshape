@@ -401,3 +401,28 @@ as the original review noted).
 `TestCellEscapesStructureButPreservesAuthoredMarkdown` pins **both** halves so
 neither can be changed by accident, and `TestSummaryRendersRemediationCodeSpans`
 guards the specific regression this nearly shipped.
+
+---
+
+## D-014 — Frozen-package readiness assessment (CR-T8/T9/T23/T24)
+
+**Status:** awaiting owner sign-off. **No frozen code was changed to produce
+this.** Each story's `blocked_reason` named a specific question; this records the
+answers so the decision rests on evidence rather than judgement.
+
+The four are blocked because `internal/verdict`, `internal/fixture` and
+`internal/toolerror` are consumer-facing (npm wrapper, GitHub Action, MCP) and
+DSSE-signable. The review found **no live bug** in any of them — these are
+missing guards and provenance nits around a sound design.
+
+| Story | Verified property | Risk | Recommendation |
+|---|---|---|---|
+| **CR-T23** exit code 3 duplicated | **No import cycle exists.** `verdict` ⊬ `toolerror` and `toolerror` ⊬ `verdict`. Both sites (`verdict.go:26`, `toolerror.go:68`) are **not JSON fields**, so the refactor cannot alter an emitted document. | Lowest | **Approve first.** New `internal/exitcode`; `toolerror` is deliberately a leaf. CR-T17 now pins exit 3 for all seven categories. |
+| **CR-T9** fabricated `0 rows in 0ms` | **Render-only fix is sufficient** — no `Estimate` change needed. `rsindex.go:175` leaves basis fields zero; `render_human.go:45` prints them unconditionally. `estimateFor` floors `ms1` at 1 for row-based estimates, so **`BasisMs == 0` uniquely identifies the byte path** and cannot collide with a real measured zero. | Low | **Approve as render-only.** Explicitly decline any pointer-field variant. |
+| **CR-T8** unvalidated severity strings | Analyzers emit exactly three constants; `wantFor`/`Cap` have **one call site each**. A guard is a **no-op for every current caller**. | Low | **Approve.** Additive-only. |
+| **CR-T24** first-match FK tie-break | Confirmed first-match in the `orphan_fraction` branch. **No corpus fixture has two FKs on one column**, so the case is unreachable today — the change is a no-op for existing tests, and nothing would catch a regression. | Low, but in the capping engine | **Approve with a condition:** requires a new capping test constructing the two-FK shape, since the corpus cannot exercise it. |
+
+**Why none were implemented:** "needs explicit owner sign-off" is the gate the
+stories carry, and gathering evidence is what makes sign-off possible — not a
+substitute for it. Each remains `passes: false`, `status: blocked`, with the
+assessment recorded in a `readiness` field on the story.
