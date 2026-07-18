@@ -120,12 +120,24 @@ func checkConflict(f *fixture.Fixture, table, expr string) (verdict.Finding, boo
 		return verdict.Finding{}, false
 	}
 	return verdict.Finding{
-		Code:        "RS-CONSTRAINT-010",
-		Severity:    verdict.SeverityError,
-		Title:       fmt.Sprintf("CHECK (%s %s %s) on %s.%s conflicts with existing data", col, op, trimNum(k), shortTable(table), col),
-		Detail:      fmt.Sprintf("The column's profiled range [%s, %s] violates CHECK (%s %s %s); adding the constraint will fail on existing rows.", trimNum(lo), trimNum(hi), col, op, trimNum(k)),
-		Evidence:    map[string]any{"range_min": c.Range.Min, "range_max": c.Range.Max, "check": expr},
-		DependsOn:   []string{table + ".rows"},
+		Code:     "RS-CONSTRAINT-010",
+		Severity: verdict.SeverityError,
+		Title:    fmt.Sprintf("CHECK (%s %s %s) on %s.%s conflicts with existing data", col, op, trimNum(k), shortTable(table), col),
+		Detail:   fmt.Sprintf("The column's profiled range [%s, %s] violates CHECK (%s %s %s); adding the constraint will fail on existing rows.", trimNum(lo), trimNum(hi), col, op, trimNum(k)),
+		Evidence: map[string]any{"range_min": c.Range.Min, "range_max": c.Range.Max, "check": expr},
+		// The conclusion rests on the profiled RANGE, not on the row count. It
+		// used to declare `<table>.rows`, which is a fact this finding never
+		// reads — false provenance in a DSSE-signed document, and it borrowed
+		// that fact's confidence for a claim it does not support.
+		//
+		// `range` has no case in verdict.factConfidence, so this path resolves to
+		// `absent` — which is the honest answer, because fixture.Range carries no
+		// confidence field at all (RFC §6.1: Min/Max/Mean only). Absent ranks
+		// below every named level, so it can never license a PASS. It does not
+		// weaken THIS finding: it is severity error → want FAIL, and Cap leaves
+		// FAIL untouched. Whether Range should carry a confidence is an RFC-level
+		// question, recorded as D-010 rather than patched in the engine.
+		DependsOn:   []string{table + "." + col + ".range"},
 		Remediation: remediation("RS-CONSTRAINT-010"),
 		Explain:     "rowshape explain RS-CONSTRAINT-010",
 	}, true

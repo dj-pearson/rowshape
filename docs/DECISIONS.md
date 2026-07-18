@@ -217,3 +217,41 @@ the three-step rewrite enforces NOT NULL via a **validated `CHECK`**, not a fina
 `SET NOT NULL`, because rowshape correctly cannot certify `SET NOT NULL` on a
 column absent from the fixture (it caps to WARN). This is the tool being more
 honest than the PRD shorthand; the validated CHECK is the equivalent it can prove.
+
+---
+
+## D-010 — `range` carries no confidence, so findings resting on it declare `absent` (CR-T11)
+
+**Status:** open — needs an owner/RFC decision. The code change is already made
+and is safe either way; this records the question the change exposed.
+
+`rsconstraint.checkConflict` (RS-CONSTRAINT-010) concludes from a column's
+profiled **range** that a `CHECK` will fail on existing rows. It used to declare
+`DependsOn: [<table>.rows]` — a fact it never reads. That is false provenance in
+a signed document, and it borrowed the row count's confidence for a claim the row
+count does not support.
+
+Fixed to declare `<table>.<column>.range`. That path has no case in
+`verdict.factConfidence`, so it resolves to `absent`.
+
+**Why `absent` is the correct reading, not a gap to paper over:** `fixture.Range`
+is `{Min, Max, Mean}` (RFC §6.1) with **no confidence field**. There is genuinely
+nothing to report. `absent` ranks below every named level (RFC §7.4), so a finding
+resting on a range can never license a PASS — which is right, since a range read
+from `pg_stats` is not a proven bound. It does not weaken RS-CONSTRAINT-010
+itself: that finding is severity `error` → wants FAIL, and capping leaves FAIL
+untouched.
+
+**The open question:** should `Range` carry a `confidence` (and `via`) like every
+other fact in the format?
+
+| Option | Consequence |
+|---|---|
+| **A. Leave it** (status quo) | Range-based findings always read `absent`. Correct and safe, but a range proven by a full scan is indistinguishable from one guessed by the planner. |
+| **B. Add `confidence`/`via` to `Range`** | Additive, RFC §12-compatible. A scanned range could then certify, and `--exact` (see CR-T28) would have something to upgrade. Requires an RFC revision, a schema bump, an emitter change, and a `factConfidence` case. |
+
+**Recommendation: B**, but as its own RFC change with the fixture-spec version
+bump, not folded into a code-review remediation story. Every other fact in the
+format carries its confidence; `Range` looks like an omission rather than a
+decision, and option A permanently caps an entire finding class at WARN-or-worse
+regardless of how well the data was measured.

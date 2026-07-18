@@ -136,3 +136,54 @@ func TestParseComparison(t *testing.T) {
 		}
 	}
 }
+
+// --- CR-T11: depends_on must name the fact the conclusion rests on ----------
+//
+// checkConflict concludes from the profiled RANGE that a CHECK will fail, but
+// declared `<table>.rows` — a fact it never reads. In a DSSE-signed document
+// that is a false provenance trail, and it borrowed the row count's confidence
+// for a claim the row count does not support.
+//
+// The honest path (`<table>.<column>.range`) resolves to `absent`, because
+// fixture.Range carries no confidence field at all. See D-010.
+func TestCheckConflictDependsOnTheRangeFact(t *testing.T) {
+	f, err := fixture.Parse([]byte(`rowshape_fixture: "1"
+meta: {id: t, engine: {name: postgres, version: "16"}}
+tables:
+  public.orders:
+    rows: {value: 1000000, confidence: exact}
+    columns:
+      amount: {type: bigint, nullable: false, range: {min: -50, max: 9000}}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got *verdict.Finding
+	for _, fnd := range (rsConstraint{}).Analyze(f, plainCapture(
+		"ALTER TABLE public.orders ADD CONSTRAINT amount_positive CHECK (amount > 0);")) {
+		if fnd.Code == "RS-CONSTRAINT-010" {
+			got = &fnd
+		}
+	}
+	if got == nil {
+		t.Fatal("expected RS-CONSTRAINT-010: range [-50, 9000] violates CHECK (amount > 0)")
+	}
+
+	want := "public.orders.amount.range"
+	if len(got.DependsOn) != 1 || got.DependsOn[0] != want {
+		t.Errorf("depends_on = %v, want [%s] — the finding reads the range, not the row count",
+			got.DependsOn, want)
+	}
+	for _, d := range got.DependsOn {
+		if strings.HasSuffix(d, ".rows") {
+			t.Errorf("depends_on still cites %q, a fact this finding never reads", d)
+		}
+	}
+	// Declining to certify must not weaken the detected failure: an error wants
+	// FAIL, and capping leaves FAIL untouched.
+	if got.Severity != verdict.SeverityError {
+		t.Errorf("severity = %q, want error — a proven range conflict is still a definite failure",
+			got.Severity)
+	}
+}

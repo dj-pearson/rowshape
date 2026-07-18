@@ -1587,9 +1587,10 @@
             "docs/DECISIONS.md"
           ],
           "type": "code",
-          "passes": false,
-          "status": "todo",
-          "priority": 11
+          "passes": true,
+          "status": "done",
+          "priority": 11,
+          "note": "Closed. checkConflict now declares `<table>.<column>.range` instead of `<table>.rows` — the fact it actually reads.\n\nWHAT THE FIX EXPOSED, and why it is recorded as a decision rather than patched: that path has no case in verdict.factConfidence, so it resolves to `absent`. That is not a gap to paper over — fixture.Range is {Min, Max, Mean} with NO confidence field at all (RFC §6.1), so there is genuinely nothing to report. Declaring `rows` was borrowing a confidence from a fact the conclusion never touches, which is precisely the wrong answer for a DSSE-signed document.\n\n`absent` ranks below every named level, so a range-based finding can never license a PASS — correct, since a range read from pg_stats is not a proven bound. It does NOT weaken this finding: severity error → want FAIL, and Cap leaves FAIL untouched. Verified by test rather than assumed.\n\nRECORDED AS D-010 in docs/DECISIONS.md with two options and a recommendation: leave Range confidence-less (safe, but a scanned range stays indistinguishable from a planner guess, permanently capping this finding class), or add confidence/via to Range as an additive RFC §12 change (recommended, but as its own RFC revision with a schema bump — not folded into a code-review story). Every other fact in the format carries its confidence, so Range looks like an omission rather than a decision. This also interacts with CR-T28: --exact would have something to upgrade.\n\nMutation-tested: restoring `<table>.rows` fails on both the path assertion and the \"never cites a fact it does not read\" assertion.\n\nVerified: gofmt/vet clean, golangci-lint 0 issues, internal + cmd + corpus + tools green against live PG 18."
         },
         {
           "id": "CR-T12",
