@@ -182,3 +182,48 @@ func nonEmptyLines(s string) []string {
 	}
 	return out
 }
+
+// --- CR-T26: what cell() escapes, and what it deliberately does not --------
+//
+// The story asked for backticks and inline markdown to be escaped. Investigated
+// and declined (D-013): cell() is applied to Code, Severity, Estimate and
+// Remediation — none free-form user text — and the catalog's Remediation strings
+// contain backticks ON PURPOSE so commands render as inline code in the PR
+// summary. Escaping them would show reviewers literal backslashes and protect
+// against nothing.
+//
+// This test pins BOTH halves of that decision, so neither can be changed by
+// accident: structure-breaking characters are escaped, authored markdown is not.
+func TestCellEscapesStructureButPreservesAuthoredMarkdown(t *testing.T) {
+	cases := []struct {
+		name, in, want string
+	}{
+		// Structure: these would break the table row itself.
+		{"pipe is escaped", "a|b", `a\|b`},
+		{"newline becomes a space", "a\nb", "a b"},
+		{"crlf becomes a space", "a\r\nb", "a b"},
+		{"empty renders as a dash", "", "—"},
+
+		// Rendering: authored markdown must survive verbatim. The catalog writes
+		// these deliberately; see internal/findings/registry.go.
+		{"authored backticks survive", "Run `rowshape pull --exact` first.", "Run `rowshape pull --exact` first."},
+		{"snake_case is left alone", "public.users.user_id", "public.users.user_id"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cell(tc.in); got != tc.want {
+				t.Errorf("cell(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSummaryRendersRemediationCodeSpans is the regression this nearly caused:
+// escaping backticks made the summary print `\`rowshape pull --exact\“ to
+// reviewers instead of an inline code span.
+func TestSummaryRendersRemediationCodeSpans(t *testing.T) {
+	got := cell("Run `rowshape pull --exact` to prove uniqueness.")
+	if strings.Contains(got, `\`) {
+		t.Errorf("remediation must not gain backslashes; a reviewer would see them literally: %q", got)
+	}
+}

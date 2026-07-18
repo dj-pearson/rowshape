@@ -359,3 +359,45 @@ the PG 11 boundary, D-006). That is not duplication of the estimate gate.
 
 **Verified:** no emitted verdict changed — the full corpus is green against a
 live PG, and `golangci-lint`'s `unused` check is clean.
+
+---
+
+## D-013 — PR-summary cells escape structure, not authored Markdown (CR-T26)
+
+**Status:** decided. CR-T26's request to escape backticks was **investigated and
+declined**, with the reasoning recorded here rather than the story closed by
+silence (phase-cr definition of done).
+
+CR-T26 asked for `cell()` to escape backticks and other inline Markdown in the
+PR-summary table. Implementing it **broke an existing test**, and the test was
+right.
+
+**What `cell()` actually receives.** It is applied to exactly four values:
+`Code`, `Severity`, `Estimate` and `Remediation`. The first three are
+rowshape-controlled enums or codes. None of the four is free-form user text —
+the finding `Title` and `Detail`, which do interpolate identifiers from the
+user's migration, are **not** rendered through the summary table at all.
+
+**Why escaping backticks is actively wrong.** The `Remediation` strings in the
+finding catalog contain backticks **on purpose**, so commands render as inline
+code in the PR summary — e.g. ``Run `rowshape pull --exact` to prove
+uniqueness.`` Escaping them makes a reviewer see literal `\`` backslashes. That
+is a regression in the surface P4-T2 makes the primary reviewer-facing output,
+in exchange for protecting against nothing.
+
+**What is escaped, and why that is the right line:** a literal `|` and newlines,
+because those break the table *structurally* — a row splits or the table ends.
+Inline constructs change *formatting*, and here the formatting they change is
+formatting rowshape authored deliberately.
+
+**Residual risk, accepted:** an unbalanced backtick reaching a cell through an
+identifier interpolated into a remediation (CR-T5's partial-index query is the
+one construction that does this) would open a code span. Postgres identifiers
+require double-quoting to contain a backtick, so this needs a deliberately
+pathological table name, and the consequence is a mis-rendered cell in a summary
+— not a wrong verdict, and not an injection vector (GitHub sanitizes raw HTML,
+as the original review noted).
+
+`TestCellEscapesStructureButPreservesAuthoredMarkdown` pins **both** halves so
+neither can be changed by accident, and `TestSummaryRendersRemediationCodeSpans`
+guards the specific regression this nearly shipped.

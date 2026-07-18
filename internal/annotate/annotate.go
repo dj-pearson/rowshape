@@ -132,6 +132,15 @@ func shortDigest(d string) string {
 
 // cell renders a value into a Markdown table cell: newlines become spaces and a
 // literal pipe is escaped, so a multi-line remediation cannot break the table.
+//
+// CR-T26 asked for backticks and other inline markdown to be escaped too. That
+// was investigated and DELIBERATELY NOT DONE — see D-013. In short: cell() is
+// applied to Code, Severity, Estimate and Remediation, none of which is
+// free-form user text, and the Remediation strings in the finding catalog
+// contain backticks ON PURPOSE so commands render as inline code in the PR
+// summary. Escaping them would print literal backslashes to reviewers and
+// protect against nothing. Only the two structure-breaking characters are
+// escaped, which is what the table actually needs.
 func cell(s string) string {
 	if s == "" {
 		return "—"

@@ -2031,9 +2031,10 @@
             "internal/annotate/annotate_test.go"
           ],
           "type": "code",
-          "passes": false,
-          "status": "todo",
-          "priority": 26
+          "passes": true,
+          "status": "done",
+          "priority": 26,
+          "note": "DECLINED IN PART, with the reasoning recorded as D-013 rather than the story closed by silence (phase-cr DoD). The structural escaping was already correct; the requested inline-markdown escaping was implemented, found to be wrong, and reverted.\n\nWHAT HAPPENED: I implemented the AC as written — escaping backticks, asterisks, underscores and angle brackets — and it BROKE AN EXISTING TEST, TestSummaryListsEveryFinding, which asserts the summary contains \"Run `rowshape pull --exact`\". The test was right and the AC was wrong.\n\nWHY: cell() is applied to exactly four values — Code, Severity, Estimate, Remediation. The first three are rowshape-controlled enums. None of the four is free-form user text; Title and Detail, which DO interpolate identifiers from the user's migration, are not rendered through the summary table at all. And the catalog's Remediation strings contain backticks ON PURPOSE so commands render as inline code in the PR summary. Escaping them shows reviewers literal backslashes in the surface P4-T2 makes the primary reviewer-facing output — a real regression in exchange for protecting against nothing.\n\nThe line that survives scrutiny: escape what breaks the table STRUCTURALLY (a literal pipe, newlines — both already handled), not what changes FORMATTING, because here the formatting is formatting rowshape authored deliberately.\n\nRESIDUAL RISK, accepted and written down: an unbalanced backtick could still reach a cell via an identifier interpolated into a remediation (CR-T5's partial-index query is the one construction that does this). A Postgres identifier needs double-quoting to contain a backtick, so it takes a deliberately pathological table name, and the consequence is one mis-rendered cell — not a wrong verdict, and not an injection vector, as the review itself noted.\n\nTESTS pin BOTH halves so neither can drift: structure-breaking characters are escaped, authored markdown survives verbatim. Plus TestSummaryRendersRemediationCodeSpans, which guards the specific regression this nearly shipped.\n\nThis is the second AC in the phase found to be wrong against the correct implementation (CR-T12's premise was the first), and both were only caught by actually running the change rather than reasoning about it.\n\nVerified: gofmt/vet clean, golangci-lint 0 issues, annotate + internal + cmd + corpus green."
         },
         {
           "id": "CR-T27",
