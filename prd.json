@@ -2589,7 +2589,7 @@
         "id": "M0",
         "name": "Foundation reserved, spec public, skeleton builds",
         "target_week": "1",
-        "phase": "phase-0",
+        "phases": ["phase-0"],
         "definition": "Namespaces + Go module path fixed; rowshape/fixture-spec public (RFC-0001 v1, MIT); single binary with stub subcommands; goreleaser signed + SBOM on five platforms; CI green.",
         "source": "PRD §14 (phase 0)"
       },
@@ -2597,24 +2597,24 @@
         "id": "M1",
         "name": "pull + hydrate reproduce a corpus pathology (Week-6 gate)",
         "target_week": "6",
-        "phase": "phase-1 / phase-1b",
+        "phases": ["phase-1", "phase-1b"],
         "definition": "A read-only fast-mode `pull` emits a digest-stable <100KB fixture with confidence on every fact; `hydrate --seed N` deterministically reconstructs a disposable Postgres reproducing a known corpus pathology. The confidence engine (HLL, uniqueness probes, auto-escalation, inspect --leaks) is in.",
         "kill_checkpoint": "Week 6 (PRD §14.1): if pull + hydrate don't reproduce a known corpus pathology, the fixture premise is wrong — stop before building validate.",
         "source": "PRD §14 (phases 1, 1b), §14.1"
       },
       {
         "id": "M2",
-        "name": "validate + verdict contract green across the PG matrix",
+        "name": "validate + verdict contract green; version-conditional model verified at its boundary",
         "target_week": "10",
-        "phase": "phase-2",
-        "definition": "Corpus + capping tests land before the findings; one Verdict struct with two marshalers (DSSE-signable); `validate` returns RS-LOCK / RS-DATA / RS-CONSTRAINT / RS-INDEX with bucketed, version-conditional estimates and mandatory remediation, capped by confidence (RFC §7.4), across PG 11-17.",
+        "phases": ["phase-2"],
+        "definition": "Corpus + capping tests land before the findings; one Verdict struct with two marshalers (DSSE-signable); `validate` returns RS-LOCK / RS-DATA / RS-CONSTRAINT / RS-INDEX with bucketed, version-conditional estimates and mandatory remediation, capped by confidence (RFC §7.4). NOTE (D-015): the PG 11-17 CI matrix has never run — it needs the org from P0-T1. What IS verified is the version-conditional model at its only real boundary (PG 10 vs 11+, D-006/D-007), pinned by TestVersionConditionalBoundary against a live server. Real engine behavior on majors other than the one tested locally remains unobserved.",
         "source": "PRD §14 (phase 2), §10, §12"
       },
       {
         "id": "M3",
         "name": "MCP server + init --agent wire the loop into the agent's turn",
         "target_week": "11",
-        "phase": "phase-3",
+        "phases": ["phase-3"],
         "definition": "`rowshape mcp` serves the four thin tools; `rowshape init --agent` writes MCP config, the versioned agent rule, and the pre-commit backstop so an agent reaches for rowshape unprompted.",
         "source": "PRD §14 (phase 3), §8.2, §8.3"
       },
@@ -2622,7 +2622,7 @@
         "id": "M4",
         "name": "Launch: agent-loop demo closes with no human turn (Week-12 gate)",
         "target_week": "12",
-        "phase": "phase-4",
+        "phases": ["phase-4"],
         "definition": "GitHub Action runs `validate` in CI rendering the shared Verdict; docs site live on Cloudflare Pages with the narrow-and-true privacy claim; the agent-loop demo runs end-to-end (naive migration -> FAIL RS-LOCK-001 -> three-step backfill -> PASS) with no human turn, guarded by a CI regression job. This is v1-done and the launch.",
         "kill_checkpoint": "Week 12 (PRD §14.1): if the demo doesn't work end-to-end without a human turn, the wedge isn't real — reassess.",
         "source": "PRD §13, §14 (phase 4), §14.1"
@@ -2631,7 +2631,7 @@
         "id": "M5",
         "name": "Post-launch traction gate (Week-20) unlocks cloud",
         "target_week": "20",
-        "phase": "phase-5",
+        "phases": ["phase-5"],
         "definition": "Findings breadth (RS-PERF, RS-REVERSE), version-matrix depth, and MySQL proceed ungated. The cloud (registry, audit, drift, attestation, billing) is built only if the traction gate passes; `validate` is never gated.",
         "kill_checkpoint": "Week 20 (PRD §14.1): zero unsolicited issues/PRs is information, not a reason to push harder — cloud does not start without organic pull-through.",
         "source": "PRD §14 (phase 5), §14.1, §8.4"
@@ -2641,6 +2641,7 @@
   "open_decisions": [
     {
       "id": "OQ-PGSS",
+      "status_note": "DECIDED BY OMISSION, NOT BY CHOICE — needs an explicit call. The recorded leaning is 'capture, don't act', but pg_stat_statements appears NOWHERE in the codebase, so the opposite was shipped without anyone deciding it. Its resolve_by (phase-1 / P1-T1) has passed. Either accept 'omit entirely' deliberately, or implement the leaning — but the fixture schema is now stable, which is exactly the retrofit cost the question warned about.",
       "question": "Capture pg_stat_statements in v1 fixtures without acting on it, or omit it entirely?",
       "leaning": "Capture, don't act (schema-additive; decide early because retrofitting the fixture schema is costly).",
       "resolve_by": "phase-1 (fixture schema / P1-T1)",
@@ -2648,6 +2649,7 @@
     },
     {
       "id": "OQ-TARGET",
+      "status_note": "RESOLVED (D-005, verified in code): the docker CLI is driven directly (internal/target/container.go, 14 call sites); testcontainers-go was NOT adopted and survives only as a named swap-in in a comment. Note internal/target/testcontainers.go was listed as a P1-T9 artifact and does not exist — one of the 13 stale paths the CR-loop artifact audit removed.",
       "question": "Disposable target: testcontainers-go (needs a Docker daemon, awkward on a cold agent machine) or embedded/pg_tmp (fewer prerequisites, more fragile)?",
       "leaning": "Unresolved — decides how frictionless the agent loop feels on first run; couples to the exit-3 tool-error path (P2-T17).",
       "resolve_by": "phase-1 (P1-T9)",
@@ -2655,6 +2657,7 @@
     },
     {
       "id": "OQ-ESCALATION-CEILING",
+      "status_note": "RESOLVED (verified in code): internal/profile/escalation.go declares `DefaultMaxEscalationRows = 50_000_000` — the soft cap + WARN shape, shipped by P1b-T4.",
       "question": "Does auto-escalation need a cost ceiling, and of what shape (--max-escalation-rows, timeout-degrades-to-omit, or prompt)?",
       "leaning": "Soft cap with a WARN naming what was skipped and why (implemented in P1b-T4).",
       "resolve_by": "phase-1b (P1b-T4 — resolved)",
@@ -2662,6 +2665,7 @@
     },
     {
       "id": "OQ-HLL-PRECISION",
+      "status_note": "RESOLVED (verified in code): internal/profile/hll/hll.go declares `const Precision = 14` (2^14 registers, ~16KB, ~1.6% error), matching the recorded leaning.",
       "question": "HyperLogLog precision 14 (~1.6% error, 16KB state) vs 16 (~0.4%, 64KB)? The error rate is published in distinct.error and feeds §7.4 capping.",
       "leaning": "14 — `measured` only needs to beat `estimated`, not approach `exact` (confirm in P1b-T1).",
       "resolve_by": "phase-1b (P1b-T1)",
@@ -2669,6 +2673,7 @@
     },
     {
       "id": "OQ-PARTITIONS",
+      "status_note": "RESOLVED (verified in code): internal/fixture/model.go carries a parent-only `Partitions *Partitions` (RFC §14.2), shipped by P1-T12. No per-partition entries.",
       "question": "Partitioned tables: parent only, or every partition? Partition count and per-partition skew change lock behavior materially.",
       "leaning": "Parent declares partitions: {count, strategy, skew}; no per-partition entries (implemented in P1-T12).",
       "resolve_by": "phase-1 (P1-T12)",

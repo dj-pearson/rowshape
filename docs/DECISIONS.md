@@ -57,7 +57,7 @@ Tracked here so resolutions are recorded where code can cite them.
 | ID | Question (short) | Leaning | Resolve by |
 |----|------------------|---------|-----------|
 | OQ-PGSS | Capture `pg_stat_statements` in v1 fixtures? | Capture, don't act (schema-additive) | phase-1 (P1-T1) |
-| OQ-TARGET | Disposable target: testcontainers-go vs embedded/pg_tmp? | Unresolved; ship testcontainers-go default, keep swap point clean | phase-1 (P1-T9) |
+| OQ-TARGET | Disposable target: testcontainers-go vs embedded/pg_tmp? | **RESOLVED — see D-005: the docker CLI is driven directly; testcontainers-go was not adopted.** (This row previously read "ship testcontainers-go default", contradicting D-005 and the code; corrected by the CR-loop audit, D-018.) | phase-1 (P1-T9) |
 | OQ-ESCALATION-CEILING | Cost ceiling for auto-escalation? | Soft cap + WARN naming what was skipped | phase-1b (P1b-T4) |
 | OQ-HLL-PRECISION | HLL precision 14 vs 16? | 14 (~1.6% err, 16KB) — measured only needs to beat estimated | phase-1b (P1b-T1) |
 | OQ-PARTITIONS | Partitioned tables: parent-only or per-partition? | Parent declares `partitions: {count, strategy, skew}` | phase-1 (P1-T12) |
@@ -574,3 +574,45 @@ false alarms** — a vacuous `-run` pattern that was really a prefix match, an
 "unenforced" invariant that had six tests not naming it, and these four
 citations. Every one was caught by confirming before reporting. The checks that
 survived into `tools/prdaudit` are the ones whose findings held up.
+
+---
+
+## D-018 — `open_decisions` audit: four settled in code, one decided by omission (CR-loop)
+
+**Status:** recorded. Each conclusion is backed by a code reference, not by
+reading the leaning and assuming it happened.
+
+`prd.json.open_decisions` has no field in which a question can be marked
+resolved — entries carry only `id`, `question`, `leaning`, `resolve_by`,
+`source`. So a question settled by shipped code stays indistinguishable from one
+nobody has touched. A `status_note` now records the actual state of each.
+
+| Question | Verified state |
+|---|---|
+| `OQ-TARGET` | **Resolved (D-005).** The docker CLI is driven directly — 14 call sites in `internal/target/container.go`. testcontainers-go was **not** adopted. |
+| `OQ-HLL-PRECISION` | **Resolved.** `const Precision = 14` in `internal/profile/hll/hll.go`. |
+| `OQ-ESCALATION-CEILING` | **Resolved.** `DefaultMaxEscalationRows = 50_000_000` — the soft cap + WARN shape. |
+| `OQ-PARTITIONS` | **Resolved.** Parent-only `Partitions *Partitions` in the fixture model. |
+| `OQ-PGSS` | **Decided by omission — needs an explicit call.** |
+| `OQ-BLOAT` | Genuinely open; defers to MySQL (`P5-T4`, blocked). |
+| `OQ-CORRELATION` | Genuinely open; deferred to v2 by design. |
+
+### Two findings worth acting on
+
+**1. A three-way contradiction on `OQ-TARGET`.** `prd.json` said unresolved;
+D-003's table said *"Unresolved; ship testcontainers-go default"*; **D-005 says
+the opposite and the code agrees with D-005.** D-003's row has been corrected —
+it claimed to *mirror* `open_decisions` and had drifted from the very file it
+mirrors. (`internal/target/testcontainers.go` was also still listed as a `P1-T9`
+artifact and does not exist; the artifact audit removed it.)
+
+**2. `OQ-PGSS` was answered by nobody.** The recorded leaning is *"capture, don't
+act"*, and `pg_stat_statements` appears **nowhere in the codebase** — so the
+opposite shipped without a decision being made. Its `resolve_by` (phase-1,
+`P1-T1`) is long past, and the question itself warned that *"retrofitting the
+fixture schema is costly"* — which is now the situation, since the schema is
+stable and published. **This needs an owner call:** accept "omit entirely"
+deliberately, or implement the leaning and pay the retrofit.
+
+That is the only question in the file where the default that shipped contradicts
+the recorded intent.

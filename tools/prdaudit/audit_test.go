@@ -271,3 +271,61 @@ func TestNoNewOrderingViolations(t *testing.T) {
 		}
 	}
 }
+
+// TestMilestonePhasesResolve: every phase a milestone names must be a real
+// phase. M1 carried the prose string "phase-1 / phase-1b" where every other
+// milestone used an id, so the Week-6 gate milestone could not be linked to the
+// stories that satisfy it — the record existed but was not answerable.
+func TestMilestonePhasesResolve(t *testing.T) {
+	root := filepath.Join("..", "..")
+	raw, err := os.ReadFile(filepath.Join(root, "prd.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Phases []struct {
+			ID    string `json:"id"`
+			Tasks []struct {
+				Passes bool `json:"passes"`
+			} `json:"tasks"`
+		} `json:"phases"`
+		Milestones struct {
+			List []struct {
+				ID     string   `json:"id"`
+				Name   string   `json:"name"`
+				Phases []string `json:"phases"`
+			} `json:"list"`
+		} `json:"milestones"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Milestones.List) == 0 {
+		t.Fatal("no milestones parsed; this audit would pass over nothing")
+	}
+
+	known := map[string]int{} // phase id -> passing story count
+	total := map[string]int{}
+	for _, ph := range doc.Phases {
+		total[ph.ID] = len(ph.Tasks)
+		for _, task := range ph.Tasks {
+			if task.Passes {
+				known[ph.ID]++
+			}
+		}
+	}
+
+	for _, m := range doc.Milestones.List {
+		if len(m.Phases) == 0 {
+			t.Errorf("milestone %s names no phases, so nothing can decide whether it is met", m.ID)
+			continue
+		}
+		for _, p := range m.Phases {
+			if _, ok := total[p]; !ok {
+				t.Errorf("milestone %s references phase %q, which does not exist", m.ID, p)
+				continue
+			}
+			t.Logf("%s -> %s: %d/%d stories passing", m.ID, p, known[p], total[p])
+		}
+	}
+}
