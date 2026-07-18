@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/rowshape/rowshape/internal/fixture"
 )
 
 const exactSchema = "rowshape_p1b_t5"
@@ -119,5 +120,63 @@ func TestExactVsFast(t *testing.T) {
 	}
 	if exactCat.NullFraction == nil || exactCat.NullFraction.Confidence != "exact" {
 		t.Errorf("exact category null_fraction = %+v, want exact", exactCat.NullFraction)
+	}
+}
+
+// --- CR-T28: --exact must upgrade the row count it paid for -----------------
+//
+// Exact mode did a full pass over every table and still left rows at the
+// planner's `estimated`. The user bought minutes-to-hours of scanning and did
+// not get the confidence upgrade it earns — and under INV-CONFIDENCE-CAPPING
+// that upgrade is the difference between a finding that may certify PASS and one
+// capped to WARN.
+//
+// This is the one change in the code-review phase that makes verdicts STRONGER,
+// so these tests check the upgrade is EARNED, not just present.
+
+// TestExactModeUpgradesRowCount: the count must be exact in value as well as in
+// confidence. reltuples happens to be right for a freshly-ANALYZEd table, so a
+// test that only compared the number could pass against the bug; it is the
+// CONFIDENCE that distinguishes them.
+func TestExactModeUpgradesRowCount(t *testing.T) {
+	conn := adminConn(t)
+	seedExact(t, conn)
+
+	f, err := Fast(context.Background(), conn, Options{Schemas: []string{exactSchema}, Exact: true})
+	if err != nil {
+		t.Fatalf("Fast(exact): %v", err)
+	}
+	tbl, ok := f.Tables[exactSchema+".t"]
+	if !ok {
+		t.Fatalf("table missing from fixture; have %v", tableNames(f.Tables))
+	}
+	if tbl.Rows.Confidence != fixture.Exact {
+		t.Errorf("rows confidence = %q, want exact — a full pass was run and paid for",
+			tbl.Rows.Confidence)
+	}
+	if tbl.Rows.Value != 3000 {
+		t.Errorf("rows = %d, want exactly 3000 (the seeded count)", tbl.Rows.Value)
+	}
+}
+
+// TestFastModeLeavesRowCountEstimated is the other half, and the one that
+// actually protects the invariant: fast mode must NOT claim exact. A change that
+// upgraded everywhere would look identical to this fix in the test above.
+func TestFastModeLeavesRowCountEstimated(t *testing.T) {
+	conn := adminConn(t)
+	seedExact(t, conn)
+
+	f, err := Fast(context.Background(), conn, Options{Schemas: []string{exactSchema}})
+	if err != nil {
+		t.Fatalf("Fast(fast): %v", err)
+	}
+	tbl, ok := f.Tables[exactSchema+".t"]
+	if !ok {
+		t.Fatalf("table missing from fixture; have %v", tableNames(f.Tables))
+	}
+	if tbl.Rows.Confidence == fixture.Exact {
+		t.Errorf("fast mode must not claim an exact row count (got %q); only a completed full "+
+			"pass earns it, or capping would certify a PASS from the planner's guess",
+			tbl.Rows.Confidence)
 	}
 }

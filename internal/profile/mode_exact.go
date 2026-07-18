@@ -54,3 +54,27 @@ func (r *reader) exactColumn(ctx context.Context, schema, table string, name str
 	col.Distinct = dist
 	return nil
 }
+
+// exactRowCount counts a table's rows with a full scan, so the fact is `exact`
+// rather than the planner's `estimated` reltuples.
+//
+// CR-T28: exact mode already paid for a full pass over every table but left
+// rows at `estimated`, so the user bought the cost and did not get the
+// confidence upgrade it earns. That upgrade is not cosmetic — under
+// INV-CONFIDENCE-CAPPING it is the difference between a finding that may certify
+// PASS and one capped to WARN, so an exact count is the thing that lets validate
+// say "yes" instead of "probably".
+//
+// This is the one change in the code-review phase that makes verdicts STRONGER,
+// which is why it is a separate explicit COUNT rather than scavenged from
+// exactNullFraction's query: that query runs per COLUMN and only for nullable
+// ones, so a table with no nullable columns would silently never get a count,
+// and a partial pass must never look like a complete one.
+func (r *reader) exactRowCount(ctx context.Context, schema, table string) (int64, error) {
+	from := pgx.Identifier{schema, table}.Sanitize()
+	var n int64
+	if err := r.tx.QueryRow(ctx, "SELECT count(*) FROM "+from).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}

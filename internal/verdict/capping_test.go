@@ -188,3 +188,46 @@ func TestCombine(t *testing.T) {
 		}
 	}
 }
+
+// TestExactRowsUnlockPassEstimatedDoesNot is the CONSEQUENCE of CR-T28, pinned
+// in the capping engine rather than in the profiler.
+//
+// `profile --exact` now records rows at `exact` instead of the planner's
+// `estimated`. That upgrade is only worth paying a full table scan for because
+// of what it unlocks here: exact/measured facts may certify PASS, while
+// estimated/declared/absent are capped to WARN (RFC §7.4). This asserts the two
+// row-count confidences produce DIFFERENT verdicts for the same finding — if
+// they ever produce the same one, either capping has stopped discriminating or
+// --exact has stopped being worth its cost.
+func TestExactRowsUnlockPassEstimatedDoesNot(t *testing.T) {
+	finding := Finding{
+		Code:      "RS-LOCK-001",
+		Severity:  SeverityInfo,
+		Title:     "rewrite is small enough to be safe",
+		DependsOn: []string{"public.users.rows"},
+	}
+
+	verdictFor := func(t *testing.T, conf fixture.Confidence) string {
+		t.Helper()
+		f := &fixture.Fixture{Tables: map[string]fixture.Table{
+			"public.users": {Rows: fixture.Fact[int64]{Value: 1000, Confidence: conf}},
+		}}
+		got, _ := NewEngine(f).Cap(VerdictPass, finding)
+		return got
+	}
+
+	exact := verdictFor(t, fixture.Exact)
+	estimated := verdictFor(t, fixture.Estimated)
+
+	if exact != VerdictPass {
+		t.Errorf("an exact row count must be able to certify PASS, got %s — this is what "+
+			"`profile --exact` buys (CR-T28)", exact)
+	}
+	if estimated != VerdictWarn {
+		t.Errorf("an estimated row count must be capped to WARN, got %s", estimated)
+	}
+	if exact == estimated {
+		t.Error("exact and estimated row counts produced the same verdict; either capping has " +
+			"stopped discriminating or --exact no longer earns anything")
+	}
+}

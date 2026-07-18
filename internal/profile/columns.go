@@ -44,6 +44,22 @@ func (r *reader) profileTable(ctx context.Context, t tableRef, tbl *fixture.Tabl
 	from, _ := sampleClause(t.schema, t.name, t.reltuples)
 	if r.exact {
 		from = pgx.Identifier{t.schema, t.name}.Sanitize()
+
+		// Exact mode scans the whole table anyway, so count it and record the row
+		// count at `exact` instead of leaving the planner's estimate in place
+		// (CR-T28). The upgrade happens ONLY here, on the full-pass branch: a
+		// sampled, cost-capped or aborted pass must never produce `exact`, because
+		// an exact row count is what lets a finding certify PASS.
+		//
+		// If the count fails the error propagates: silently keeping `estimated`
+		// would be safe for the verdict but would hide a broken exact pass the
+		// user is paying minutes-to-hours for.
+		n, err := r.exactRowCount(ctx, t.schema, t.name)
+		if err != nil {
+			return err
+		}
+		tbl.Rows = fixture.Fact[int64]{Value: n, Confidence: fixture.Exact}
+		rows = n
 	}
 
 	for name, col := range tbl.Columns {
