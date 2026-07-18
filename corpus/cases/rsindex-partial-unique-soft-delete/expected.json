@@ -1,0 +1,8 @@
+{
+  "description": "A PARTIAL unique index (soft-delete pattern) over a column with proven whole-table duplicates must NOT be a confident FAIL — the duplicates may live entirely in the rows the predicate excludes. rowshape declines to decide: RS-INDEX-010 WARN, with a remediation naming a check over the indexed set. Guards CR-T5; before it this was an error/FAIL. RS-INDEX-001 is declared alongside it because the statement is also a non-concurrent CREATE INDEX, which locks out writes for the build — a second, independent hazard in the same line of SQL.",
+  "verdict": "WARN",
+  "findings": [
+    {"code": "RS-INDEX", "severity": "warn"},
+    {"code": "RS-INDEX", "severity": "warn"}
+  ]
+}

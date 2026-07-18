@@ -31,17 +31,17 @@ func (rsIndex) Analyze(f *fixture.Fixture, c *validate.Capture) []verdict.Findin
 		clean := collapseSpaces(stripSQLComments(st.SQL))
 		upper := strings.ToUpper(clean)
 
-		if unique, concurrent, table, cols, ok := parseCreateIndex(clean, upper); ok {
+		if ix, ok := parseCreateIndex(clean, upper); ok {
 			// Resolve at the caller (RFC §5), as every other analyzer does. Without
 			// it `CREATE INDEX ON orders (...)` missed the fixture key
 			// `public.orders`, and the zero-value table meant rows=0 — reported as
 			// an `instant` build for what may be a huge table.
-			table = resolveTable(f, table)
-			if !concurrent {
-				out = append(out, nonConcurrentFinding(f, c, i, table, hasVersion))
+			ix.table = resolveTable(f, ix.table)
+			if !ix.concurrent {
+				out = append(out, nonConcurrentFinding(f, c, i, ix.table, hasVersion))
 			}
-			if unique {
-				out = append(out, indexUniqueFinding(f, table, cols))
+			if ix.unique {
+				out = append(out, indexUniqueFinding(f, ix))
 			}
 			continue
 		}
@@ -81,8 +81,48 @@ func nonConcurrentFinding(f *fixture.Fixture, c *validate.Capture, i int, table 
 
 // indexUniqueFinding certifies (or refuses) a CREATE UNIQUE INDEX by the column's
 // profiled uniqueness, reusing the shared uniqueness classification.
-func indexUniqueFinding(f *fixture.Fixture, table string, cols []string) verdict.Finding {
+func indexUniqueFinding(f *fixture.Fixture, ix createIndexStmt) verdict.Finding {
+	table, cols := ix.table, ix.cols
 	dep, target := uniqueDependency(table, cols)
+
+	// A partial or expression index is not described by the column's uniqueness
+	// fact, so neither branch below may be taken: the fixture cannot prove the
+	// build fails OR that it succeeds. Emit WARN explicitly rather than routing a
+	// PASS through capping — capping would read the whole-column fact, find it
+	// `exact`, and certify a PASS for a subset nobody measured.
+	if ix.undecidable() {
+		scope, why := "partial", fmt.Sprintf("its predicate (WHERE %s) selects only some rows", ix.predicate)
+		if ix.expression {
+			scope, why = "expression", "it indexes an expression, not the column itself"
+		}
+		return verdict.Finding{
+			Code:     "RS-INDEX-010",
+			Severity: verdict.SeverityWarn,
+			Title:    fmt.Sprintf("Uniqueness of this %s unique index on %s cannot be decided from the fixture", scope, shortTable(table)),
+			Detail: fmt.Sprintf(
+				"The fixture records uniqueness for %s as a whole, but this index is %s, so %s. "+
+					"A duplicate in the column does not mean the index fails (the duplicates may all be in rows the "+
+					"index excludes), and a unique column does not mean it succeeds. rowshape declines to guess in "+
+					"either direction (INV-UNIQUENESS).", target, scope, why),
+			Evidence: map[string]any{"partial_predicate": ix.predicate, "expression_index": ix.expression},
+			// Deliberately NOT the whole-column `unique` fact: that fact does not
+			// support this conclusion, and citing it would put a false provenance
+			// trail into a signed document.
+			DependsOn: nil,
+			// The catalog's text is included VERBATIM and then extended with the
+			// check for this specific index. `rowshape explain RS-INDEX-010` and
+			// the finding must not drift apart (they share one source, pinned by
+			// cmd.TestExplainCoversEmittedCodes), but the catalog cannot know the
+			// predicate — so the general advice is quoted and the specific query
+			// appended, rather than replaced.
+			Remediation: remediation("RS-INDEX-010") + fmt.Sprintf(
+				" For this partial/expression index, check the INDEXED SET rather than the whole column: "+
+					"SELECT %s FROM %s%s GROUP BY %s HAVING count(*) > 1 — if it returns no rows, the index will build.",
+				strings.Join(cols, ", "), table, partialWhere(ix.predicate), strings.Join(cols, ", ")),
+			Explain: "rowshape explain RS-INDEX-010",
+		}
+	}
+
 	if uniquenessState(f, table, cols) == uniqViolated {
 		return verdict.Finding{
 			Code:        "RS-INDEX-010",
@@ -104,6 +144,15 @@ func indexUniqueFinding(f *fixture.Fixture, table string, cols []string) verdict
 		Remediation: remediation("RS-INDEX-010"),
 		Explain:     "rowshape explain RS-INDEX-010",
 	}
+}
+
+// partialWhere renders the predicate back into the verification query, or
+// nothing when the index covers every row.
+func partialWhere(predicate string) string {
+	if predicate == "" {
+		return ""
+	}
+	return " WHERE " + predicate
 }
 
 // reindexFinding flags a non-concurrent REINDEX and buckets its duration from the
@@ -158,28 +207,75 @@ func findIndex(f *fixture.Fixture, name string, isTable bool) (string, fixture.I
 	return "", fixture.Index{}, false
 }
 
+// createIndexStmt is a parsed CREATE INDEX. It is a struct rather than a long
+// return list because CR-T5 added two more things the analyzer must know about
+// (the partial predicate and whether the target is an expression), and seven
+// positional results are a bug waiting to happen.
+type createIndexStmt struct {
+	unique     bool
+	concurrent bool
+	table      string
+	cols       []string
+	// predicate is the WHERE clause of a PARTIAL index, empty when the index
+	// covers every row.
+	predicate string
+	// expression is true when the index target is an expression such as
+	// lower(email) rather than a plain column list.
+	expression bool
+}
+
+// undecidable reports whether the fixture's column-level facts can say anything
+// about THIS index's uniqueness.
+//
+// They cannot for a partial or expression index, and the distinction is not
+// pedantic. `unique: {value: false, confidence: exact}` is a proven statement
+// about the whole column; a partial index constrains only the rows its predicate
+// selects. The textbook case is soft deletes — `CREATE UNIQUE INDEX ... WHERE
+// deleted_at IS NULL` over a column whose duplicates live entirely in the
+// soft-deleted rows. That index builds fine, and rowshape used to call it a
+// confident FAIL. An expression index is the same problem one step removed: a
+// fact about `email` says nothing about `lower(email)`.
+func (ix createIndexStmt) undecidable() bool {
+	return ix.predicate != "" || ix.expression
+}
+
 // parseCreateIndex recognizes CREATE [UNIQUE] INDEX [CONCURRENTLY] name ON table
-// (cols), returning the flags, table, and columns.
-func parseCreateIndex(clean, upper string) (unique, concurrent bool, table string, cols []string, ok bool) {
+// (cols) [WHERE predicate].
+func parseCreateIndex(clean, upper string) (createIndexStmt, bool) {
+	var ix createIndexStmt
 	if !strings.HasPrefix(upper, "CREATE") || (!strings.Contains(upper, "CREATE INDEX") && !strings.Contains(upper, "CREATE UNIQUE INDEX")) {
-		return false, false, "", nil, false
+		return ix, false
 	}
-	unique = strings.Contains(upper, "UNIQUE INDEX")
-	concurrent = strings.Contains(upper, "CONCURRENTLY")
+	ix.unique = strings.Contains(upper, "UNIQUE INDEX")
+	ix.concurrent = strings.Contains(upper, "CONCURRENTLY")
 	i := strings.Index(upper, " ON ")
 	if i < 0 {
-		return false, false, "", nil, false
+		return ix, false
 	}
 	after := strings.Fields(clean[i+4:])
 	if len(after) == 0 {
-		return false, false, "", nil, false
+		return ix, false
 	}
-	table = strings.Trim(strings.TrimRight(after[0], "("), `"`)
-	cols = colsAfter(clean[i:], "ON")
-	if table == "" || len(cols) == 0 {
-		return false, false, "", nil, false
+	ix.table = strings.Trim(strings.TrimRight(after[0], "("), `"`)
+	ix.cols = colsAfter(clean[i:], "ON")
+	if ix.table == "" || len(ix.cols) == 0 {
+		return ix, false
 	}
-	return unique, concurrent, table, cols, true
+
+	// A WHERE clause in a CREATE INDEX can only be the partial-index predicate.
+	if w := strings.Index(upper, " WHERE "); w >= 0 {
+		ix.predicate = strings.TrimSuffix(strings.TrimSpace(clean[w+7:]), ";")
+	}
+	// colsAfter splits on the FIRST ')', so an expression target such as
+	// lower(email) arrives as the fragment "lower(email" — an unbalanced paren is
+	// the tell, and it is enough to know we must not answer from column facts.
+	for _, c := range ix.cols {
+		if strings.ContainsAny(c, "()") {
+			ix.expression = true
+			break
+		}
+	}
+	return ix, true
 }
 
 // parseReindex recognizes REINDEX [INDEX|TABLE|...] [CONCURRENTLY] name.

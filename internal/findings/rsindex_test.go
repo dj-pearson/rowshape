@@ -281,3 +281,156 @@ func TestUnqualifiedReindexTableResolves(t *testing.T) {
 		t.Error("REINDEX INDEX <index-name> must still be found by index name")
 	}
 }
+
+// --- CR-T5: partial and expression unique indexes ---------------------------
+//
+// parseCreateIndex parsed neither WHERE predicates nor expression targets, so a
+// partial unique index was judged against the WHOLE column's uniqueness fact.
+// The soft-delete pattern is the common case and it produced a confident, wrong
+// FAIL: duplicates that live entirely in soft-deleted rows do not stop
+// `CREATE UNIQUE INDEX ... WHERE deleted_at IS NULL` from building.
+//
+// A wrong FAIL is less dangerous than a wrong PASS, but it is still the tool
+// being confidently incorrect, and it is the kind of false positive that gets a
+// check deleted from a pipeline — after which the true positives are gone too.
+
+// softDeleteFixture: `email` has PROVEN duplicates across the whole table, which
+// is exactly the fact that used to force a FAIL.
+func softDeleteFixture(t *testing.T) *fixture.Fixture {
+	t.Helper()
+	f, err := fixture.Parse([]byte(`rowshape_fixture: "1"
+meta: {id: t, engine: {name: postgres, version: "16"}}
+tables:
+  public.users:
+    rows: {value: 2000000, confidence: exact}
+    columns:
+      email: {type: text, nullable: false, unique: {value: false, confidence: exact, via: probe}}
+      deleted_at: {type: timestamptz, nullable: true}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+func TestPartialUniqueIndexIsNotAConfidentFail(t *testing.T) {
+	f := softDeleteFixture(t)
+	fnd := indexFindingByCode(f,
+		indexCapture("CREATE UNIQUE INDEX ix ON public.users (email) WHERE deleted_at IS NULL"),
+		"RS-INDEX-010")
+
+	if fnd == nil {
+		t.Fatal("expected an RS-INDEX-010 finding")
+	}
+	if fnd.Severity == verdict.SeverityError {
+		t.Errorf("a partial unique index must NOT be a confident FAIL: the column's duplicates may "+
+			"live entirely in the rows the predicate excludes. Got severity %q, title %q",
+			fnd.Severity, fnd.Title)
+	}
+	if fnd.Severity != verdict.SeverityWarn {
+		t.Errorf("severity = %q, want warn (undecidable, so neither FAIL nor PASS)", fnd.Severity)
+	}
+	// It must not cite the whole-column fact it deliberately declines to use.
+	if len(fnd.DependsOn) != 0 {
+		t.Errorf("depends_on = %v, want none: the whole-column unique fact does not support this "+
+			"conclusion and citing it would be false provenance", fnd.DependsOn)
+	}
+	// The remediation must tell the user how to settle it themselves.
+	if !strings.Contains(fnd.Remediation, "GROUP BY") || !strings.Contains(fnd.Remediation, "deleted_at IS NULL") {
+		t.Errorf("remediation must name a check over the INDEXED SET (predicate included), got %q",
+			fnd.Remediation)
+	}
+}
+
+// TestPartialUniqueIndexCannotPass: the other half. Declining to FAIL must not
+// become declining to warn — a partial index over a column that IS provably
+// unique still cannot be certified, because the fixture measured the column and
+// not the subset.
+func TestPartialUniqueIndexCannotPass(t *testing.T) {
+	f, err := fixture.Parse([]byte(`rowshape_fixture: "1"
+meta: {id: t, engine: {name: postgres, version: "16"}}
+tables:
+  public.users:
+    rows: {value: 2000000, confidence: exact}
+    columns:
+      email: {type: text, nullable: false, unique: {value: true, confidence: exact, via: probe}}
+      deleted_at: {type: timestamptz, nullable: true}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fnd := indexFindingByCode(f,
+		indexCapture("CREATE UNIQUE INDEX ix ON public.users (email) WHERE deleted_at IS NULL"),
+		"RS-INDEX-010")
+	if fnd == nil {
+		t.Fatal("expected an RS-INDEX-010 finding")
+	}
+	if fnd.Severity != verdict.SeverityWarn {
+		t.Errorf("severity = %q, want warn: a proven-unique COLUMN does not certify a PARTIAL index",
+			fnd.Severity)
+	}
+}
+
+// TestExpressionUniqueIndexIsUndecidable: a fact about `email` says nothing
+// about `lower(email)`.
+func TestExpressionUniqueIndexIsUndecidable(t *testing.T) {
+	f := softDeleteFixture(t)
+	fnd := indexFindingByCode(f,
+		indexCapture("CREATE UNIQUE INDEX ix ON public.users (lower(email))"),
+		"RS-INDEX-010")
+	if fnd == nil {
+		t.Fatal("expected an RS-INDEX-010 finding")
+	}
+	if fnd.Severity == verdict.SeverityError {
+		t.Errorf("an expression index must not be judged from the bare column's fact, got %q / %q",
+			fnd.Severity, fnd.Title)
+	}
+}
+
+// TestPlainUniqueIndexStillFails guards the true positive the fix must not eat:
+// a plain unique index over proven duplicates is still a definite FAIL.
+func TestPlainUniqueIndexStillFails(t *testing.T) {
+	f := softDeleteFixture(t)
+	fnd := indexFindingByCode(f,
+		indexCapture("CREATE UNIQUE INDEX ix ON public.users (email)"),
+		"RS-INDEX-010")
+	if fnd == nil {
+		t.Fatal("expected an RS-INDEX-010 finding")
+	}
+	if fnd.Severity != verdict.SeverityError {
+		t.Errorf("a NON-partial unique index over proven duplicates must still be an error, got %q — "+
+			"the CR-T5 fix must not weaken the true positive", fnd.Severity)
+	}
+}
+
+// TestParseCreateIndexPredicateAndExpression pins the parser itself.
+func TestParseCreateIndexPredicateAndExpression(t *testing.T) {
+	cases := []struct {
+		sql            string
+		wantPredicate  string
+		wantExpression bool
+	}{
+		{"CREATE UNIQUE INDEX ix ON public.users (email)", "", false},
+		{"CREATE UNIQUE INDEX ix ON public.users (email) WHERE deleted_at IS NULL", "deleted_at IS NULL", false},
+		{"CREATE UNIQUE INDEX ix ON public.users (email) WHERE deleted_at IS NULL;", "deleted_at IS NULL", false},
+		{"CREATE UNIQUE INDEX ix ON public.users (lower(email))", "", true},
+		{"CREATE INDEX ix ON public.users (email) WHERE active", "active", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.sql, func(t *testing.T) {
+			ix, ok := parseCreateIndex(tc.sql, strings.ToUpper(tc.sql))
+			if !ok {
+				t.Fatal("parse failed")
+			}
+			if ix.predicate != tc.wantPredicate {
+				t.Errorf("predicate = %q, want %q", ix.predicate, tc.wantPredicate)
+			}
+			if ix.expression != tc.wantExpression {
+				t.Errorf("expression = %v, want %v", ix.expression, tc.wantExpression)
+			}
+			if ix.undecidable() != (tc.wantPredicate != "" || tc.wantExpression) {
+				t.Errorf("undecidable() = %v for %q", ix.undecidable(), tc.sql)
+			}
+		})
+	}
+}

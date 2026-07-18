@@ -1395,12 +1395,15 @@
           "artifacts": [
             "internal/findings/rsindex.go",
             "internal/findings/rsindex_test.go",
-            "corpus/cases/*/"
+            "internal/findings/registry.go",
+            "docs-site/src/content/docs/findings/rs-index-010.md",
+            "corpus/cases/rsindex-partial-unique-soft-delete/"
           ],
           "type": "code",
-          "passes": false,
-          "status": "todo",
-          "priority": 5
+          "passes": true,
+          "status": "done",
+          "priority": 5,
+          "note": "Closed. parseCreateIndex now returns a struct (createIndexStmt) rather than a growing positional list, carrying the partial predicate and an expression flag; undecidable() is the single predicate the analyzer branches on.\n\nTHE REAL SHAPE OF THE BUG: `unique: {value: false, confidence: exact}` is a proven statement about the WHOLE column. A partial index constrains only the rows its predicate selects, so whole-column duplicates say nothing about it — the soft-delete pattern (CREATE UNIQUE INDEX ... WHERE deleted_at IS NULL, duplicates living entirely in soft-deleted rows) builds fine and rowshape called it a confident FAIL. An expression index is the same problem one step removed: a fact about `email` says nothing about `lower(email)`.\n\nWHY IT EMITS WARN EXPLICITLY rather than routing a PASS through capping — this was the subtle part. Capping only downgrades when want==PASS; it reads DependsOn, and the whole-column unique fact is `exact`, so a PASS would have been CERTIFIED for a subset nobody measured. Emitting SeverityWarn gives want==WARN, which Cap leaves untouched: neither FAIL nor PASS is reachable. DependsOn is deliberately EMPTY — citing the whole-column fact would put a false provenance trail into a DSSE-signed document for a conclusion that fact does not support (same concern as CR-T11).\n\nTWO THINGS THE EXISTING TESTS TAUGHT ME, both good catches by the repo's own guards: (1) cmd.TestExplainCoversEmittedCodes enforces that a finding's Remediation CONTAINS the catalog's text verbatim, so finding and `rowshape explain` can never drift. My first version replaced the remediation and broke it; corrected to quote the catalog verbatim and APPEND the index-specific check, which is the seam the test was designed to allow. (2) tools/genfindings.TestFindingsDocsUpToDate requires the committed docs-site catalog to be byte-identical, so the RS-INDEX-010 summary change needed `go run ./tools/genfindings`. Both are exactly the kind of drift guard this codebase is good at.\n\nAlso updated the catalog SUMMARY so `rowshape explain RS-INDEX-010` itself explains the partial/expression case — the explain text is a user surface, not just an internal string.\n\nTESTS: 5 new (partial-not-a-FAIL, partial-cannot-PASS, expression-undecidable, plain-unique-still-FAILS as the true-positive guard, and a parser table). Mutation-tested: forcing undecidable()=false reproduces the exact wrong answer — severity `error`, title 'will fail: the column has duplicate values', and a depends_on citing the whole-column fact.\n\nCORPUS: rsindex-partial-unique-soft-delete added and verified NON-VACUOUS (against the mutant: 'verdict = FAIL, want WARN' and 'severities = [error warn], want [warn warn]'). NOTE: CR-T3 caught my own first draft of that case — I declared one finding when the statement legitimately produces two (it is also a non-concurrent CREATE INDEX, so RS-INDEX-001 fires alongside RS-INDEX-010). The stricter harness earning its keep on the very next story.\n\nVerified: gofmt/vet clean, golangci-lint 0 issues, internal + cmd + corpus + tools + fixture-spec all green against live PG 18."
         },
         {
           "id": "CR-T6",

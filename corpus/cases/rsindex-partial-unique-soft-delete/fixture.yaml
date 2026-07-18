@@ -1,0 +1,14 @@
+rowshape_fixture: "1"
+meta:
+  id: rsindex-partial-unique-soft-delete
+  engine: {name: postgres, version: "16"}
+  privacy: standard
+  profile: {mode: fast, escalated: []}
+tables:
+  public.users:
+    rows: {value: 2000000, confidence: exact}
+    columns:
+      id: {type: bigint, nullable: false, unique: {value: true, confidence: exact, via: constraint}}
+      email: {type: text, nullable: false, distinct: {value: 2000000, confidence: exact, via: scan}, unique: {value: false, confidence: exact, via: probe}}
+      deleted_at: {type: timestamptz, nullable: true, null_fraction: {value: 0.02, confidence: exact, via: scan}}
+    constraints: [{name: users_pkey, kind: primary_key, columns: [id]}]
