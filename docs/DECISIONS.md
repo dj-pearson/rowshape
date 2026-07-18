@@ -426,3 +426,62 @@ missing guards and provenance nits around a sound design.
 stories carry, and gathering evidence is what makes sign-off possible — not a
 substitute for it. Each remains `passes: false`, `status: blocked`, with the
 assessment recorded in a `readiness` field on the story.
+
+---
+
+## D-015 — What "the PG matrix is green" does and does not prove (CR-loop audit)
+
+**Status:** recorded. No story's `passes` changed; this makes four already-passing
+stories' claims precise instead of leaving them overstated.
+
+Auditing the `verification` entries of passing stories found that **12 have no
+mechanically-runnable verification at all**, and four of those rest on a claim
+that has **never been observed**:
+
+| Story | Claim |
+|---|---|
+| `P2-T8` | "corpus RS-LOCK cases green across PG matrix" |
+| `P2-T11` | "corpus RS-INDEX cases green across matrix" |
+| `P2-T13` | "CI matrix green across all seven majors" |
+| `P5-T3` | "corpus matrix CI green across PG 11–17" |
+
+The matrix lives in `corpus.yml`, which needs the GitHub org from `P0-T1`. **CI
+has never run.** Every local verification in this repo's history has used a
+single major — currently 18.1, which is not even inside the declared 11–17 range.
+
+### What the audit then established
+
+**1. Sweeping 11–17 is nearly vacuous for version-conditionality.** Exactly one
+corpus case declares `version_verdicts`, and it overrides major **10**. Across
+11–17 every case falls through to the same default, so seven runs assert one
+thing seven times. They are not worthless — they prove no case's expectations are
+malformed at any declared major — but they do not exercise a branch.
+
+**2. The boundary that matters IS locally verifiable, and passes.** The
+version-conditional finding derives from the fixture's declared
+`meta.engine.version`, **not** from the server's actual behavior — the pipeline
+validator sets `c.Fixture.Meta.Engine.Version = PGMajor()`. So the PG 10 vs 11+
+boundary (D-006, D-007: `ADD COLUMN ... DEFAULT <const>` rewrites on 10, catalog-
+only on 11+) can be tested against one real server:
+
+```
+ROWSHAPE_PG_VERSION=10 → WARN + RS-LOCK   (override branch)  PASS
+ROWSHAPE_PG_VERSION=16 → PASS, no findings (default branch)  PASS
+```
+
+Both green against the same PG 18.1 cluster. **The version-conditional model is
+verified across its only real boundary.**
+
+**3. What remains genuinely unverified** is narrower than "the matrix": whether
+real PG 11 through 17 *engines* behave as the models predict. That needs seven
+real servers, i.e. CI, i.e. `P0-T1`. It is the same category as CR-T14's arm64
+gap — correct by construction and locally corroborated, not observed on the
+target.
+
+### Why this is not a downgrade
+
+None of the four stories is wrong; the code works and the model is right at the
+boundary. The defect was that the record asserted an observation nobody had made,
+which is the same class of problem as CR-T13 (a guard naming a guarantee it did
+not check). Stating the limit costs nothing and stops the claim being read as
+stronger than the evidence.

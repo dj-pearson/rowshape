@@ -286,3 +286,66 @@ func describeFindings(fs []ProducedFinding) string {
 	}
 	return strings.Join(parts, ", ")
 }
+
+// TestVersionConditionalBoundary pins the PG 10 vs 11+ boundary that D-006 and
+// D-007 turn on, WITHOUT needing seven Postgres servers.
+//
+// CR-loop audit (D-015): four passing stories claimed "corpus matrix green
+// across PG 11-17", but the matrix lives in corpus.yml, which needs the GitHub
+// org from P0-T1 — so CI has never run and the claim had never been observed.
+// The audit then found the sweep would barely help: exactly ONE case declares
+// version_verdicts and it overrides major 10, so 11 through 17 all resolve to
+// the same default. Seven runs would assert one thing seven times.
+//
+// The boundary IS testable against a single server, because a version-
+// conditional finding derives from the fixture's DECLARED meta.engine.version
+// rather than the server's behavior (pipelineValidator sets it from PGMajor).
+// So this drives both branches and asserts they actually DIFFER — which is the
+// property the matrix exists to protect, and the one thing a sweep across
+// 11..17 cannot show.
+func TestVersionConditionalBoundary(t *testing.T) {
+	if validator == nil {
+		t.Skip("validate not wired (needs ROWSHAPE_TEST_PG_DSN)")
+	}
+	cases, err := LoadCases(corpusRoot)
+	if err != nil {
+		t.Fatalf("load corpus: %v", err)
+	}
+
+	var target *Case
+	for i := range cases {
+		if len(cases[i].Expected.VersionVerdicts) > 0 {
+			target = &cases[i]
+			break
+		}
+	}
+	if target == nil {
+		t.Fatal("no corpus case declares version_verdicts — the version-conditional " +
+			"machinery (RFC §9.1, D-006) has no coverage at all")
+	}
+
+	below, _ := target.Expected.ForMajor("10") // rewrites: the old behavior
+	above, _ := target.Expected.ForMajor("16") // catalog-only: the fast path
+	if below == above {
+		t.Fatalf("case %s expects %q on both sides of the PG 11 boundary; it cannot be "+
+			"demonstrating version-conditional behavior", target.Name, below)
+	}
+
+	for _, major := range []string{"10", "16"} {
+		t.Run("PG"+major, func(t *testing.T) {
+			t.Setenv("ROWSHAPE_PG_VERSION", major)
+			wantVerdict, wantFindings := target.Expected.ForMajor(major)
+
+			gotVerdict, gotFindings, err := validator.Validate(*target)
+			if err != nil {
+				t.Fatalf("validate: %v", err)
+			}
+			if gotVerdict != wantVerdict {
+				t.Errorf("at PG %s: verdict = %s, want %s — the version-conditional model "+
+					"(D-006: ADD COLUMN DEFAULT rewrites on 10, catalog-only on 11+) did not hold",
+					major, gotVerdict, wantVerdict)
+			}
+			compareFindings(t, gotFindings, wantFindings)
+		})
+	}
+}
