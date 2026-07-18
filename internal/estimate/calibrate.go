@@ -29,7 +29,16 @@ var ErrCalibration = errors.New("estimate: calibration needs two points at diffe
 // model's growth term (n for linear, n·log₂n for n_log_n, constant for O(1)).
 // The intercept b absorbs fixed per-statement overhead so the slope reflects the
 // marginal per-row cost.
-func Calibrate(op OpClass, p1, p2 Point, declaredRows int64) (verdict.Estimate, error) {
+// rowsConfidence is the confidence of the DECLARED row count the fitted curve is
+// projected onto, and it caps the result (RFC §7.4). Calibration measures the
+// operation, not the table: fitting a curve through two real timings establishes
+// how the work grows, but the answer is only ever as good as the row count it is
+// evaluated at. A perfectly measured curve projected onto an `estimated` 50M
+// rows is an estimate — and under INV-CONFIDENCE-CAPPING that difference decides
+// whether a finding may PASS or is capped to WARN, so claiming `measured` here
+// is exactly the "finding downgrades its dependency to reach a stronger verdict"
+// that the invariant forbids.
+func Calibrate(op OpClass, p1, p2 Point, declaredRows int64, rowsConfidence fixture.Confidence) (verdict.Estimate, error) {
 	model := op.Model()
 	basis := p2
 	if p1.Rows > p2.Rows {
@@ -59,7 +68,9 @@ func Calibrate(op OpClass, p1, p2 Point, declaredRows int64) (verdict.Estimate, 
 		BasisRows:    basis.Rows,
 		BasisMs:      basis.Ms,
 		DeclaredRows: declaredRows,
-		Confidence:   string(fixture.Measured),
+		// Symmetric with Extrapolate's Min(Estimated, rowsConfidence): calibration
+		// raises the ceiling from `estimated` to `measured`, it does not bypass it.
+		Confidence: string(fixture.Min(fixture.Measured, rowsConfidence)),
 	}, nil
 }
 

@@ -43,7 +43,7 @@ func estimateFor(c *validate.Capture, stmtIdx int, op estimate.OpClass, table st
 	if cal := c.Calibration; cal != nil && stmtIdx >= 0 && stmtIdx < len(cal.StatementMs2) {
 		rows2, ms2 := cal.TableRows[table], cal.StatementMs2[stmtIdx]
 		if rows2 > 0 && rows2 != rows1 && ms2 > 0 {
-			if est, err := estimate.Calibrate(op, estimate.Point{Rows: rows1, Ms: ms1}, estimate.Point{Rows: rows2, Ms: ms2}, declaredRows); err == nil {
+			if est, err := estimate.Calibrate(op, estimate.Point{Rows: rows1, Ms: ms1}, estimate.Point{Rows: rows2, Ms: ms2}, declaredRows, rowsConf); err == nil {
 				return &est
 			}
 		}
