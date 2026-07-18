@@ -291,3 +291,73 @@ func TestInitAgentScaffoldsBaseConfig(t *testing.T) {
 		t.Error("init --agent should still scaffold the base config with the detected runner")
 	}
 }
+
+// --- CR-T25: a wrong-shaped servers key must be refused, not clobbered ------
+//
+// writeMCPConfig refuses to touch a file it cannot parse, precisely because
+// "overwriting it destroys the user's other servers". But the type assertion on
+// the servers key discarded its failure, so a key holding an array, a string, or
+// null silently became an empty map and was written back — the same destruction,
+// through the one path that did not refuse.
+func TestWriteMCPConfigRefusesWrongShapedServersKey(t *testing.T) {
+	client := supportedMCPClients[0]
+
+	for _, tc := range []struct{ name, body string }{
+		{"array", `{"` + client.Key + `": ["not-an-object"]}`},
+		{"string", `{"` + client.Key + `": "not-an-object"}`},
+		{"number", `{"` + client.Key + `": 42}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, client.Path)
+			writeFile(t, path, tc.body)
+
+			_, err := writeMCPConfig(dir, client)
+			if err == nil {
+				t.Fatal("must refuse a servers key that is not an object")
+			}
+			// The refusal has to be actionable: it names the file and prints the
+			// entry to add by hand, like the unparseable-JSON refusal above it.
+			if !strings.Contains(err.Error(), client.Path) || !strings.Contains(err.Error(), mcpServerName) {
+				t.Errorf("refusal should name the file and the entry to add, got: %v", err)
+			}
+
+			// The user's file must be byte-identical afterwards.
+			after, readErr := os.ReadFile(path)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if string(after) != tc.body {
+				t.Errorf("file was modified despite the refusal:\n before: %s\n after:  %s", tc.body, after)
+			}
+		})
+	}
+}
+
+// TestWriteMCPConfigStillHandlesNullAndAbsent: refusing must not become
+// refusing-everything. A missing key, and an explicit null, are both "nothing
+// there yet" and must still be written.
+func TestWriteMCPConfigStillHandlesNullAndAbsent(t *testing.T) {
+	client := supportedMCPClients[0]
+	for _, tc := range []struct{ name, body string }{
+		{"absent", `{"other": {"keep": true}}`},
+		{"null", `{"` + client.Key + `": null}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, client.Path)
+			writeFile(t, path, tc.body)
+
+			if _, err := writeMCPConfig(dir, client); err != nil {
+				t.Fatalf("must write when there is nothing to clobber, got %v", err)
+			}
+			out, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(out), mcpServerName) {
+				t.Errorf("rowshape entry was not written:\n%s", out)
+			}
+		})
+	}
+}

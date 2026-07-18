@@ -164,9 +164,24 @@ func writeMCPConfig(dir string, c mcpClient) (writeStatus, error) {
 		return 0, fmt.Errorf("reading %s: %w", c.Path, err)
 	}
 
-	servers, _ := root[c.Key].(map[string]any)
-	if servers == nil {
+	// CR-T25: the type assertion's failure used to be discarded, so a `servers`
+	// key holding anything other than an object (an array, a string, null from a
+	// half-finished edit) silently became an empty map and was then written back
+	// — destroying whatever the user had there. That contradicted this function's
+	// own rule three lines up, where an unparseable file is refused precisely
+	// because "overwriting it destroys the user's other servers". A wrong-shaped
+	// value is the same situation with a narrower blast radius, so it gets the
+	// same answer: refuse, and print the entry to add by hand.
+	var servers map[string]any
+	switch existing := root[c.Key]; v := existing.(type) {
+	case nil:
 		servers = map[string]any{}
+	case map[string]any:
+		servers = v
+	default:
+		return 0, fmt.Errorf("%s has a %q key that is not an object (found %T); rowshape will not "+
+			"overwrite it. Fix or remove it, or add the rowshape entry by hand:\n%s",
+			c.Path, c.Key, existing, entrySnippet(c))
 	}
 
 	want := serverEntry(c)

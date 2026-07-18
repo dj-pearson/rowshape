@@ -2002,9 +2002,10 @@
             "cmd/init_agent_mcp_test.go"
           ],
           "type": "code",
-          "passes": false,
-          "status": "todo",
-          "priority": 25
+          "passes": true,
+          "status": "done",
+          "priority": 25,
+          "note": "Closed. A `servers`/`mcpServers` key holding anything other than an object is now REFUSED with an actionable message, instead of being silently replaced.\n\nTHE INCONSISTENCY WAS INTERNAL TO ONE FUNCTION, which is what made it worth fixing rather than shrugging at. Three lines above the bug, writeMCPConfig refuses an unparseable file with the stated reason \"overwriting it destroys the user's other servers\". Then the type assertion on the servers key discarded its failure, so an array, a string, a number or a half-finished edit became an empty map and was written straight back — the same destruction the function had just declared it would not do, through the one path that did not check.\n\nThe refusal matches the existing one in form as well as spirit: it names the file, says what it found (including the Go type), and prints the entry to paste by hand, so a user whose config is odd is not simply stopped.\n\nKept the fix from becoming refuse-everything, which is the obvious way to overcorrect: an ABSENT key and an explicit `null` both mean \"nothing there yet\" and must still be written. Both are tested, alongside the three wrong-shaped cases.\n\nThe refusal tests also assert the file is BYTE-IDENTICAL afterwards, not merely that an error came back — refusing and then writing anyway would satisfy a weaker assertion.\n\nMutation-tested: restoring the discarded assertion makes the array and string cases clobber.\n\nVerified: gofmt/vet clean, golangci-lint 0 issues, internal + cmd + corpus green against live PG 18."
         },
         {
           "id": "CR-T26",
