@@ -90,3 +90,88 @@ func TestPRDIsValidJSON(t *testing.T) {
 		t.Fatalf("prd.json is not valid JSON: %v", err)
 	}
 }
+
+// TestEveryInvariantIsTraceable: each invariant in prd.json must be findable
+// from the test tree — either cited by name in a test (that is the guard), or
+// owned by a story that is not yet passing (the work is not done, so no guard is
+// expected).
+//
+// Invariants are the promises every story is bound by, so one with no reachable
+// enforcement is the most expensive kind of gap. Grepping the id is how that gets
+// audited, which only works if guards name what they guard — so this enforces the
+// convention rather than trusting it.
+func TestEveryInvariantIsTraceable(t *testing.T) {
+	root := filepath.Join("..", "..")
+	raw, err := os.ReadFile(filepath.Join(root, "prd.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Invariants []struct {
+			ID string `json:"id"`
+		} `json:"invariants"`
+		Phases []struct {
+			Tasks []struct {
+				ID       string   `json:"id"`
+				Passes   bool     `json:"passes"`
+				SpecRefs []string `json:"spec_refs"`
+			} `json:"tasks"`
+		} `json:"phases"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Invariants) == 0 {
+		t.Fatal("no invariants found; this audit would pass over nothing")
+	}
+
+	// Every _test.go file's contents, once.
+	var testSrc strings.Builder
+	err = filepath.WalkDir(root, func(path string, de os.DirEntry, err error) error {
+		if err != nil || de.IsDir() {
+			if de != nil && de.IsDir() && (de.Name() == "node_modules" || de.Name() == ".git") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(path, "_test.go") {
+			b, rerr := os.ReadFile(path)
+			if rerr == nil {
+				testSrc.Write(b)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := testSrc.String()
+
+	// An invariant whose owning story is still open needs no guard yet.
+	pending := map[string]bool{}
+	for _, ph := range doc.Phases {
+		for _, task := range ph.Tasks {
+			if task.Passes {
+				continue
+			}
+			for _, ref := range task.SpecRefs {
+				if strings.HasPrefix(ref, "INV-") {
+					pending[ref] = true
+				}
+			}
+		}
+	}
+
+	for _, inv := range doc.Invariants {
+		if strings.Contains(tests, inv.ID) {
+			continue
+		}
+		if pending[inv.ID] {
+			t.Logf("%s: no test cites it, but its owning story is not yet passing — expected", inv.ID)
+			continue
+		}
+		t.Errorf("%s is cited by no test and no open story claims it. Either a guard exists but "+
+			"does not name the invariant it enforces (cite it, so this is auditable), or the "+
+			"promise is unenforced.", inv.ID)
+	}
+}
