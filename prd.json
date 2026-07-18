@@ -1647,9 +1647,10 @@
             "cmd/validate_test.go"
           ],
           "type": "test",
-          "passes": false,
-          "status": "todo",
-          "priority": 13
+          "passes": true,
+          "status": "done",
+          "priority": 13,
+          "note": "Closed. The guard now walks the REAL transitive closure via `go list -deps`, seeded from cmd/validate.go's own imports so a newly added dependency is picked up without anyone remembering to extend a list. Coverage went from ~10 hand-listed FILES to 218 PACKAGES.\n\nTHE DESIGN QUESTION THE OLD TEST DODGED, and the reason it could not simply be widened: `net` is IN the closure and must stay. validate's entire job is to connect to a Postgres target; pgx opens a TCP socket and resolves DNS to do it. INV-NEVER-GATE-VALIDATE says validate never calls the CLOUD, not that it performs no I/O. A blanket \"no networking\" rule would be both wrong and unsatisfiable, so the line is drawn at the PROTOCOLS an egress would use (net/http, net/rpc, net/smtp, grpc, the cloud SDKs, and the telemetry clients that are egress by another name — opentelemetry, datadog, sentry). The five legitimately-present network packages are an explicit allow-list with a stated reason each (`net`, net/netip, net/url, internal/nettrace, x/net/dns/dnsmessage), and the test LOGS each one it allows, so the exceptions are visible in CI output rather than buried.\n\nGUARD THE GUARD: the test asserts the closure actually contains internal/target, internal/hydrate, internal/runner and internal/toolerror — the very packages the review found unscanned. Without that, a seeding bug would return a small or empty closure and the test would pass over nothing, which is precisely the failure mode being fixed.\n\nMUTATION-TESTED with the exact case named in the acceptance criteria — adding net/http to internal/runner, which the OLD test could not have caught because it never looked at that package. Now RED, naming net/http/httptrace and three x/net/http* packages.\n\nNote the test shells out to `go list`. That is the same resolver the compiler uses, so the closure cannot drift from what actually gets linked; the cost is that the toolchain must be present, which it is wherever `go test` runs.\n\nVerified: gofmt/vet clean, golangci-lint 0 issues, internal + cmd + corpus + tools green against live PG 18."
         },
         {
           "id": "CR-T14",

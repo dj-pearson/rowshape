@@ -8,6 +8,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	osexec "os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -72,40 +73,104 @@ func TestCheckHostRefusal(t *testing.T) {
 	}
 }
 
-// TestValidateNoCloudEgress asserts structurally that the validate code path
-// imports no network/cloud client — validate never calls the cloud
-// (INV-NEVER-GATE-VALIDATE). Scanning imports is a deterministic proof that no
-// egress can happen, stronger than observing one run.
+// forbiddenEgress are import paths that would let validate talk to something
+// other than its Postgres target: HTTP and RPC clients, and the cloud SDKs.
+//
+// Note what is NOT here. `net` itself is REQUIRED — validate's entire job is to
+// connect to a Postgres target, and pgx opens a TCP socket and resolves DNS to
+// do it. INV-NEVER-GATE-VALIDATE says validate never calls the CLOUD, not that
+// it performs no I/O, so a blanket "no networking" rule would be both wrong and
+// unsatisfiable. The line is drawn at the protocols an egress would use.
+var forbiddenEgress = []string{
+	"net/http", "net/rpc", "net/smtp",
+	"google.golang.org", "cloud.google.com", "github.com/aws/", "github.com/Azure/",
+	"grpc", "opentelemetry", "datadog", "sentry",
+}
+
+// allowedNetwork are the network packages the Postgres connection legitimately
+// pulls in, each allowed for a stated reason rather than by silent omission.
+var allowedNetwork = map[string]string{
+	"net":                                    "pgx opens a TCP connection to the target; this is the connection validate exists to make",
+	"net/netip":                              "address parsing on the pgx connection path",
+	"net/url":                                "parsing the target DSN",
+	"internal/nettrace":                      "pulled in by net; runtime tracing hooks, not a client",
+	"vendor/golang.org/x/net/dns/dnsmessage": "DNS resolution for the target hostname, via net",
+}
+
+// TestValidateNoCloudEgress asserts structurally that nothing on the validate
+// code path can call the cloud (INV-NEVER-GATE-VALIDATE). Scanning imports is a
+// deterministic proof that no egress can happen, stronger than observing a run.
+//
+// CR-T13: this used to scan cmd/validate.go and internal/validate/ ONLY. But
+// runValidate reaches internal/target, internal/hydrate, internal/runner,
+// internal/toolerror, internal/findings and more — none of which were scanned. A
+// network import in any of them passed the guard silently. Since this test is
+// the mechanical proof behind the privacy claim the docs make verbatim (P4-T4),
+// a guard that names a guarantee it does not actually check is worse than no
+// guard: it converts an unverified claim into a verified-looking one.
+//
+// It now walks the REAL transitive closure via `go list -deps`, seeded from
+// cmd/validate.go's own imports so a newly added dependency is picked up without
+// anyone remembering to extend a list.
 func TestValidateNoCloudEgress(t *testing.T) {
-	forbidden := []string{"net/http", "net/rpc", "cloud", "aws", "gcp", "grpc", "google.golang.org"}
-	files := []string{"validate.go"}
-	// Include the whole internal/validate package.
-	pkg := filepath.Join("..", "internal", "validate")
-	entries, err := os.ReadDir(pkg)
-	if err != nil {
-		t.Fatalf("read internal/validate: %v", err)
-	}
-	paths := append([]string(nil), files...)
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".go") {
-			paths = append(paths, filepath.Join(pkg, e.Name()))
-		}
-	}
+	// Seed: whatever cmd/validate.go imports today.
 	fset := token.NewFileSet()
-	for _, p := range paths {
-		af, err := parser.ParseFile(fset, p, nil, parser.ImportsOnly)
-		if err != nil {
-			t.Fatalf("parse %s: %v", p, err)
+	af, err := parser.ParseFile(fset, "validate.go", nil, parser.ImportsOnly)
+	if err != nil {
+		t.Fatalf("parse validate.go: %v", err)
+	}
+	var seeds []string
+	for _, imp := range af.Imports {
+		// Stdlib, third-party and internal paths alike; `go list` resolves all.
+		seeds = append(seeds, strings.Trim(imp.Path.Value, `"`))
+	}
+	if len(seeds) == 0 {
+		t.Fatal("no imports found in validate.go; the closure would be vacuously clean")
+	}
+
+	// Transitive closure. `go list` is the same resolver the compiler uses, so
+	// this cannot drift from what actually gets linked in.
+	out, err := osexec.Command("go", append([]string{"list", "-deps"}, seeds...)...).Output()
+	if err != nil {
+		t.Fatalf("go list -deps: %v", err)
+	}
+	deps := strings.Fields(string(out))
+	if len(deps) < len(seeds) {
+		t.Fatalf("closure (%d) smaller than the seed set (%d); the walk did not run", len(deps), len(seeds))
+	}
+
+	// Guard the guard: the closure must actually contain the packages the review
+	// found unscanned, or this test is passing over an empty set again.
+	mustCover := []string{
+		"github.com/rowshape/rowshape/internal/target",
+		"github.com/rowshape/rowshape/internal/hydrate",
+		"github.com/rowshape/rowshape/internal/runner",
+		"github.com/rowshape/rowshape/internal/toolerror",
+	}
+	inClosure := make(map[string]bool, len(deps))
+	for _, d := range deps {
+		inClosure[d] = true
+	}
+	for _, m := range mustCover {
+		if !inClosure[m] {
+			t.Errorf("closure is missing %s — this is one of the packages CR-T13 exists to cover", m)
 		}
-		for _, imp := range af.Imports {
-			path := strings.Trim(imp.Path.Value, `"`)
-			for _, bad := range forbidden {
-				if strings.Contains(path, bad) {
-					t.Errorf("%s imports %q — validate must make no network/cloud call (INV-NEVER-GATE-VALIDATE)", p, path)
-				}
+	}
+
+	for _, dep := range deps {
+		if reason, ok := allowedNetwork[dep]; ok {
+			t.Logf("allowed network package %s: %s", dep, reason)
+			continue
+		}
+		for _, bad := range forbiddenEgress {
+			if strings.Contains(dep, bad) {
+				t.Errorf("validate's import closure contains %q (matched %q) — validate must never "+
+					"call the cloud (INV-NEVER-GATE-VALIDATE, PRD §8.4). If this is legitimate, add it "+
+					"to allowedNetwork WITH A REASON.", dep, bad)
 			}
 		}
 	}
+	t.Logf("scanned %d packages in validate's transitive import closure", len(deps))
 }
 
 // TestEmitResultTwoRenderings: --json and the default human output are two
