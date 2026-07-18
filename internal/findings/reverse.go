@@ -48,7 +48,11 @@ func (rsReverse) Analyze(f *fixture.Fixture, c *validate.Capture) []verdict.Find
 }
 
 func dropTableFinding(f *fixture.Fixture, clean, upper string) verdict.Finding {
-	table := dropTableTarget(clean, upper)
+	// Resolve like its two siblings do (RFC §5). Unresolved, `DROP TABLE users`
+	// missed the fixture key `public.users`, so rows read 0 — the finding then
+	// announced "all 0 rows are lost" for a table that may hold millions, and
+	// cited a depends_on path that resolves to nothing in a signed document.
+	table := resolveTable(f, dropTableTarget(clean, upper))
 	rows := f.Tables[table].Rows.Value
 	return verdict.Finding{
 		Code:        "RS-REVERSE-002",

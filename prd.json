@@ -1554,9 +1554,10 @@
             "internal/findings/reverse_test.go"
           ],
           "type": "code",
-          "passes": false,
-          "status": "todo",
-          "priority": 10
+          "passes": true,
+          "status": "done",
+          "priority": 10,
+          "note": "Closed with a one-line change: dropTableFinding now routes its table name through resolveTable, as its two siblings in the same file (dropColumnFinding, narrowTypeFinding) already did.\n\nThe consequence was sharper than \"wrong provenance\". Mutation-tested, the unqualified form produced: \"DROP TABLE users is irreversible: all 0 rows are lost\" where the qualified form said \"all 4.0M rows are lost\". So the finding still fired and was still a WARN — but its headline told the user the table was empty, which is the single most reassuring thing it could have said about an irreversible DROP. Evidence rows read 0 and depends_on cited `users.rows`, which resolves to nothing in a DSSE-signed document.\n\nSame root cause and fix as CR-T2; kept separate because the blast radius is genuinely narrower (the verdict does not change) and it belongs to a different analyzer.\n\nVerified: gofmt/vet clean, golangci-lint 0 issues, internal + cmd + corpus + tools green against live PG 18."
         },
         {
           "id": "CR-T11",

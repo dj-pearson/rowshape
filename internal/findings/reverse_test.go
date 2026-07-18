@@ -128,3 +128,61 @@ func TestRSReverseRemediationInCatalog(t *testing.T) {
 		}
 	}
 }
+
+// --- CR-T10: unqualified DROP TABLE -----------------------------------------
+//
+// dropTableFinding was the one finding in this file that skipped resolveTable,
+// while dropColumnFinding and narrowTypeFinding both used it. Unresolved, the
+// row count read as the zero value, so `DROP TABLE users` announced "all 0 rows
+// are lost" for a table holding millions — and cited a depends_on path that
+// resolves to nothing in a DSSE-signed document.
+//
+// Narrower blast radius than CR-T2 (the finding still fires, and it is still a
+// WARN), but the evidence and the provenance were both wrong.
+func TestUnqualifiedDropTableResolves(t *testing.T) {
+	f, err := fixture.Parse([]byte(`rowshape_fixture: "1"
+meta: {id: t, engine: {name: postgres, version: "16"}}
+tables:
+  public.users:
+    rows: {value: 4000000, confidence: exact}
+    columns:
+      id: {type: bigint, nullable: false}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	find := func(sql string) *verdict.Finding {
+		for _, fnd := range (rsReverse{}).Analyze(f, plainCapture(sql)) {
+			if fnd.Code == "RS-REVERSE-002" {
+				return &fnd
+			}
+		}
+		return nil
+	}
+
+	qualified := find("DROP TABLE public.users;")
+	unqualified := find("DROP TABLE users;")
+
+	if qualified == nil {
+		t.Fatal("qualified DROP TABLE produced no RS-REVERSE-002")
+	}
+	if unqualified == nil {
+		t.Fatal("unqualified DROP TABLE produced no RS-REVERSE-002")
+	}
+
+	qev, _ := qualified.Evidence.(map[string]any)
+	uev, _ := unqualified.Evidence.(map[string]any)
+	if uev["rows"] != qev["rows"] {
+		t.Errorf("rows evidence = %v for `DROP TABLE users`, but %v for `DROP TABLE public.users` — "+
+			"the same table. The unqualified form read the zero value.", uev["rows"], qev["rows"])
+	}
+	if unqualified.DependsOn[0] != "public.users.rows" {
+		t.Errorf("depends_on = %v, want [public.users.rows] (the canonical key a signed attestation "+
+			"should cite)", unqualified.DependsOn)
+	}
+	if unqualified.Title != qualified.Title {
+		t.Errorf("same statement, different title:\n qualified:   %s\n unqualified: %s",
+			qualified.Title, unqualified.Title)
+	}
+}
