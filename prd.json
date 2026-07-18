@@ -1854,9 +1854,10 @@
             "internal/runner/drizzle_test.go"
           ],
           "type": "code",
-          "passes": false,
-          "status": "todo",
-          "priority": 20
+          "passes": true,
+          "status": "done",
+          "priority": 20,
+          "note": "Closed. drizzleConfigs now lists .ts/.js/.mjs/.cjs/.json, and detection precedence is the order of that slice so a project carrying several configs resolves the same way every run rather than by directory-listing order.\n\nWhy the two missing extensions are real: .cjs is what a CommonJS config needs once package.json sets \"type\": \"module\", and .json is the config-only form for projects that would rather not execute a config file at all. The failure mode was quiet — the project was reported as \"no runner detected\", which is indistinguishable from \"this is not a Drizzle project\", the hardest kind of gap to notice.\n\nTHE MORE USEFUL FINDING WAS IN MY OWN TEST. The first version ranged over drizzleConfigs — the very slice under test — so when I mutated the code by deleting .cjs/.json from that slice, they vanished from the test as well and the mutation PASSED. A test that reads its expectations from the thing it is testing can only ever agree with it. This is the same vacuous-test pattern this repo has hit before (P3-T10's skipped hook tests, P2-T8's bare-Capture test), and it was caught only because the mutation was actually run rather than assumed. The extensions are now written out literally, and the mutation correctly fails on both.\n\nAlso added a negative test (unrelated files must not trigger detection — a false positive would run the wrong runner) and a determinism test for precedence.\n\nVerified: gofmt/vet clean, golangci-lint 0 issues, internal + cmd green."
         },
         {
           "id": "CR-T21",
