@@ -57,6 +57,26 @@ With the DSN set, exactly one test should skip (`TestContainerLifecycle`, which
 wants Docker). If more than that skips, your DSN isn't reaching the server — and
 the suite will still say `ok`.
 
+## Verifying everything
+
+`go test ./...` covers the Go code — which is **not** the whole repo. Four other
+surfaces verify things no Go test touches: the docs site build and its per-page
+JS budget (findings pages are *generated* from `internal/findings/registry.go`,
+so a Go change can break a page no Go test renders), the npm wrapper's naming
+tests, `goreleaser check`, and whether the workflow YAML parses at all.
+
+In CI those live in separate, path-filtered workflows, so no single run proves
+the repo is sound. One command does:
+
+```sh
+scripts/verify-all.sh
+```
+
+It reports every check it **skipped** and exits non-zero when anything was
+skipped, so a partial run cannot be mistaken for a full one — including the case
+that matters most, `ROWSHAPE_TEST_PG_DSN` being unset, where the Postgres-backed
+suites skip and `go test` still prints `ok`.
+
 ## Commands
 
 `rowshape` exposes: `init`, `pull`, `hydrate`, `validate`, `explain`, `plan`,
