@@ -132,12 +132,36 @@ func (e *Engine) factConfidence(path string) fixture.Confidence {
 	// column profile, so it resolves even when the FK column has no column entry
 	// (RFC §6.6).
 	if fact == "orphan_fraction" {
+		// CR-T24: when a column carries MORE THAN ONE reference — legal, and what a
+		// column participating in two foreign keys looks like — take the WEAKEST
+		// confidence, not the first one found.
+		//
+		// First-match is the wrong tie-break for a capping engine on principle: the
+		// whole design caps a verdict by the MINIMUM confidence of the facts it
+		// rests on (RFC §7.4), so resolving a genuine ambiguity by declaration
+		// order could let a strong fact mask a weak sibling and license a PASS the
+		// weaker one would have capped. Declaration order is not evidence.
+		//
+		// Not reachable today: no fixture in the corpus has two references on one
+		// column, which is why this needed its own test rather than corpus
+		// coverage. The underlying ambiguity is a FORMAT-level question — the
+		// fixture does not distinguish which FK a `<table>.<col>.orphan_fraction`
+		// path means — and this only makes the engine's answer the safe one.
+		found := false
+		weakest := absent
 		for _, ref := range tbl.References {
 			if ref.Column == col && ref.OrphanFraction != nil {
-				return ref.OrphanFraction.Confidence
+				if !found {
+					found, weakest = true, ref.OrphanFraction.Confidence
+					continue
+				}
+				weakest = fixture.Min(weakest, ref.OrphanFraction.Confidence)
 			}
 		}
-		return absent
+		if !found {
+			return absent
+		}
+		return weakest
 	}
 	c, ok := tbl.Columns[col]
 	if !ok {

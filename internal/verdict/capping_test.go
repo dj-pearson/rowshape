@@ -284,3 +284,97 @@ func TestUnknownSeverityIsRejectedAtEmitTime(t *testing.T) {
 		}
 	}
 }
+
+// --- CR-T24: two FKs on one column resolve to the WEAKEST -------------------
+//
+// factConfidence's orphan_fraction branch returned the FIRST reference matching
+// the column. First-match is the wrong tie-break for a capping engine on
+// principle: the design caps a verdict by the MINIMUM confidence of the facts it
+// rests on (RFC §7.4), so resolving a genuine ambiguity by declaration order
+// could let a strong fact mask a weak sibling and license a PASS the weaker one
+// would have capped. Declaration order is not evidence.
+//
+// No corpus fixture has two references on one column, so this case is
+// unreachable there — which is exactly why it needs a test built by hand. These
+// assert the property in BOTH declaration orders, because a first-match bug
+// passes whenever the weak fact happens to be declared first.
+func twoFKFixture(first, second fixture.Confidence) *fixture.Fixture {
+	return &fixture.Fixture{Tables: map[string]fixture.Table{
+		"public.orders": {
+			Rows: fixture.Fact[int64]{Value: 1000, Confidence: fixture.Exact},
+			References: []fixture.Reference{
+				{Column: "user_id", To: "public.users.id",
+					OrphanFraction: &fixture.Fact[float64]{Value: 0, Confidence: first}},
+				{Column: "user_id", To: "public.accounts.owner_id",
+					OrphanFraction: &fixture.Fact[float64]{Value: 0, Confidence: second}},
+			},
+		},
+	}}
+}
+
+func TestTwoReferencesOnOneColumnResolveToWeakest(t *testing.T) {
+	cases := []struct {
+		name          string
+		first, second fixture.Confidence
+		want          fixture.Confidence
+	}{
+		{"weak declared first", fixture.Estimated, fixture.Exact, fixture.Estimated},
+		// The order that a first-match implementation gets WRONG.
+		{"strong declared first", fixture.Exact, fixture.Estimated, fixture.Estimated},
+		{"both exact", fixture.Exact, fixture.Exact, fixture.Exact},
+		{"declared beats nothing", fixture.Exact, fixture.Declared, fixture.Declared},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := NewEngine(twoFKFixture(tc.first, tc.second))
+			got := e.DependencyConfidence([]string{"public.orders.user_id.orphan_fraction"})
+			if got != tc.want {
+				t.Errorf("two FKs on one column (%s, %s) resolved to %q, want the WEAKEST %q — "+
+					"declaration order must not decide which fact caps the verdict",
+					tc.first, tc.second, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestTwoReferencesCannotLicenseAPass is the consequence: with one strong and one
+// weak FK fact, a finding resting on that column must be capped to WARN whichever
+// order they were declared in. A first-match engine certifies PASS for one of the
+// two orderings, which is a wrong PASS decided by nothing but file layout.
+func TestTwoReferencesCannotLicenseAPass(t *testing.T) {
+	finding := Finding{
+		Code:      "RS-DATA-020",
+		Severity:  SeverityInfo,
+		Title:     "no orphans block this FK",
+		DependsOn: []string{"public.orders.user_id.orphan_fraction"},
+	}
+	for _, order := range []struct {
+		name          string
+		first, second fixture.Confidence
+	}{
+		{"strong first", fixture.Exact, fixture.Estimated},
+		{"weak first", fixture.Estimated, fixture.Exact},
+	} {
+		t.Run(order.name, func(t *testing.T) {
+			got, _ := NewEngine(twoFKFixture(order.first, order.second)).Cap(VerdictPass, finding)
+			if got != VerdictWarn {
+				t.Errorf("verdict = %s, want WARN — one of the two FK facts is only `estimated`, "+
+					"so this must not certify regardless of declaration order", got)
+			}
+		})
+	}
+}
+
+// TestSingleReferenceUnchanged guards the common path: one FK on a column must
+// still resolve to exactly its own confidence.
+func TestSingleReferenceUnchanged(t *testing.T) {
+	f := &fixture.Fixture{Tables: map[string]fixture.Table{
+		"public.orders": {References: []fixture.Reference{
+			{Column: "user_id", To: "public.users.id",
+				OrphanFraction: &fixture.Fact[float64]{Value: 0, Confidence: fixture.Exact}},
+		}},
+	}}
+	if got := NewEngine(f).DependencyConfidence([]string{"public.orders.user_id.orphan_fraction"}); got != fixture.Exact {
+		t.Errorf("single reference resolved to %q, want exact", got)
+	}
+}
