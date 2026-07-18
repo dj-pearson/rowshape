@@ -536,3 +536,41 @@ retires the exposure on all 50 stories at once.
 `TestNoNewOrderingViolations` allow-lists exactly these two with reasons, fails
 on any new one, and fails if an entry goes stale — so an exemption cannot
 silently start covering a different violation later.
+
+---
+
+## D-017 — `spec_refs` audit: clean, and the citation convention that fooled the audit
+
+**Status:** recorded. No defect found; this exists so the next audit does not
+re-raise the same false alarm.
+
+All **55 distinct PRD/RFC sections** cited across the 102 stories were checked
+against `PRD-rowshape-v1.md` (580 lines) and
+`RFC-0001-rowshape-fixture-spec.md` (599 lines). **Every citation resolves.**
+
+Four initially read as dangling — `PRD §17.2`, `RFC §14.2`, `§14.4`, `§14.5` —
+because the convention is `§<section>.<numbered item>` where the item is a
+**numbered list entry, not a heading**. Both documents end with an "Open
+questions" section (PRD §17, RFC §14) whose entries are cited by ordinal:
+
+| Citation | Resolves to |
+|---|---|
+| `PRD §17.2` | open question 2 — disposable target: testcontainers-go vs pg_tmp |
+| `RFC §14.2` | open question 2 — partitioned tables |
+| `RFC §14.4` | open question 4 — HLL parameters |
+| `RFC §14.5` | open question 5 — auto-escalation cost ceiling |
+
+The PRD uses the convention itself: its §17.3 cites "RFC-0001 §14.5".
+
+**No permanent check was added**, deliberately. A parser that handles headings,
+numbered items and nested ordinals correctly is fragile, and this audit found
+zero real defects — so the check would be pure maintenance cost against a
+demonstrated-zero yield. The convention is documented here instead.
+
+### Note on audit false-positive rate
+
+Across six audit passes this session, first-pass automated checks raised **four
+false alarms** — a vacuous `-run` pattern that was really a prefix match, an
+"unenforced" invariant that had six tests not naming it, and these four
+citations. Every one was caught by confirming before reporting. The checks that
+survived into `tools/prdaudit` are the ones whose findings held up.
