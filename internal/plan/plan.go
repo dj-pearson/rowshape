@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/rowshape/rowshape/internal/fixture"
 	"github.com/rowshape/rowshape/internal/profile"
+	"github.com/rowshape/rowshape/internal/sqlkind"
 	"github.com/rowshape/rowshape/internal/validate"
 )
 
@@ -52,7 +53,7 @@ func Items(current *fixture.Fixture, stmts []string) []Item {
 	var items []Item
 	for _, raw := range stmts {
 		s := collapse(raw)
-		if s == "" || isTxControl(s) {
+		if s == "" || sqlkind.IsTxControl(s) {
 			continue
 		}
 		items = append(items, classify(current, s))
@@ -159,16 +160,6 @@ func RedactURL(url string) string {
 }
 
 func collapse(s string) string { return strings.Join(strings.Fields(s), " ") }
-
-func isTxControl(s string) bool {
-	up := strings.ToUpper(s)
-	for _, kw := range []string{"BEGIN", "COMMIT", "ROLLBACK", "START TRANSACTION", "END", "SAVEPOINT", "RELEASE"} {
-		if up == kw || strings.HasPrefix(up, kw+" ") || strings.HasPrefix(up, kw+";") {
-			return true
-		}
-	}
-	return false
-}
 
 func truncate(s string, n int) string {
 	if len(s) <= n {
