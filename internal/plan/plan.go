@@ -208,7 +208,16 @@ func planTable(s, up string) string {
 		j := strings.Index(up, " ON ")
 		rest := strings.Fields(s[j+4:])
 		if len(rest) > 0 {
-			return strings.Trim(strings.TrimRight(rest[0], "("), `"`)
+			// The column list may abut the table with no space
+			// (CREATE INDEX i ON t(col)), so cut at the first "(" as well
+			// as trimming a trailing one; otherwise the table name carries
+			// "(col)" and never matches the live schema — a real index on an
+			// existing table would misreport as missing-target.
+			tok := rest[0]
+			if k := strings.IndexByte(tok, '('); k >= 0 {
+				tok = tok[:k]
+			}
+			return strings.Trim(tok, `"`)
 		}
 	}
 	return ""
