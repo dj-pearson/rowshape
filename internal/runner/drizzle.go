@@ -2,7 +2,6 @@ package runner
 
 import (
 	"context"
-	"os"
 	"os/exec"
 )
 
@@ -19,7 +18,7 @@ func (d *drizzleRunner) Kind() Kind { return Drizzle }
 func (d *drizzleRunner) ApplyCmd(ctx context.Context, dsn string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "drizzle-kit", "migrate")
 	cmd.Dir = d.root
-	cmd.Env = append(os.Environ(), "DATABASE_URL="+dsn)
+	cmd.Env = envWithDSN(dsn)
 	return cmd
 }
 

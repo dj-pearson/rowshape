@@ -2,7 +2,6 @@ package runner
 
 import (
 	"context"
-	"os"
 	"os/exec"
 	"path/filepath"
 )
@@ -20,7 +19,7 @@ func (p *prismaRunner) Kind() Kind { return Prisma }
 func (p *prismaRunner) ApplyCmd(ctx context.Context, dsn string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "prisma", "migrate", "deploy")
 	cmd.Dir = p.root
-	cmd.Env = append(os.Environ(), "DATABASE_URL="+dsn)
+	cmd.Env = envWithDSN(dsn)
 	return cmd
 }
 

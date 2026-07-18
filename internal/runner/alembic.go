@@ -2,7 +2,6 @@ package runner
 
 import (
 	"context"
-	"os"
 	"os/exec"
 	"path/filepath"
 )
@@ -21,7 +20,7 @@ func (a *alembicRunner) Kind() Kind { return Alembic }
 func (a *alembicRunner) ApplyCmd(ctx context.Context, dsn string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "alembic", "upgrade", "head")
 	cmd.Dir = a.root
-	cmd.Env = append(os.Environ(), "DATABASE_URL="+dsn)
+	cmd.Env = envWithDSN(dsn)
 	return cmd
 }
 

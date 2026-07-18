@@ -1618,9 +1618,10 @@
             "internal/runner/env_test.go"
           ],
           "type": "code",
-          "passes": false,
-          "status": "todo",
-          "priority": 12
+          "passes": true,
+          "status": "done",
+          "priority": 12,
+          "note": "Closed, but the premise needed correcting FIRST and that correction is the main content of this story.\n\nTHE REVIEW'S CLAIM WAS WRONG ON THE MECHANISM. It said a duplicate DATABASE_URL means \"which one wins is resolution-order dependent\". It is not. os/exec DOCUMENTS the rule: \"If Env contains duplicate environment keys, only the last value in the slice for each duplicate key is used.\" I did not take the doc's word for it either — ran it: with a stale DATABASE_URL exported by the shell and rowshape's appended after it, cmd.Env carried 2 entries and the child process read rowshape's. So `append(os.Environ(), ...)` already selected the disposable target, by a documented guarantee rather than by luck. There was no latent wrong-database bug here, and this story should not be recorded as if there was.\n\nFIXED ANYWAY, for reasons that do not depend on that guarantee: (1) INV-BLAST-RADIUS-ZERO should be legible at the call site — someone asking \"can a framework migration reach the developer's real database?\" should not have to know a dedup rule inside the standard library to answer it, and the answer should not silently change if this is ever ported to an exec path with no such rule (a container runtime, an SSH invocation); (2) the line was written three times and could drift in one; (3) framework-migration capture is not yet wired into validate, so making it explicit now is free, and after it carries traffic it would not be.\n\nenvWithDSN replaces rather than appends, matching case-insensitively because Windows environment variables are case-insensitive and an inherited `Database_Url` is the same variable. rawsql.go deliberately still uses a plain os.Environ(): psql takes its target from argv, not DATABASE_URL, so there is nothing to replace.\n\nTESTS: exactly-one-entry with an inherited value, with none inherited, unrelated vars survive (PATH in particular, or the runner binary is not found), plus a test driving all three runners' real ApplyCmd so a future runner that hand-rolls the append is caught here rather than in review. Mutation-tested: reverting to append gives \"got 2: [DATABASE_URL=postgres://stale-from-the-shell/prod DATABASE_URL=postgres://disposable/rowshape]\" — which also shows plainly why the old code was survivable, since rowshape's is last.\n\nVerified: gofmt/vet clean, golangci-lint 0 issues, internal + cmd + corpus + tools green against live PG 18."
         },
         {
           "id": "CR-T13",
