@@ -159,7 +159,9 @@ func hydrateApplyEphemeral(ctx context.Context, f *fixture.Fixture, opts *valida
 
 	report, err := target.Load(ctx, eph, f, hydrate.Options{Seed: opts.seed, Scale: scale, MaxRows: opts.maxRows})
 	if err != nil {
-		return nil, toolerror.New(toolerror.TargetUnavailable, "hydration into the disposable database failed: "+err.Error(), "")
+		return nil, toolerror.New(toolerror.TargetUnavailable,
+			redactedTargetError("hydration into the disposable database failed", err),
+			"check the admin connection (--ephemeral) and that the fixture hydrates cleanly; set ROWSHAPE_DEBUG=1 for the underlying error")
 	}
 	cap, err := applyAndCapture(ctx, eph, opts)
 	if err != nil {
@@ -242,6 +244,27 @@ func emitToolError(asJSON bool, te *toolerror.ToolError) error {
 		te.WriteHuman(os.Stderr)
 	}
 	return &ExitError{Code: te.ExitCode()}
+}
+
+// redactedTargetError describes a failure that touched the target WITHOUT
+// echoing the error, because pgx embeds the connection in its message: a real
+// one reads "failed to connect to `user=admin database=appdb`: hostname
+// resolving error: lookup prod-db.internal.example.com". Host, port, username
+// and database name all reach the user's terminal, CI log, and --json output.
+// PRD §5 says connection details are never logged or persisted, and every other
+// connect-failure path in this tree already substitutes a fixed string — these
+// were the outliers.
+//
+// The detail is gated, not discarded: ROWSHAPE_DEBUG=1 prints it. That is an env
+// var rather than a flag on purpose. The CLI surface is part of the public
+// contract (INV-VERDICT-STABLE) and a debugging aid does not belong in it, while
+// an env var is available exactly when someone is debugging and never appears in
+// a verdict.
+func redactedTargetError(what string, err error) string {
+	if os.Getenv("ROWSHAPE_DEBUG") != "" {
+		return what + ": " + err.Error()
+	}
+	return what
 }
 
 // asToolError coerces an error to a *toolerror.ToolError: those returned by the

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -197,4 +198,93 @@ func assertNoConnectionDetails(t *testing.T, out string) {
 			t.Errorf("output leaked a connection detail (%q):\n%s", secret, out)
 		}
 	}
+}
+
+// --- CR-T7: connection details must never reach user-facing output ----------
+//
+// pgx embeds the connection in its error text, so a raw `%v` on a target failure
+// printed host, port, username and database name to the terminal, the CI log and
+// --json. This was seen live rather than inferred: the CR-T1 mutation run
+// printed "failed to connect to `user=admin database=appdb`: hostname resolving
+// error: lookup prod-db.internal.example.com" straight from hydrate's load path.
+//
+// PRD §5 — connection details are never logged or persisted. Every other
+// connect-failure path already substituted a fixed string; these were the
+// outliers.
+
+// leakDSN carries every detail that must not escape: username, password, a
+// non-default port, and a database name. Port 15432 is closed, so the connect
+// fails fast without needing a live server.
+const leakDSN = "postgres://leakuser:leakpassword@127.0.0.1:15432/leakdb"
+
+var leakTokens = []string{"leakuser", "leakpassword", "15432", "leakdb"}
+
+func assertNoLeak(t *testing.T, label, out string) {
+	t.Helper()
+	for _, tok := range leakTokens {
+		if strings.Contains(out, tok) {
+			t.Errorf("%s leaked %q (PRD §5):\n%s", label, tok, out)
+		}
+	}
+}
+
+// TestHydrateTargetFailureHidesConnectionDetails drives the exact path that was
+// proven to leak.
+func TestHydrateTargetFailureHidesConnectionDetails(t *testing.T) {
+	t.Setenv("ROWSHAPE_DEBUG", "")
+	fx := writeHydrateFixture(t, t.TempDir(), hydrateProdHost)
+	opts := &hydrateOptions{fixturePath: fx, target: leakDSN, scale: 1.0}
+
+	var runErr error
+	stdout, stderr := captureOutput(t, func() error { runErr = runHydrate(opts); return runErr })
+
+	if runErr == nil {
+		t.Fatal("expected a failure against a closed port")
+	}
+	assertNoLeak(t, "hydrate stderr", stderr)
+	assertNoLeak(t, "hydrate stdout", stdout)
+	if !strings.Contains(stderr, "load failed") {
+		t.Errorf("the failure must still be reported, just without details:\n%s", stderr)
+	}
+}
+
+// TestValidateTargetFailureHidesConnectionDetails covers the same class on the
+// validate side, including --json (the machine contract is just as public as the
+// terminal).
+func TestValidateTargetFailureHidesConnectionDetails(t *testing.T) {
+	t.Setenv("ROWSHAPE_DEBUG", "")
+	dir := t.TempDir()
+	fx := writeHydrateFixture(t, dir, hydrateProdHost)
+	mig := filepath.Join(dir, "m.sql")
+	writeFile(t, mig, "ALTER TABLE public.users ALTER COLUMN email SET NOT NULL;")
+
+	for _, asJSON := range []bool{false, true} {
+		opts := &validateOptions{fixturePath: fx, migrations: mig, ephemeral: leakDSN, scale: 1.0, asJSON: asJSON}
+		stdout, stderr := captureOutput(t, func() error { return runValidate(opts) })
+		assertNoLeak(t, fmt.Sprintf("validate stderr (json=%v)", asJSON), stderr)
+		assertNoLeak(t, fmt.Sprintf("validate stdout (json=%v)", asJSON), stdout)
+	}
+}
+
+// TestRedactedTargetErrorDebugOptIn: the detail is gated, not destroyed —
+// otherwise the next person debugging a real connection problem is stuck.
+func TestRedactedTargetErrorDebugOptIn(t *testing.T) {
+	err := errors.New("failed to connect to `user=leakuser database=leakdb`")
+
+	t.Run("hidden by default", func(t *testing.T) {
+		t.Setenv("ROWSHAPE_DEBUG", "")
+		got := redactedTargetError("load failed", err)
+		if got != "load failed" {
+			t.Errorf("got %q, want the bare message with no error detail", got)
+		}
+		assertNoLeak(t, "redacted", got)
+	})
+
+	t.Run("revealed under ROWSHAPE_DEBUG", func(t *testing.T) {
+		t.Setenv("ROWSHAPE_DEBUG", "1")
+		got := redactedTargetError("load failed", err)
+		if !strings.Contains(got, "user=leakuser") {
+			t.Errorf("ROWSHAPE_DEBUG must reveal the underlying error, got %q", got)
+		}
+	})
 }

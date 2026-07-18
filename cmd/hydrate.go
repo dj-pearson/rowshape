@@ -174,7 +174,11 @@ func loadIntoTarget(f *fixture.Fixture, genOpts hydrate.Options, opts *hydrateOp
 
 	report, err := target.Load(ctx, t, f, genOpts)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "rowshape hydrate: load failed: %v\n", err)
+		// Not %v: the wrapped pgx error carries host, port, username and database
+		// name (PRD §5). Proven live — the mutation run for CR-T1 printed
+		// "failed to connect to `user=admin database=appdb`" from this very line.
+		fmt.Fprintln(os.Stderr, "rowshape hydrate: "+
+			redactedTargetError("load failed (check the target is reachable and the fixture hydrates cleanly; set ROWSHAPE_DEBUG=1 for the underlying error)", err))
 		return toolError()
 	}
 	var total int64
