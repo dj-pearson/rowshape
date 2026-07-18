@@ -1742,9 +1742,10 @@
             "cmd/explain_test.go"
           ],
           "type": "code",
-          "passes": false,
-          "status": "todo",
-          "priority": 16
+          "passes": true,
+          "status": "done",
+          "priority": 16,
+          "note": "Closed. The unknown-code path now goes through the same toolerror channel every other command's failure path uses, so --json is honored there too.\n\nWHY THIS PATH SPECIFICALLY MATTERS: an unknown finding code is exactly what an AGENT hits — it mistypes or invents a code — and it was the one path that handed back prose to a caller that had explicitly asked for JSON. The success path already honored --json, so the failure was silent and shaped like a parse error at the other end (\"unexpected end of JSON input\" with empty stdout, as the mutation output shows).\n\nExit code 3 is unchanged (INV-VERDICT-STABLE), asserted in both the human and --json tests. The known codes stay discoverable: they move from a multi-line stderr listing into the tool error's `hint`, so the caller can still recover, and the human rendering still prints them. That is a small readability trade — 14 codes comma-joined on one line rather than one per line — accepted for consistency with the shared error channel rather than keeping a bespoke format for one command.\n\nMutation-tested: reverting to plain-text-regardless-of-flag fails with stdout empty and the JSON parse erroring, which is precisely the agent-facing symptom.\n\nVerified: gofmt/vet clean, golangci-lint 0 issues, internal + cmd + corpus + tools green against live PG 18."
         },
         {
           "id": "CR-T17",

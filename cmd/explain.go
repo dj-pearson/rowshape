@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/rowshape/rowshape/internal/findings"
+	"github.com/rowshape/rowshape/internal/toolerror"
 	"github.com/spf13/cobra"
 )
 
@@ -40,11 +41,18 @@ func explainCode(w io.Writer, code string, asJSON bool) error {
 	code = strings.ToUpper(strings.TrimSpace(code))
 	e, ok := findings.Explain(code)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "rowshape explain: unknown finding code %q. Known codes:\n", code)
-		for _, c := range findings.Codes() {
-			fmt.Fprintf(os.Stderr, "  %s\n", c)
-		}
-		return toolError()
+		// CR-T16: this used to write plain text and ignore --json entirely, so an
+		// agent that asked for JSON got prose on the one path it must handle
+		// programmatically — an unknown code is exactly what an agent hits when it
+		// hallucinates or mistypes one. Every other command's failure path returns
+		// structured JSON; this now uses the same toolerror channel (exit 3
+		// unchanged, INV-VERDICT-STABLE).
+		known := findings.Codes()
+		return emitToolError(asJSON, toolerror.New(
+			toolerror.BadUsage,
+			fmt.Sprintf("unknown finding code %q", code),
+			"known codes: "+strings.Join(known, ", "),
+		))
 	}
 	if asJSON {
 		enc := json.NewEncoder(w)
