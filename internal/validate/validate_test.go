@@ -345,3 +345,32 @@ func TestSplitStatementsInLinesAcrossEscapeString(t *testing.T) {
 		t.Errorf("file = %q, want m.sql", got[0].File)
 	}
 }
+
+// TestWantForFailsSafeOnUnknownSeverity: CR-T8. The old `default` branch made
+// PASS the fallback for an unrecognized severity. WARN is the safe direction —
+// it can never certify — and deliberately not FAIL, since inventing a failure
+// from a string we failed to parse is its own kind of wrong answer.
+func TestWantForFailsSafeOnUnknownSeverity(t *testing.T) {
+	known := map[string]string{
+		verdict.SeverityError: verdict.VerdictFail,
+		verdict.SeverityWarn:  verdict.VerdictWarn,
+		verdict.SeverityInfo:  verdict.VerdictPass,
+		"":                    verdict.VerdictPass, // historical unset, treated as info
+	}
+	for sev, want := range known {
+		if got := wantFor(sev); got != want {
+			t.Errorf("wantFor(%q) = %s, want %s", sev, got, want)
+		}
+	}
+
+	for _, bad := range []string{"warnn", "eror", "ERROR", "critical", "info "} {
+		got := wantFor(bad)
+		if got == verdict.VerdictPass {
+			t.Errorf("wantFor(%q) = PASS — an unrecognized severity must never reach the "+
+				"PASS-permitting branch (CR-T8)", bad)
+		}
+		if got != verdict.VerdictWarn {
+			t.Errorf("wantFor(%q) = %s, want WARN (safe, and not an invented FAIL)", bad, got)
+		}
+	}
+}

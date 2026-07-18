@@ -149,6 +149,12 @@ func (r Result) Validate() error {
 		if f.Code == "" {
 			return &ContractError{Msg: "finding has empty code", Index: i}
 		}
+		if !ValidSeverity(f.Severity) {
+			// CR-T8: caught at emit time, so a severity nobody recognizes surfaces
+			// as a loud contract error (exit 3, not a verdict) instead of quietly
+			// steering the verdict decision in validate.wantFor.
+			return &ContractError{Msg: "finding " + f.Code + " has unknown severity " + f.Severity, Index: i}
+		}
 		if f.Severity == SeverityError && f.Remediation == "" {
 			return &ContractError{Msg: "error finding " + f.Code + " has no remediation", Index: i}
 		}
@@ -163,3 +169,19 @@ type ContractError struct {
 }
 
 func (e *ContractError) Error() string { return "verdict contract: " + e.Msg }
+
+// ValidSeverity reports whether s is one of the three severities the contract
+// defines. An empty string is accepted as the historical "unset", which callers
+// have always treated as info.
+//
+// It exists because severity is a plain string on the wire (INV-VERDICT-STABLE
+// fixes the JSON shape, so it cannot become a typed enum without a contract
+// break), and a value nobody recognizes must not be able to reach the
+// PASS-permitting branch of a verdict decision — see validate.wantFor (CR-T8).
+func ValidSeverity(s string) bool {
+	switch s {
+	case SeverityError, SeverityWarn, SeverityInfo, "":
+		return true
+	}
+	return false
+}

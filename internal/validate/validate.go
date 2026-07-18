@@ -167,9 +167,23 @@ func wantFor(severity string) string {
 		return verdict.VerdictFail
 	case verdict.SeverityWarn:
 		return verdict.VerdictWarn
-	default:
+	case verdict.SeverityInfo, "":
+		// Info (and the historical unset) argue for a clean PASS, which capping
+		// downgrades if the facts underneath are weak.
 		return verdict.VerdictPass
 	}
+
+	// CR-T8. Anything else is a value nobody recognizes — a typo'd constant in a
+	// future analyzer, or a severity from a newer contract this build predates.
+	// The old `default` sent it to PASS, i.e. the single most permissive outcome
+	// was the fallback for "I do not know what this is", and nothing downstream
+	// would have caught it: capping can only weaken a PASS that rests on weak
+	// FACTS, and a typo'd severity says nothing about facts.
+	//
+	// WARN is the safe direction: it can never certify, and it is visible. It is
+	// deliberately not FAIL — inventing a failure from a string we failed to
+	// parse would be its own kind of wrong answer.
+	return verdict.VerdictWarn
 }
 
 // MarkExact upgrades every fact in f to `exact` confidence. It is used when the

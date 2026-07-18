@@ -231,3 +231,56 @@ func TestExactRowsUnlockPassEstimatedDoesNot(t *testing.T) {
 			"stopped discriminating or --exact no longer earns anything")
 	}
 }
+
+// --- CR-T8: an unrecognized severity must never reach the PASS branch -------
+//
+// Severity is a plain string on the wire (INV-VERDICT-STABLE fixes the JSON
+// shape, so it cannot become a typed enum without a contract break). wantFor's
+// old `default` sent anything it did not recognize to PASS — the single most
+// permissive outcome was the fallback for "I do not know what this is" — and
+// nothing downstream would catch it: capping can only weaken a PASS resting on
+// weak FACTS, and a typo'd severity says nothing about facts.
+//
+// Not live when found: every in-repo analyzer emits one of the three constants.
+// This is the structural guard around that.
+
+func TestValidSeverityAcceptsOnlyTheContract(t *testing.T) {
+	for _, ok := range []string{SeverityError, SeverityWarn, SeverityInfo, ""} {
+		if !ValidSeverity(ok) {
+			t.Errorf("ValidSeverity(%q) = false, want true", ok)
+		}
+	}
+	for _, bad := range []string{"warnn", "eror", "ERROR", "critical", "notice", "0"} {
+		if ValidSeverity(bad) {
+			t.Errorf("ValidSeverity(%q) = true — an unrecognized severity must not be accepted", bad)
+		}
+	}
+}
+
+// TestUnknownSeverityIsRejectedAtEmitTime: the loud half. A malformed severity
+// becomes a contract error (exit 3, explicitly not a verdict) rather than
+// silently steering the decision.
+func TestUnknownSeverityIsRejectedAtEmitTime(t *testing.T) {
+	r := Result{
+		Rowshape: Rowshape,
+		Verdict:  VerdictPass,
+		Findings: []Finding{{Code: "RS-X-001", Severity: "warnn", Title: "typo'd severity"}},
+	}
+	err := r.Validate()
+	if err == nil {
+		t.Fatal("a finding with an unknown severity must fail contract validation")
+	}
+	if !strings.Contains(err.Error(), "warnn") {
+		t.Errorf("the error should name the offending value, got %v", err)
+	}
+
+	// The three real severities still validate, or this guard would break every
+	// legitimate verdict.
+	for _, sev := range []string{SeverityWarn, SeverityInfo} {
+		ok := Result{Rowshape: Rowshape, Verdict: VerdictPass,
+			Findings: []Finding{{Code: "RS-X-001", Severity: sev, Title: "t"}}}
+		if err := ok.Validate(); err != nil {
+			t.Errorf("severity %q must validate, got %v", sev, err)
+		}
+	}
+}
