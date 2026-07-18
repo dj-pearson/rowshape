@@ -17,7 +17,9 @@ func TestRSConstraintCorpusVerdicts(t *testing.T) {
 		want string
 	}{
 		{"not_valid_validated_same_tx", verdict.VerdictWarn},
-		{"rsconstraint-not-valid-same-tx", verdict.VerdictWarn},
+		// CR-T15: renamed and repurposed as the NEGATIVE case — the two-step
+		// split RS-CONSTRAINT-001 recommends must not itself be flagged.
+		{"rsconstraint-not-valid-separate-tx", verdict.VerdictPass},
 		{"rsconstraint-check-conflict", verdict.VerdictFail},
 	}
 	for _, c := range cases {
@@ -35,7 +37,7 @@ func TestRSConstraintCorpusVerdicts(t *testing.T) {
 // RS-CONSTRAINT-001 with a bucketed scan estimate, depends_on, and the
 // split-across-transactions remediation.
 func TestRSConstraintSameTx(t *testing.T) {
-	f, mig := loadCorpus(t, "rsconstraint-not-valid-same-tx")
+	f, mig := loadCorpus(t, "not_valid_validated_same_tx")
 	got := rsConstraint{}.Analyze(f, captureOf(mig, "public.orders", 12_000))
 	if len(got) != 1 {
 		t.Fatalf("expected 1 RS-CONSTRAINT finding, got %d", len(got))

@@ -1,0 +1,8 @@
+{
+  "description": "CREATE UNIQUE INDEX on a column with NO uniqueness fact must not certify. Capping downgrades the would-be PASS to WARN and the remediation must name the resolving command (RFC §7.4). CR-T15: this is RS-INDEX-010's capped branch, which had no corpus case at all — before this, resolve_contains was asserted only on RS-DATA cases, so the 'here is how to turn this WARN into a PASS' promise was unverified for the entire RS-INDEX family. RS-INDEX-001 is declared alongside it because the index is built non-concurrently (CONCURRENTLY cannot run inside the transaction the capture applies the migration in).",
+  "verdict": "WARN",
+  "findings": [
+    {"code": "RS-INDEX", "severity": "warn", "resolve_contains": "pull --exact"},
+    {"code": "RS-INDEX", "severity": "warn"}
+  ]
+}

@@ -1,0 +1,5 @@
+{
+  "description": "NOT VALID added in one transaction and VALIDATE-d in a SEPARATE one — the two-step split RS-CONSTRAINT-001's own remediation recommends. It must produce NO RS-CONSTRAINT finding: a check that fires on the fix it recommends is a false positive that gets the tool switched off. The same-transaction (positive) case is not_valid_validated_same_tx.",
+  "verdict": "PASS",
+  "findings": []
+}

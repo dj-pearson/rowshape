@@ -1,6 +1,6 @@
 rowshape_fixture: "1"
 meta:
-  id: rsconstraint-not-valid-same-tx
+  id: rsconstraint-not-valid-separate-tx
   engine: {name: postgres, version: "16"}
   privacy: standard
   profile: {mode: fast, escalated: []}

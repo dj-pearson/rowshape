@@ -1,7 +1,0 @@
-{
-  "description": "NOT VALID + VALIDATE in one transaction defeats the split — RS-CONSTRAINT WARN with the split-across-transactions recipe.",
-  "verdict": "WARN",
-  "findings": [
-    {"code": "RS-CONSTRAINT", "severity": "warn"}
-  ]
-}

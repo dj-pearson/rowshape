@@ -1,7 +1,10 @@
 {
-  "description": "DELETE on a parent with a long-tailed ON DELETE CASCADE (max 21000 vs mean 15.5) risks a huge slow cascade — RS-PERF WARN.",
+  "description": "TRUNCATE on a cascade parent with a long-tailed fan-out — RS-PERF WARN. Covers deleteTarget's TRUNCATE branch, which is separate from the DELETE branch exercised by cascade_delete_fanout and had no corpus case before CR-T15. The two cases are deliberately no longer near-duplicates: same pathology, different parser path.",
   "verdict": "WARN",
   "findings": [
-    {"code": "RS-PERF", "severity": "warn"}
+    {
+      "code": "RS-PERF",
+      "severity": "warn"
+    }
   ]
 }
