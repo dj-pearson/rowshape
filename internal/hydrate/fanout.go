@@ -165,7 +165,9 @@ func fanoutFacts(fo *fixture.Fanout, childN, parentN int64) (mean, p50, p95, mx 
 func bodyQuantile(q, p50, p95 float64) float64 {
 	// Reflect p95 about p50 for a plausible lower tail, never below 1 — every
 	// parent in this population has at least one child by definition.
-	floor := math.Max(1, 2*p50-p95)
+	// float64() for the same fusion reason as lerp: 2*p50-p95 is a multiply
+	// feeding a subtract, which fuses to FMS on the same architectures.
+	floor := math.Max(1, float64(2*p50)-p95)
 	if q <= 0.5 {
 		return lerp(floor, p50, q/0.5)
 	}
@@ -239,8 +241,13 @@ func reconcile(counts []int64, nonEmpty, childN int64) {
 }
 
 // lerp is a linear interpolation between a and b at t in [0, 1].
+//
+// The float64() conversion prevents the compiler fusing the multiply and add
+// into a single FMA, which it does on arm64/ppc64/s390x but not amd64. Without
+// it the same fixture hydrates differently per architecture (INV-DETERMINISM).
+// See engine.go's sampleHistogram for the measurements and D-011.
 func lerp(a, b, t float64) float64 {
-	return a + (b-a)*t
+	return a + float64((b-a)*t)
 }
 
 func clamp(v, lo, hi int64) int64 {

@@ -101,3 +101,33 @@ jobs:
           # checks overnight and turns CI red on a commit that changed nothing —
           # which trains everyone to ignore the lint job. Bump this deliberately.
           version: v2.12.2
+
+  determinism-matrix:
+    # CR-T14. INV-DETERMINISM promises byte-identical hydrate output on ANY
+    # platform, but nothing enforced it across architectures — and the risk was
+    # concrete, not theoretical: the synthesis path had `x + y*z` expressions,
+    # which the Go spec lets an implementation fuse into a single FMA, and the
+    # compiler DOES fuse them on arm64 while amd64 does not. Measured, fusing
+    # changes ~0.07% of the emitted int64 values (about one row in 1,380).
+    #
+    # This job runs the hydrate digest test on BOTH architectures. The promise is
+    # cross-architecture, so a single-architecture check could never have caught
+    # the one bug it exists to catch.
+    name: hydrate determinism (${{ matrix.arch.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - { runner: ubuntu-latest }
+          - { runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.arch.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Report architecture
+        run: go env GOARCH GOOS
+      - name: Hydrate determinism (golden digest must match on every GOARCH)
+        run: go test ./internal/hydrate/ -run 'TestHydrateOutputDigestIsStable|TestLerpIsFusionStable|TestFMAFusionWouldChangeSynthesizedValues' -v

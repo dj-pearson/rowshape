@@ -255,3 +255,53 @@ bump, not folded into a code-review remediation story. Every other fact in the
 format carries its confidence; `Range` looks like an omission rather than a
 decision, and option A permanently caps an entire finding class at WARN-or-worse
 regardless of how well the data was measured.
+
+---
+
+## D-011 — Explicit `float64()` on the synthesis path is load-bearing (CR-T14)
+
+**Status:** decided and implemented.
+
+`INV-DETERMINISM` (RFC §10) promises that the same fixture, seed and engine
+version produce **byte-identical** output on any platform. Three expressions on
+the synthesis path had the form `x + y*z`:
+
+| Site | Expression |
+|---|---|
+| `internal/hydrate/engine.go` `sampleHistogram` | `lo + r.float64()*span` |
+| `internal/hydrate/fanout.go` `lerp` | `a + (b-a)*t` |
+| `internal/hydrate/fanout.go` `bodyQuantile` | `2*p50 - p95` |
+
+The Go spec permits an implementation to **fuse** a floating-point multiply and
+add into one operation with a single rounding, "possibly across statements". The
+gc compiler does exactly this on **arm64, ppc64 and s390x**, and does **not** on
+amd64 (FMA3 is outside the GOAMD64=v1 baseline). So a developer on Apple Silicon
+and amd64 CI would synthesize different data from the same fixture and seed.
+
+**This was measured, not assumed.** Simulating a fusing backend with
+`math.FMA(r, span, lo)` over 2,000,000 draws at realistic fixture magnitudes:
+
+- **14.15%** of float results differ
+- **0.0725%** of the `int64` values that actually reach the SQL differ — about
+  **one row in 1,380** (~72 rows on a 100k-row table)
+
+**Remedy, from the spec itself:** "An explicit floating-point type conversion
+rounds to the precision of the target type, preventing fusion that would discard
+that rounding." All three sites now wrap the product in `float64(...)`.
+
+**Do not "simplify" these conversions away.** They look redundant and are not.
+Each carries a comment saying so, and `TestFMAFusionWouldChangeSynthesizedValues`
+fails if the hazard ever stops being real (i.e. it would tell you when the
+conversions genuinely became unnecessary, rather than leaving them as cargo).
+
+**Enforcement:** `TestHydrateOutputDigestIsStable` pins a golden SHA-256 of the
+emitted SQL, and the `determinism-matrix` job in `ci.yml` runs it on
+`ubuntu-latest` **and** `ubuntu-24.04-arm`. A cross-architecture promise cannot
+be enforced by a single-architecture job.
+
+**Not yet observed on real arm64 hardware.** The fix is derived from the language
+spec and verified by FMA simulation plus an arm64 cross-compile; the arm64 CI job
+is written but has not run here (no arm64 runner available in this environment,
+and pushing is gated by D-008). First green run of `determinism-matrix` on
+`ubuntu-24.04-arm` is what converts this from "correct by construction" to
+"observed".

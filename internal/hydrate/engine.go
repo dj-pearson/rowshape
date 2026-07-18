@@ -176,7 +176,20 @@ func sampleHistogram(h *fixture.Histogram, r *rng) (any, bool) {
 		lo, hi = hi, lo
 	}
 	span := hi - lo
-	v := lo + r.float64()*span
+	// The float64() conversion is LOAD-BEARING, not decoration. The Go spec lets
+	// an implementation fuse a multiply and an add into a single FMA with only
+	// one rounding, and the compiler DOES fuse this shape on arm64, ppc64 and
+	// s390x while amd64 does not — so the same fixture and seed would synthesize
+	// different values on an Apple Silicon laptop than in amd64 CI, breaking
+	// INV-DETERMINISM's "byte-identical on ANY platform".
+	//
+	// The spec also gives the remedy: "An explicit floating-point type conversion
+	// rounds to the precision of the target type, preventing fusion that would
+	// discard that rounding." Measured over 2M randomly drawn (lo, r, span) at
+	// realistic fixture magnitudes, fusing changes 14.15% of the float results
+	// and 0.07% of the int64 values that actually reach the SQL — roughly one row
+	// in 1,380. Do not "simplify" this back.
+	v := lo + float64(r.float64()*span)
 	return int64(v), true
 }
 
