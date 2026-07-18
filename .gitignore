@@ -10,3 +10,6 @@ coverage.*
 
 # Editor / OS
 .DS_Store
+
+# Session scratch helpers (see CR-loop): never part of the repo.
+.cr_*.py
