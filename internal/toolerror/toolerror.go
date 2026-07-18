@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+
+	"github.com/rowshape/rowshape/internal/exitcode"
 )
 
 // Kind is a literal that marks the payload as a tool error, never a verdict, so a
@@ -63,9 +65,10 @@ func New(cat Category, message, hint string) *ToolError {
 // Error implements the error interface.
 func (e *ToolError) Error() string { return "tool error (" + string(e.Category) + "): " + e.Message }
 
-// ExitCode is always 3: a tool error is never PASS/FAIL/WARN (PRD §10,
-// INV-VERDICT-STABLE).
-func (e *ToolError) ExitCode() int { return 3 }
+// ExitCode is always ToolError (3): a tool error is never PASS/FAIL/WARN
+// (PRD §10, INV-VERDICT-STABLE). The value comes from internal/exitcode rather
+// than a literal so it cannot drift from verdict.ExitToolError (CR-T23).
+func (e *ToolError) ExitCode() int { return exitcode.ToolError }
 
 // WriteJSON writes the machine-readable payload — the form an agent parses and
 // branches on.

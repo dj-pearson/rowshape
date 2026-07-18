@@ -13,17 +13,22 @@
 // signable in-toto/DSSE predicate from day one (dsse.go, INV-DSSE-SHAPE).
 package verdict
 
+import "github.com/rowshape/rowshape/internal/exitcode"
+
 // Rowshape is the verdict contract version tag carried in every Result. It is
 // the "rowshape" field of PRD §10 and bumps only on a breaking contract change.
 const Rowshape = "1"
 
 // Exit codes are part of the public API and are permanent (INV-VERDICT-STABLE,
 // PRD §10). Every command maps its outcome onto exactly these.
+// The names stay here because they are what every caller already uses; the
+// VALUES now come from internal/exitcode, so this package and internal/toolerror
+// cannot drift apart (CR-T23).
 const (
-	ExitPass      = 0 // PASS
-	ExitFail      = 1 // FAIL
-	ExitWarnOnly  = 2 // WARN-only (configurable to fail — see ExitCode)
-	ExitToolError = 3 // tool error (could not produce a verdict)
+	ExitPass      = exitcode.Pass      // PASS
+	ExitFail      = exitcode.Fail      // FAIL
+	ExitWarnOnly  = exitcode.WarnOnly  // WARN-only (configurable to fail — see ExitCode)
+	ExitToolError = exitcode.ToolError // tool error (could not produce a verdict)
 )
 
 // Verdict values (PRD §10). A verdict is capped by the minimum confidence of the
