@@ -1,7 +1,14 @@
 {
-  "description": "VALIDATE CONSTRAINT on a FK with pre-existing orphans (orphan_fraction 0.4%, exact) fails.",
+  "description": "VALIDATE CONSTRAINT on a FK with pre-existing orphans (orphan_fraction 0.4%, exact) fails. RS-CONSTRAINT is declared too: the migration adds the constraint NOT VALID and validates it in the SAME transaction, which is RS-CONSTRAINT-001 by definition, so this case genuinely exhibits two distinct pathologies. Undeclared until CR-T3 tightened the harness.",
   "verdict": "FAIL",
   "findings": [
-    {"code": "RS-DATA", "severity": "error"}
+    {
+      "code": "RS-DATA",
+      "severity": "error"
+    },
+    {
+      "code": "RS-CONSTRAINT",
+      "severity": "warn"
+    }
   ]
 }

@@ -68,6 +68,7 @@ func (p pipelineValidator) Validate(c Case) (string, []ProducedFinding, error) {
 	for _, f := range res.Findings {
 		produced = append(produced, ProducedFinding{
 			Code:        codeFamily(f.Code),
+			FullCode:    f.Code,
 			Severity:    f.Severity,
 			Remediation: f.Remediation,
 		})

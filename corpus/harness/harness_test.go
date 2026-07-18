@@ -1,7 +1,9 @@
 package harness
 
 import (
+	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -148,25 +150,139 @@ func TestCorpusVerdicts(t *testing.T) {
 			if verdict != wantVerdict {
 				t.Errorf("verdict = %s, want %s (PG %s)", verdict, wantVerdict, PGMajor())
 			}
-			for _, want := range wantFindings {
-				got := findingByCode(findings, want.Code)
-				if got == nil {
-					t.Errorf("missing expected finding %s", want.Code)
-					continue
-				}
-				if want.ResolveContains != "" && !strings.Contains(got.Remediation, want.ResolveContains) {
-					t.Errorf("%s remediation %q must name the resolving command %q (§7.4)", want.Code, got.Remediation, want.ResolveContains)
-				}
-			}
+			compareFindings(t, findings, wantFindings)
 		})
 	}
 }
 
-func findingByCode(findings []ProducedFinding, code string) *ProducedFinding {
-	for i := range findings {
-		if findings[i].Code == code {
-			return &findings[i]
+// compareFindings asserts the produced findings match the expectation exactly.
+//
+// CR-T3. This used to check only that each EXPECTED finding's code family was
+// present, which left two holes wide enough to drive the whole corpus through:
+//
+//  1. Severity was never compared. ExpectedFinding.Severity was declared in
+//     every expected.json and read by nothing; ProducedFinding.Severity was
+//     collected by the validator and then dropped on the floor. An analyzer
+//     could emit `info` where the corpus said `error` and the case stayed green
+//     — and severity is what drives the verdict, so that is not a cosmetic
+//     mismatch.
+//  2. Extra findings were tolerated. Nothing looked at what the analyzer
+//     produced beyond the expected list, so a spurious finding on an unrelated
+//     table was invisible.
+//
+// Both matter more than they look, because "the corpus passes" is the evidence
+// behind every other correctness claim in this repo. A measuring instrument
+// that reports success for two different states is not measuring.
+//
+// Matching is per code FAMILY, which is what expected.json names: the exact
+// count of each family, and the multiset of severities within it. Families are
+// matched rather than full codes deliberately (INV-VERDICT-STABLE keeps codes
+// permanent, but a new sibling like RS-LOCK-002 should not break every case);
+// counts and severities are exact, so an extra finding cannot hide inside a
+// family it shares.
+func compareFindings(t *testing.T, produced []ProducedFinding, want []ExpectedFinding) {
+	t.Helper()
+
+	gotBy := map[string][]ProducedFinding{}
+	for _, f := range produced {
+		gotBy[f.Code] = append(gotBy[f.Code], f)
+	}
+	wantBy := map[string][]ExpectedFinding{}
+	for _, w := range want {
+		wantBy[w.Code] = append(wantBy[w.Code], w)
+	}
+
+	for fam, ws := range wantBy {
+		gs := gotBy[fam]
+		if len(gs) == 0 {
+			t.Errorf("missing expected finding %s", fam)
+			continue
+		}
+		if len(gs) != len(ws) {
+			t.Errorf("%s: produced %d findings, expected %d (produced: %s)",
+				fam, len(gs), len(ws), describeFindings(gs))
+		}
+
+		// Severity is compared as a multiset so a case expecting two findings of
+		// one family cannot pass by matching the same one twice.
+		if gotSev, wantSev := severitiesOf(gs), expectedSeveritiesOf(ws); !equalStrings(gotSev, wantSev) {
+			t.Errorf("%s: severities = %v, want %v (produced: %s)",
+				fam, gotSev, wantSev, describeFindings(gs))
+		}
+
+		// The capping contract: a capped WARN must name the command that
+		// resolves it (RFC §7.4). Satisfied by SOME finding in the family.
+		for _, w := range ws {
+			if w.ResolveContains == "" {
+				continue
+			}
+			found := false
+			for _, g := range gs {
+				if strings.Contains(g.Remediation, w.ResolveContains) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("%s: no finding's remediation names the resolving command %q (§7.4); produced: %s",
+					fam, w.ResolveContains, describeFindings(gs))
+			}
 		}
 	}
-	return nil
+
+	// Anything produced that nobody expected. This is the half that lets a case
+	// "pass" while the analyzer also fires on something unrelated.
+	for fam, gs := range gotBy {
+		if _, ok := wantBy[fam]; !ok {
+			t.Errorf("unexpected finding family %s that expected.json does not account for: %s",
+				fam, describeFindings(gs))
+		}
+	}
+}
+
+func severitiesOf(fs []ProducedFinding) []string {
+	out := make([]string, 0, len(fs))
+	for _, f := range fs {
+		out = append(out, f.Severity)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func expectedSeveritiesOf(fs []ExpectedFinding) []string {
+	out := make([]string, 0, len(fs))
+	for _, f := range fs {
+		out = append(out, f.Severity)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// describeFindings renders findings as "RS-LOCK-001(error)" so a failure names
+// the specific code that arrived, not just its family.
+func describeFindings(fs []ProducedFinding) string {
+	parts := make([]string, 0, len(fs))
+	for _, f := range fs {
+		code := f.FullCode
+		if code == "" {
+			code = f.Code
+		}
+		parts = append(parts, fmt.Sprintf("%s(%s)", code, f.Severity))
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, ", ")
 }

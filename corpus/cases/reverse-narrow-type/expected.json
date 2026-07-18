@@ -1,7 +1,14 @@
 {
-  "description": "Narrowing amount bigint -> integer can truncate values with no lossless rollback — RS-REVERSE, a WARN with the add-column-and-backfill recipe.",
+  "description": "Narrowing amount bigint -> integer can truncate values with no lossless rollback — RS-REVERSE, a WARN with the add-column-and-backfill recipe. RS-LOCK is declared too: the same statement rewrites the table under ACCESS EXCLUSIVE, so reversibility and lock cost both fire. That was always true (the migration comment says so), but it went undeclared until CR-T3 made the harness reject findings expected.json does not account for.",
   "verdict": "WARN",
   "findings": [
-    {"code": "RS-REVERSE", "severity": "warn"}
+    {
+      "code": "RS-REVERSE",
+      "severity": "warn"
+    },
+    {
+      "code": "RS-LOCK",
+      "severity": "warn"
+    }
   ]
 }

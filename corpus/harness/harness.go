@@ -180,7 +180,14 @@ func (c Case) Validate() error {
 // ProducedFinding is a finding a validator actually emitted, enough to check
 // both the code and the capping contract (that the remediation names a command).
 type ProducedFinding struct {
-	Code        string
+	// Code is the stable family (e.g. "RS-LOCK"), which is what expected.json
+	// names.
+	Code string
+	// FullCode is the specific code (e.g. "RS-LOCK-001"). Not matched against —
+	// expected.json deliberately pins families so a new sibling code is not a
+	// corpus break — but carried so a failure message can say WHICH finding
+	// arrived, rather than only which family.
+	FullCode    string
 	Severity    string
 	Remediation string
 }
