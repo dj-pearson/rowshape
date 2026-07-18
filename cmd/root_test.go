@@ -3,6 +3,9 @@ package cmd
 import (
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -70,5 +73,47 @@ func TestUsageErrorsAreReportable(t *testing.T) {
 func TestHelpIsNotAnError(t *testing.T) {
 	if err := runRoot(t, "--help"); err != nil {
 		t.Errorf("--help should succeed, got: %v", err)
+	}
+}
+
+// TestREADMEListsEveryCommand: CR-T29. The README described every command as a
+// "phase 0 stub that returns exit code 3" long after they were all implemented —
+// the first thing a visitor reads, saying the tool does nothing. It also listed
+// eight commands when the binary had ten.
+//
+// Doc drift is only catchable by a human noticing, so this makes the README's
+// command list answerable to the actual command tree.
+func TestREADMEListsEveryCommand(t *testing.T) {
+	readme, err := os.ReadFile(filepath.Join("..", "README.md"))
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+	text := string(readme)
+
+	// cobra adds `help` and `completion` to every binary; they are not rowshape's
+	// surface and the README should not have to list them.
+	builtin := map[string]bool{"help": true, "completion": true}
+
+	var checked int
+	for _, c := range NewRootCmd().Commands() {
+		name := c.Name()
+		if builtin[name] {
+			continue
+		}
+		checked++
+		if !strings.Contains(text, "`"+name+"`") {
+			t.Errorf("README does not mention the %q command; a reader cannot discover it", name)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no commands found on the root command; this check would pass over nothing")
+	}
+	t.Logf("verified the README mentions all %d rowshape commands", checked)
+
+	// The stale claim itself, pinned so it cannot come back.
+	for _, stale := range []string{"phase 0 these are stubs", "stubs that return exit code 3"} {
+		if strings.Contains(text, stale) {
+			t.Errorf("README still carries the stale phase-0 stub claim: %q", stale)
+		}
 	}
 }

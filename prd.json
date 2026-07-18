@@ -2125,9 +2125,10 @@
             "README.md"
           ],
           "type": "docs",
-          "passes": false,
-          "status": "todo",
-          "priority": 29
+          "passes": true,
+          "status": "done",
+          "priority": 29,
+          "note": "Closed. The README said every command was a \"phase 0 stub that returns exit code 3\" — the first thing a visitor reads, telling them the tool does nothing, long after all ten commands were implemented.\n\nFOUND A SECOND DRIFT the story did not mention: the list named eight commands while the binary exposes ten. `inspect` and `annotate` were undiscoverable from the README entirely. Checked against the real `rowshape --help` output rather than against the story's description of the problem.\n\nReplaced the stub claim with what is actually true, including the honest part: the commands are all implemented, and what is NOT done is distribution and the launch surfaces (Action, docs site, recorded demo), which are gated on owner-only namespace and release work — pointing at D-008 and the blocked stories rather than leaving a reader to guess why a repo this complete has no releases.\n\nPRESERVED VERBATIM: the Docker-free initdb recipe. I followed it repeatedly through this entire phase — it is what the live PG 18 cluster on port 5433 came from — and it works exactly as written, including its claim that exactly one test (TestContainerLifecycle) should skip.\n\nDRIFT GUARD: TestREADMEListsEveryCommand walks the real cobra command tree and asserts the README mentions each command, skipping cobra's built-in help/completion. Doc drift is otherwise only catchable by a human noticing, which is precisely how this survived. It also pins the stale sentence itself so it cannot come back, and Fatals if the command tree is empty so it cannot pass over nothing.\n\nMutation-tested both halves: removing `inspect`/`annotate` from the README fails with \"a reader cannot discover it\", and reinstating the stub sentence fails naming the exact phrase.\n\nVerified: gofmt/vet clean, golangci-lint 0 issues, cmd green."
         }
       ]
     },

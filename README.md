@@ -60,8 +60,13 @@ the suite will still say `ok`.
 ## Commands
 
 `rowshape` exposes: `init`, `pull`, `hydrate`, `validate`, `explain`, `plan`,
-`verify`, `mcp`. In phase 0 these are stubs that return exit code 3
-(tool error). Behavior is filled in phase by phase per `prd.json`.
+`verify`, `inspect`, `annotate`, `mcp`. All of them are implemented — run
+`rowshape <command> --help` for the flags each one takes.
+
+What is *not* done is distribution and the launch surfaces (the GitHub Action,
+the docs site, the recorded agent-loop demo), which are gated on owner-only
+namespace and release work — see `docs/DECISIONS.md` D-008 and the `blocked`
+stories in `prd.json`.
 
 Exit codes are part of the public contract: `0` PASS · `1` FAIL · `2` WARN-only
 · `3` tool error.
