@@ -354,12 +354,19 @@ func SplitStatementsIn(file, sql string) []Located {
 			}
 		case c == '$': // possible dollar-quote
 			if tag, ok := dollarTag(runes, i); ok {
+				tagLen := len([]rune(tag))
 				buf.WriteString(tag)
-				i += len([]rune(tag))
+				i += tagLen
 				for i < n {
-					if strings.HasPrefix(string(runes[i:]), tag) {
+					// Match the closing tag rune-by-rune. Building string(runes[i:])
+					// here allocated the WHOLE remaining input on every character of
+					// the dollar body, making a large migration's split O(n^2) in
+					// time and memory (a benchmark caught it: ~0.5s / 117 MB for a
+					// ~1000-statement script). A prefix compare over the rune slice
+					// is O(tag) and allocates nothing.
+					if hasRunesPrefix(runes, i, tag) {
 						buf.WriteString(tag)
-						i += len([]rune(tag))
+						i += tagLen
 						break
 					}
 					buf.WriteRune(runes[i])
@@ -393,6 +400,18 @@ func opensEscapeString(runes []rune, i int) bool {
 	}
 	if i-2 >= 0 && (isAlnum(runes[i-2]) || runes[i-2] == '_') {
 		return false
+	}
+	return true
+}
+
+// hasRunesPrefix reports whether the rune slice starting at i begins with s,
+// comparing rune-by-rune without allocating (unlike string(runes[i:])).
+func hasRunesPrefix(runes []rune, i int, s string) bool {
+	for _, r := range s {
+		if i >= len(runes) || runes[i] != r {
+			return false
+		}
+		i++
 	}
 	return true
 }
