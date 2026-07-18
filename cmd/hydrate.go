@@ -8,6 +8,7 @@ import (
 	"github.com/rowshape/rowshape/internal/fixture"
 	"github.com/rowshape/rowshape/internal/hydrate"
 	"github.com/rowshape/rowshape/internal/target"
+	"github.com/rowshape/rowshape/internal/validate"
 	"github.com/spf13/cobra"
 )
 
@@ -108,11 +109,54 @@ func runHydrate(opts *hydrateOptions) error {
 	return nil
 }
 
+// hydrateTargetHost returns the host hydrate is about to write to: the live
+// --target when one is given, otherwise the --ephemeral admin server (the
+// disposable database is created ON that server, so it is the host at risk).
+func hydrateTargetHost(opts *hydrateOptions) string {
+	dsn := opts.target
+	if dsn == "" {
+		dsn = opts.ephemeral
+	}
+	return hostOf(dsn)
+}
+
+// checkHydrateHost enforces the host-match refusal for hydrate
+// (INV-BLAST-RADIUS-ZERO, PRD §11).
+//
+// `validate` has always refused a target on the fixture's source host. hydrate
+// does the SAME CLASS OF WRITE — CREATE SCHEMA, CREATE TABLE, COPY — and had no
+// host check at all, so `hydrate --target` walked straight past a refusal that
+// `validate --target` enforces on the identical URL. The two commands share flag
+// names and habits, which is exactly what makes pointing the wrong one at
+// production an easy mistake rather than an exotic one.
+//
+// The decision is delegated to validate.CheckHost rather than reimplemented: it
+// already hashes the target under every spelling that is definitionally the same
+// machine (verbatim, DNS-normalized, and all loopback aliases). A second
+// implementation here would be a second thing to get wrong, and the single-hash
+// compare it replaced was a proven bypass.
+func checkHydrateHost(f *fixture.Fixture, opts *hydrateOptions) error {
+	host := hydrateTargetHost(opts)
+	if host == "" {
+		return nil
+	}
+	return validate.CheckHost(f.Meta.Source, host)
+}
+
 // loadIntoTarget hydrates directly into a live database: a user-provided one
 // (--target) or a disposable ephemeral database created and dropped for the run
 // (--ephemeral). Connection strings and credentials are never logged.
 func loadIntoTarget(f *fixture.Fixture, genOpts hydrate.Options, opts *hydrateOptions) error {
 	ctx := context.Background()
+
+	// Refuse BEFORE anything is created or connected. This has to precede
+	// target.NewEphemeral, which itself issues a CREATE DATABASE on the admin
+	// server — by the time that returns, the write has already happened.
+	if err := checkHydrateHost(f, opts); err != nil {
+		fmt.Fprintln(os.Stderr, "rowshape hydrate: refusing to hydrate into the fixture's source host — hydrate writes to its target (CREATE SCHEMA/TABLE + COPY) and must only ever touch a disposable database, never production")
+		fmt.Fprintln(os.Stderr, "point --target/--ephemeral at a disposable or non-production host")
+		return toolError()
+	}
 
 	var t target.Target
 	if opts.target != "" {

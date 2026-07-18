@@ -6,8 +6,8 @@
     "RFC-0001-rowshape-fixture-spec.md (Draft v0.3)"
   ],
   "build_status": {
-    "note": "Full A-to-Z build-out complete: every phase (0 through 5) carries tasks and milestones are finalized. Phase-5 remains deferred:true (recorded-now / built-later, cloud gated on traction per PRD §14). All stories are derived from PRD-rowshape-v1.md and RFC-0001.",
-    "sections_complete": ["meta", "project", "stack", "loop", "invariants", "kill_criteria", "phase-0", "phase-1", "phase-1b", "phase-2", "phase-3", "phase-4", "phase-5", "milestones"],
+    "note": "Full A-to-Z build-out complete: every phase (0 through 5) carries tasks and milestones are finalized. Phase-5 remains deferred:true (recorded-now / built-later, cloud gated on traction per PRD §14). All stories are derived from PRD-rowshape-v1.md and RFC-0001 — EXCEPT phase-cr, whose 29 stories are derived from the full-codebase review rather than the PRD/RFC, and which is inserted at order 5 (ahead of the phase-4 launch surfaces, which moved to order 6; phase-5 to order 7). See phase-cr.scope_note for why it precedes the launch.",
+    "sections_complete": ["meta", "project", "stack", "loop", "invariants", "kill_criteria", "phase-0", "phase-1", "phase-1b", "phase-2", "phase-3", "phase-cr", "phase-4", "phase-5", "milestones"],
     "sections_pending": []
   },
 
@@ -1216,8 +1216,898 @@
       ]
     },
     {
-      "id": "phase-4",
+      "id": "phase-cr",
       "order": 5,
+      "name": "Code-review remediation — blockers, then high, then medium, then low",
+      "weeks": "11b (between phase-3 and the phase-4 launch surfaces)",
+      "ships": "The fixes for every finding from the full-codebase review: two blockers (a blast-radius-zero bypass in `hydrate`, and two analyzers reading unresolved table names as an empty table), five high findings, nine medium, and the low/doc items — plus the test coverage that pins each one so it cannot silently return.",
+      "source": "Full-codebase review (154 Go files, ~23,870 lines): gofmt/vet/build clean, golangci-lint v2.12.2 zero issues, and the entire suite green INCLUDING every Postgres-backed test, run for real against a disposable local cluster via the README's Docker-free initdb recipe (only TestContainerLifecycle skipped, needing Docker — exactly as the README documents). Findings are correctness/provenance issues, not mechanical ones.",
+      "scope_note": "This phase is placed BEFORE phase-4 deliberately. Phase 4 is the launch: the GitHub Action, the public docs, and the agent-loop demo that is the week-12 kill-criterion gate. Both blockers are in the code those surfaces render and demo — shipping the launch on top of a `hydrate` that can write to the source host, or analyzers that answer `instant` for a 50M-row table, would publish the defects rather than the product. Nothing here adds product surface; it is correctness, provenance and coverage only. NOTE ON ORDERING: CR-T3 (corpus harness ignores Severity) is promoted above the other high findings because the corpus is the instrument used to verify CR-T2 and CR-T5 — fix the measuring device before trusting its readings.",
+      "review_disposition": "The review found no defect in the capping ENGINE itself: Ceiling, DependencyConfidence and Cap are correct and well-tested, including a structural test proving a finding cannot self-assert confidence to escape capping. The frozen-package items (CR-T8, CR-T9, CR-T23, CR-T24, in internal/fixture / internal/verdict / internal/toolerror) are missing guards and provenance nits around an otherwise sound design, NOT live bugs — they carry status:blocked pending explicit owner sign-off, because those structs are consumer-facing (npm wrapper, GitHub Action, MCP) and DSSE-signable.",
+      "definition_of_done": [
+        "Both blockers are closed with tests, and each is mutation-tested (reverting the fix turns the new test RED).",
+        "Every high and medium finding is either fixed with a pinning test, or explicitly declined with the reason recorded on the story — no finding is closed by silence.",
+        "The corpus harness compares severity and rejects unexpected findings, so 'the corpus passes' means what it claims (CR-T3).",
+        "Frozen-package stories (CR-T8/T9/T23/T24) are unblocked by owner sign-off or explicitly deferred with a recorded decision — they are NOT silently skipped.",
+        "The full suite stays green including the Postgres-backed suites, run for real per the README's initdb recipe; golangci-lint (pinned v2.12.2) stays at zero issues.",
+        "No invariant is weakened and no confidence level is downgraded to make any story pass (loop operating_rules)."
+      ],
+      "tasks": [
+        {
+          "id": "CR-T1",
+          "title": "BLOCKER: `hydrate --target` never checks the host (INV-BLAST-RADIUS-ZERO bypass)",
+          "description": "`validate` refuses to run when the target host matches the fixture's declared source (cmd/validate.go:97 calls validate.CheckHost). `hydrate --target <url>` performs the same class of write — CREATE SCHEMA / CREATE TABLE + COPY — and calls CheckHost nowhere: grep across the tree shows exactly one non-test caller, and it is validate. A user pointing --target at the host the fixture was pulled from (an easy mistake, since validate and hydrate share flag names and habits) is silently written into with zero refusal. Compounding it, cmd/hydrate.go has NO test file of any kind, so nothing pins the refusal once added.",
+          "depends_on": [],
+          "spec_refs": [
+            "PRD §11",
+            "INV-BLAST-RADIUS-ZERO",
+            "P0/P1 host-refusal implementation_note (see phase-1)"
+          ],
+          "acceptance_criteria": [
+            "loadIntoTarget (cmd/hydrate.go) calls validate.CheckHost(f.Meta.Source, host) before any write, mirroring cmd/validate.go:97, and refuses with the same error surface and exit code.",
+            "The refusal covers the equivalence classes CheckHost already handles (verbatim / normalized / loopback aliases) — hydrate must not reintroduce a single-hash compare.",
+            "A different host, and 128.0.0.1, are still ALLOWED (the check must not refuse hydrate's legitimate job).",
+            "cmd/hydrate_test.go exists and covers both directions: refusal on a matching host, success on a non-matching one.",
+            "Mutation check recorded: removing the CheckHost call makes the new refusal test fail."
+          ],
+          "verification": [
+            "go test ./cmd/ -run TestHydrate",
+            "grep -rn 'CheckHost' cmd/ shows callers in BOTH validate.go and hydrate.go",
+            "go test ./..."
+          ],
+          "artifacts": [
+            "cmd/hydrate.go",
+            "cmd/hydrate_test.go"
+          ],
+          "type": "code",
+          "passes": true,
+          "status": "done",
+          "priority": 1,
+          "note": "Closed. loadIntoTarget now calls checkHydrateHost BEFORE anything is created or connected — which had to precede target.NewEphemeral specifically, because NewEphemeral itself issues a CREATE DATABASE on the admin server, so by the time it returns the write to production has already happened. The decision delegates to validate.CheckHost rather than reimplementing it: that function already hashes the target under every spelling that is definitionally the same machine, and the single-hash compare it replaced was a proven bypass — a second implementation here would be a second thing to get wrong. hydrate prints its own refusal wording rather than echoing ErrHostMatchesSource, whose text is validate-specific ('validate: refusing to run...'); the shared thing is the DECISION, not the sentence. cmd/hydrate_test.go is new (the file had zero coverage of any kind): 3 end-to-end tests through runHydrate plus an 11-case table on the predicate, covering both write paths (--target and --ephemeral), the equivalence classes (case, trailing dot, loopback aliases in both directions), --target precedence over --ephemeral, and the negative cases that matter just as much — a different host, 128.0.0.1, and an absent source must all still be ALLOWED, or the refusal stops hydrate doing its job. MUTATION-TESTED, and the first attempt was INVALID: neutering the helper body left the validate import unused, so the build broke, and a build failure is not the same as tests catching the bug. Redone as the true pre-fix state (helper defined, never consulted at the write site), which compiles — both refusal tests then went RED, and the failure output showed hydrate actually reaching the production host: a DNS lookup of prod-db.internal.example.com on the --target path, and 'could not create a disposable database' on the --ephemeral path, i.e. the CREATE DATABASE attempt. SIDE OBSERVATION, feeds CR-T7: that same mutant output leaked `user=admin database=appdb` from a raw pgx error — finding #7 seen live rather than inferred. Verified: gofmt clean, go vet clean, golangci-lint (v2.12.2) 0 issues, full suite green.",
+          "found_by_audit": "Full-codebase review. Confirmed by grep: `CheckHost` has exactly one non-test call site (cmd/validate.go:97) and cmd/hydrate*_test.go does not exist. The invariant text and the existing implementation_note in this file describe the refusal as if it guards the product; it guards one of the two commands that write to a target."
+        },
+        {
+          "id": "CR-T2",
+          "title": "BLOCKER: rsperf.go and rsindex.go skip resolveTable — unqualified names read as an empty table",
+          "description": "Every other analyzer routes a SQL-extracted table name through resolveTable before looking it up, precisely because an unresolved name yields the ZERO VALUE rather than an error (the bug class already fixed and documented under P2-T8/P2-T9). Counted calls: rslock.go 3, rsdata.go 3, reverse.go 2, rsconstraint.go 1, rsperf.go 0, rsindex.go 0. Consequences: an unqualified `UPDATE accounts SET ...` or `DELETE FROM users ...` (ordinary hand-written SQL — Postgres resolves it via search_path) silently drops RS-PERF-001/002 entirely, and `CREATE INDEX ON orders (...)` silently reports an `instant` duration for what may be a huge table. TRAP FOR THE IMPLEMENTER: the corpus case named `perf-unqualified-update` does NOT cover this. Its 'unqualified' refers to the missing WHERE clause, and its migration uses the QUALIFIED `public.accounts`. Do not read it as existing coverage.",
+          "depends_on": [],
+          "spec_refs": [
+            "RFC §5 (qualified table keys)",
+            "PRD §10",
+            "INV-DURATIONS-BUCKETS",
+            "P2-T8 known_defect (the same bug class, already fixed elsewhere)"
+          ],
+          "acceptance_criteria": [
+            "rsperf.go and rsindex.go route every SQL-derived table name through resolveTable before any fixture lookup, matching the pattern in rslock.go/rsdata.go.",
+            "An unqualified `UPDATE accounts SET status = 'active'` against a fixture keyed `public.accounts` produces the SAME RS-PERF finding and the SAME duration bucket as the qualified form.",
+            "An unqualified `CREATE INDEX ON orders (...)` produces the same RS-INDEX estimate as the qualified form — not `instant`.",
+            "A genuinely unresolvable table (typo / ambiguous across schemas) still refuses to extrapolate rather than reporting `instant`, matching the estimateFor behavior documented under P2-T8.",
+            "Tests mirror rslock.go's TestUnqualifiedTableGetsTheSameEstimate for both analyzers.",
+            "A new corpus case exercises an unqualified TABLE NAME (distinct from perf-unqualified-update's missing-WHERE meaning), and the misleading name is resolved — either rename that case or document the distinction in its expected.json description."
+          ],
+          "verification": [
+            "go test ./internal/findings/ -run 'Unqualified'",
+            "go test ./... (with a live PG per README's initdb recipe)",
+            "Mutation: removing the resolveTable calls turns the new tests RED"
+          ],
+          "artifacts": [
+            "internal/findings/rsperf.go",
+            "internal/findings/rsindex.go",
+            "internal/findings/rsperf_test.go",
+            "internal/findings/rsindex_test.go",
+            "corpus/cases/*/"
+          ],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 2,
+          "found_by_audit": "Full-codebase review; confirmed by per-file grep counts of resolveTable across internal/findings/. This is the exact defect recorded as RESOLVED under P2-T8 — resolved for the analyzers that existed then, left unfixed in the two added later (RS-PERF shipped in P5-T1, RS-INDEX in P2-T11)."
+        },
+        {
+          "id": "CR-T3",
+          "title": "Corpus harness ignores Severity and tolerates unexpected findings",
+          "description": "TestCorpusVerdicts (corpus/harness/harness_test.go:130) compares the overall verdict, then for each EXPECTED finding checks only that its code family is present and that ResolveContains matches. It never compares Severity — even though expected.json declares it and ProducedFinding already carries it (pipeline_test.go:71) — and it never asserts the absence of findings nobody expected. A case therefore passes while an analyzer emits the wrong severity or an extra unrelated finding. ELEVATED ABOVE THE OTHER HIGH ITEMS DELIBERATELY: the corpus is the instrument used to verify CR-T2 and CR-T5, so it should be trustworthy before it is used to sign off on analyzer fixes.",
+          "depends_on": [],
+          "spec_refs": [
+            "PRD §12",
+            "INV-VERDICT-STABLE"
+          ],
+          "acceptance_criteria": [
+            "TestCorpusVerdicts compares got.Severity against want.Severity for every expected finding and fails on mismatch.",
+            "The test fails when the analyzer produces a finding no expected.json entry accounts for (exact-set comparison, or an explicit allow-list field in expected.json if a case legitimately needs one).",
+            "Every existing corpus case still passes, OR a case that only passed because of the gap is fixed and the reason recorded — the fix must not be to loosen the new assertion.",
+            "Mutation-tested: flipping one case's produced severity, and injecting one spurious finding, each turn the suite RED."
+          ],
+          "verification": [
+            "go test ./corpus/harness/ (with a live PG per the README initdb recipe)",
+            "Mutation: perturb a severity and an extra finding; both caught"
+          ],
+          "artifacts": [
+            "corpus/harness/harness_test.go",
+            "corpus/harness/pipeline_test.go",
+            "corpus/cases/*/expected.json"
+          ],
+          "type": "test",
+          "passes": false,
+          "status": "todo",
+          "priority": 3,
+          "found_by_audit": "Read of TestCorpusVerdicts: the assertion loop covers Code presence and ResolveContains only. Severity is collected into ProducedFinding and then never read."
+        },
+        {
+          "id": "CR-T4",
+          "title": "Calibrate() hardcodes Confidence: measured, escaping the capping rule",
+          "description": "internal/estimate/calibrate.go:62 sets `Confidence: string(fixture.Measured)` unconditionally, ignoring the confidence of the row count it projects onto. RFC §7.4 — and models.go's own documentation — require that confidence never exceed the confidence of `rows`. A measured duration extrapolated onto an ESTIMATED row count is not a measured answer. Worse, TestCalibrateUpgradesConfidence currently asserts the hardcode as correct, so the test locks the bug in rather than catching it. Touches INV-CONFIDENCE-CAPPING, the one invariant this file flags as 'must never be wrong'.",
+          "depends_on": [],
+          "spec_refs": [
+            "RFC §7.4",
+            "PRD §10",
+            "INV-CONFIDENCE-CAPPING"
+          ],
+          "acceptance_criteria": [
+            "Calibrate() caps the emitted confidence at min(measured, confidence-of-rows) rather than hardcoding measured.",
+            "A measured duration projected onto an `estimated` row count yields `estimated`, and cannot produce PASS.",
+            "A measured duration projected onto an `exact` row count still yields `measured`.",
+            "TestCalibrateUpgradesConfidence is corrected (not deleted) to assert the capping rule, and its previous expectation is recorded as the bug it was.",
+            "Mutation-tested: restoring the hardcode turns the corrected test RED."
+          ],
+          "verification": [
+            "go test ./internal/estimate/",
+            "go test ./internal/verdict/ (capping regression suite still green)",
+            "go test ./..."
+          ],
+          "artifacts": [
+            "internal/estimate/calibrate.go",
+            "internal/estimate/calibrate_test.go"
+          ],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 4,
+          "found_by_audit": "Full-codebase review; confirmed at internal/estimate/calibrate.go:62. Flagged as High rather than Blocker because P2-T14's calibrate path is opt-in (--calibrate), but it is the only place in the tree that writes a confidence level without consulting its dependency."
+        },
+        {
+          "id": "CR-T5",
+          "title": "rsindex parseCreateIndex misreads partial / expression unique indexes as a confident FAIL",
+          "description": "parseCreateIndex does not parse WHERE clauses or expression index targets. A legitimate `CREATE UNIQUE INDEX ... ON t (col) WHERE deleted_at IS NULL` over a column with proven duplicates — the normal soft-delete pattern, where the duplicates live only in soft-deleted rows — gets a confident, wrong FAIL (RS-INDEX-010) instead of passing. A wrong FAIL is less dangerous than a wrong PASS but still breaks the contract, and it is the kind of false positive that gets the tool removed from a pipeline. No corpus case exercises it.",
+          "depends_on": [
+            "CR-T3"
+          ],
+          "spec_refs": [
+            "RFC §7.2",
+            "RFC §7.4",
+            "INV-UNIQUENESS",
+            "INV-CONFIDENCE-CAPPING"
+          ],
+          "acceptance_criteria": [
+            "parseCreateIndex detects a partial index (WHERE predicate) and an expression index target.",
+            "A unique index whose uniqueness the fixture cannot decide (because the predicate selects a subset no fixture fact covers) produces a capped WARN naming the resolving command — NOT a FAIL and NOT a PASS.",
+            "A plain (non-partial, non-expression) unique index over a column with proven duplicates still FAILs with RS-INDEX-010 — the existing true positive is preserved.",
+            "A corpus case covers the partial-unique-over-soft-deletes scenario with its expected verdict."
+          ],
+          "verification": [
+            "go test ./internal/findings/ -run 'Index'",
+            "go test ./corpus/harness/ (live PG)"
+          ],
+          "artifacts": [
+            "internal/findings/rsindex.go",
+            "internal/findings/rsindex_test.go",
+            "corpus/cases/*/"
+          ],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 5
+        },
+        {
+          "id": "CR-T6",
+          "title": "SplitStatementsIn mis-splits E'...' backslash-escaped literals",
+          "description": "The statement splitter does not understand Postgres E'' escape-string syntax: it has no backslash handling at all. Verified by direct execution during review — `SELECT E'it\\'s; oops';` splits into two bogus statements. The broken half-statement is then fed to capture.Apply, producing a spurious FAIL on a migration that is actually valid. Untested.",
+          "depends_on": [],
+          "spec_refs": [
+            "PRD §10",
+            "P2-T7 found_by_audit (SplitStatementsIn line-tracking contract)"
+          ],
+          "acceptance_criteria": [
+            "SplitStatementsIn treats a backslash escape inside an E'' literal as literal content, so `SELECT E'it\\'s; oops';` yields exactly ONE statement.",
+            "Standard '' (doubled-quote) escaping, dollar-quoted bodies, and line/block comments continue to split correctly — no regression in the existing cases.",
+            "Line numbers reported by SplitStatementsIn remain correct across an E'' literal spanning newlines (the File/Line contract from P2-T7 is load-bearing for P4-T2 annotations).",
+            "Table-driven tests cover E'' with an escaped quote, an escaped backslash, and a semicolon inside the literal."
+          ],
+          "verification": [
+            "go test ./internal/validate/ -run Split",
+            "go test ./..."
+          ],
+          "artifacts": [
+            "internal/validate/validate.go",
+            "internal/validate/validate_test.go"
+          ],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 6
+        },
+        {
+          "id": "CR-T7",
+          "title": "validate/hydrate echo raw pgx connect errors (host, port, username) to the user",
+          "description": "On a target-connect failure, cmd/validate.go and cmd/hydrate.go surface the raw pgx error into user-facing JSON/stderr, which carries host:port and username. Every other connect-failure path in the tree deliberately substitutes a fixed string for exactly this reason — these two call sites are the outliers. Related precedent already recorded in this file: internal/plan.RedactURL was fixed under P0-T6 for the same class of leak (PRD §5: connection details are never logged or persisted).",
+          "depends_on": [],
+          "spec_refs": [
+            "PRD §5",
+            "PRD §11",
+            "INV-VERDICT-STABLE"
+          ],
+          "acceptance_criteria": [
+            "Both call sites substitute a fixed, non-revealing message on connect failure, matching the convention used elsewhere in the tree.",
+            "The exit code and the verdict/tool-error shape are unchanged (INV-VERDICT-STABLE) — only the human-readable detail changes.",
+            "The underlying error is still available for debugging behind an explicit opt-in (e.g. a debug/verbose flag or log level), not on by default.",
+            "A test asserts that a connect failure against a URL containing a username and a non-default port leaks neither into stdout nor stderr."
+          ],
+          "verification": [
+            "go test ./cmd/ -run 'Connect|Redact'",
+            "Manual: run validate against an unreachable host with credentials in the URL; confirm no host/port/user in output"
+          ],
+          "artifacts": [
+            "cmd/validate.go",
+            "cmd/hydrate.go",
+            "cmd/validate_test.go"
+          ],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 7
+        },
+        {
+          "id": "CR-T8",
+          "title": "FROZEN PKG: Cap()/wantFor() accept any string for want/Severity with no validation",
+          "description": "internal/verdict/capping.go Cap() and internal/validate.go wantFor() accept arbitrary strings for want/Severity. A future analyzer with a typo'd severity constant would silently default to 'wants PASS', with nothing downstream catching it. Not live today — no in-repo caller misuses it, and the core capping logic (Ceiling, DependencyConfidence, Cap) is correct and well-tested, including a structural test proving a finding cannot self-assert its way past capping. This is a missing guard around the codebase's most safety-critical function, not an active defect.",
+          "depends_on": [],
+          "spec_refs": [
+            "RFC §7.4",
+            "PRD §10",
+            "INV-CONFIDENCE-CAPPING",
+            "INV-VERDICT-STABLE",
+            "INV-DSSE-SHAPE"
+          ],
+          "acceptance_criteria": [
+            "An unrecognized want/severity string is rejected loudly (typed constants, a validating constructor, or an explicit error) rather than defaulting to the PASS-permitting branch.",
+            "The default for anything unrecognized is the SAFE direction (no PASS), never PASS.",
+            "The exported JSON shape of Verdict and Finding is unchanged — this is a frozen, consumer-facing contract (npm wrapper, GitHub Action, MCP).",
+            "A test asserts a bogus severity cannot yield PASS."
+          ],
+          "verification": [
+            "go test ./internal/verdict/ (full capping regression suite)",
+            "go test ./... — no consumer breakage"
+          ],
+          "artifacts": [
+            "internal/verdict/capping.go",
+            "internal/validate/validate.go",
+            "internal/verdict/capping_test.go"
+          ],
+          "type": "code",
+          "passes": false,
+          "status": "blocked",
+          "priority": 8,
+          "blocked_reason": "FROZEN PACKAGE — needs explicit owner sign-off before any change. internal/verdict is consumer-facing (npm wrapper, GitHub Action, MCP) and DSSE-signable; the review found no live bug here, only a missing structural guard. Unblock by confirming the change is additive-only and cannot alter any emitted document."
+        },
+        {
+          "id": "CR-T9",
+          "title": "FROZEN PKG: render_human fabricates a '0 rows in 0ms' basis for byte-based estimates",
+          "description": "internal/verdict/render_human.go prints a '0 rows in 0ms' extrapolation basis when rendering a byte-based estimate (e.g. reindex_bytes). Estimate's numeric fields are not pointers, so 'not applicable' is indistinguishable from 'measured zero' — and the human renderer states the fabricated version as fact on the one line whose job is to say how well the answer is known. INV-DURATIONS-BUCKETS requires the extrapolation basis to be attached and truthful.",
+          "depends_on": [],
+          "spec_refs": [
+            "PRD §10",
+            "RFC §9.1/§9.2",
+            "INV-DURATIONS-BUCKETS",
+            "INV-VERDICT-SHAPE"
+          ],
+          "acceptance_criteria": [
+            "A byte-based estimate renders a basis describing bytes, or omits the basis entirely — it never prints a row/duration basis that was not measured.",
+            "A genuine measured zero remains distinguishable from 'not applicable' in the human output.",
+            "The JSON marshaler's field set is unchanged unless the change is strictly additive and signed off (INV-DSSE-SHAPE / INV-VERDICT-STABLE).",
+            "A golden-output test covers the byte-based rendering."
+          ],
+          "verification": [
+            "go test ./internal/verdict/ -run Render",
+            "Manual: render a reindex_bytes finding and read the basis line"
+          ],
+          "artifacts": [
+            "internal/verdict/render_human.go",
+            "internal/verdict/render_human_test.go"
+          ],
+          "type": "code",
+          "passes": false,
+          "status": "blocked",
+          "priority": 9,
+          "blocked_reason": "FROZEN PACKAGE — needs explicit owner sign-off. Human output is a rendering of the JSON (INV-VERDICT-SHAPE); if the fix requires pointer fields on Estimate it changes a frozen, DSSE-signable struct and must be evaluated against INV-DSSE-SHAPE first. A render-only fix that leaves the struct alone is the preferred path."
+        },
+        {
+          "id": "CR-T10",
+          "title": "reverse.go dropTableFinding skips resolveTable (wrong provenance on unqualified DROP TABLE)",
+          "description": "reverse.go calls resolveTable twice, but dropTableFinding is the one finding in the file that skips it. An unqualified `DROP TABLE users` therefore reports 0 rows and an unresolvable confidence path — wrong evidence and wrong provenance on a document that is DSSE-signable. Same root cause as CR-T2, narrower blast radius, hence Medium.",
+          "depends_on": [],
+          "spec_refs": [
+            "RFC §5",
+            "PRD §10",
+            "INV-DSSE-SHAPE"
+          ],
+          "acceptance_criteria": [
+            "dropTableFinding routes its table name through resolveTable, matching its two siblings in the same file.",
+            "An unqualified DROP TABLE reports the same row evidence and depends_on path as the qualified form.",
+            "An unresolvable table still fails safe (capped, not answered from the wrong table).",
+            "A test covers the unqualified DROP TABLE case."
+          ],
+          "verification": [
+            "go test ./internal/findings/ -run Reverse",
+            "go test ./..."
+          ],
+          "artifacts": [
+            "internal/findings/reverse.go",
+            "internal/findings/reverse_test.go"
+          ],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 10
+        },
+        {
+          "id": "CR-T11",
+          "title": "rsconstraint checkConflict declares a depends_on fact that does not carry confidence",
+          "description": "checkConflict's DependsOn names `table.rows`, but the finding actually rests on the profiled Range fact — which has no confidence field in the fixture schema at all. The result is wrong provenance on a DSSE-signed document: the attestation cites a dependency the conclusion does not use, and the dependency it does use cannot be confidence-checked.",
+          "depends_on": [],
+          "spec_refs": [
+            "RFC §6.1",
+            "RFC §7.4",
+            "PRD §10",
+            "INV-CONFIDENCE-CAPPING",
+            "INV-DSSE-SHAPE"
+          ],
+          "acceptance_criteria": [
+            "DependsOn names the fact the conclusion actually rests on.",
+            "If the Range fact genuinely carries no confidence, the finding is capped accordingly (absent ranks below every level per RFC §7.4) rather than borrowing table.rows' confidence.",
+            "Whether Range should carry a confidence field is decided and recorded in docs/DECISIONS.md — changing the fixture schema is an RFC-level decision, not a drive-by edit.",
+            "A test pins the emitted depends_on path for this finding."
+          ],
+          "verification": [
+            "go test ./internal/findings/ -run Constraint",
+            "go test ./internal/verdict/"
+          ],
+          "artifacts": [
+            "internal/findings/rsconstraint.go",
+            "internal/findings/rsconstraint_test.go",
+            "docs/DECISIONS.md"
+          ],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 11
+        },
+        {
+          "id": "CR-T12",
+          "title": "Runner env injection can emit a duplicate DATABASE_URL",
+          "description": "internal/runner/{alembic,prisma,drizzle}.go build the child environment with `append(os.Environ(), \"DATABASE_URL=...\")`. If the invoking shell already exports DATABASE_URL, the child receives two entries for the same key; which one wins is resolution-order dependent and not something to leave to chance in a tool whose promise is blast-radius zero. Not reachable today (framework-migration capture is not wired into validate yet) — it becomes a live risk the moment it is, which is why it is worth closing before that wiring lands.",
+          "depends_on": [],
+          "spec_refs": [
+            "PRD §11",
+            "INV-BLAST-RADIUS-ZERO"
+          ],
+          "acceptance_criteria": [
+            "A shared helper builds the child env by REPLACING any existing DATABASE_URL rather than appending alongside it.",
+            "All three runners use the helper — no per-runner copies of the append pattern remain.",
+            "A test asserts that with DATABASE_URL already set in the parent env, the child sees exactly one entry, and it is rowshape's disposable target."
+          ],
+          "verification": [
+            "go test ./internal/runner/",
+            "grep -rn 'os.Environ()' internal/runner/ shows only the helper"
+          ],
+          "artifacts": [
+            "internal/runner/alembic.go",
+            "internal/runner/prisma.go",
+            "internal/runner/drizzle.go",
+            "internal/runner/env.go",
+            "internal/runner/env_test.go"
+          ],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 12
+        },
+        {
+          "id": "CR-T13",
+          "title": "TestValidateNoCloudEgress scans only two paths, not the transitive closure it claims",
+          "description": "cmd/validate_test.go's egress guard scans cmd/validate.go and internal/validate/ only. runValidate actually pulls in runner, target, hydrate and toolerror, none of which are scanned. A future network import in any of them passes the guard silently — and this test is the mechanical proof behind INV-NEVER-GATE-VALIDATE and the privacy claim the docs make verbatim (P4-T4). A guard that names a guarantee it does not actually check is worse than no guard.",
+          "depends_on": [],
+          "spec_refs": [
+            "PRD §8.4",
+            "PRD §11",
+            "INV-NEVER-GATE-VALIDATE"
+          ],
+          "acceptance_criteria": [
+            "The test walks the real transitive import closure of runValidate (e.g. via go/packages or `go list -deps`) rather than a hand-listed set of directories.",
+            "A network-capable import (net/http, net, cloud SDKs) anywhere in that closure fails the test.",
+            "Legitimate exceptions, if any, are an explicit allow-list with a written reason per entry — not a silent omission.",
+            "Mutation-tested: adding a net/http import to internal/runner turns the test RED (this is the case the current test misses)."
+          ],
+          "verification": [
+            "go test ./cmd/ -run NoCloudEgress",
+            "Mutation: add net/http to internal/runner; test must fail"
+          ],
+          "artifacts": [
+            "cmd/validate_test.go"
+          ],
+          "type": "test",
+          "passes": false,
+          "status": "todo",
+          "priority": 13
+        },
+        {
+          "id": "CR-T14",
+          "title": "FMA fusion is a real threat to the byte-identical determinism claim",
+          "description": "internal/hydrate/engine.go and fanout.go contain float expressions of the form `lo + r.float64()*span`. Go's SSA backend is permitted to fuse multiply-add into FMA and DOES so on arm64/ppc64/s390x but not amd64 — producing a different last bit, hence different synthesized values, hence a different output file. INV-DETERMINISM promises byte-identical output on ANY platform, and no cross-architecture test exists to catch a violation. Apple Silicon developers and amd64 CI are exactly the split that makes this reachable.",
+          "depends_on": [],
+          "spec_refs": [
+            "RFC §10",
+            "INV-DETERMINISM"
+          ],
+          "acceptance_criteria": [
+            "Float expressions on the synthesis path are written so FMA fusion cannot change the result — e.g. explicit float64() conversion of the product to force rounding, or integer/fixed-point arithmetic on the value path.",
+            "A test produces a hydrate output digest and asserts it against a committed golden digest.",
+            "The golden digest is verified on at least two architectures (amd64 + arm64) in CI, so a future regression is caught rather than assumed absent.",
+            "The rationale is recorded in docs/DECISIONS.md — this is a non-obvious constraint that will otherwise be refactored away."
+          ],
+          "verification": [
+            "go test ./internal/hydrate/ -run Determinism",
+            "CI matrix runs the digest test on amd64 and arm64 and both match the golden",
+            "go build -gcflags=-d=ssa/fma/off comparison (or equivalent) shows no digest change"
+          ],
+          "artifacts": [
+            "internal/hydrate/engine.go",
+            "internal/hydrate/fanout.go",
+            "internal/hydrate/determinism_test.go",
+            ".github/workflows/ci.yml",
+            "docs/DECISIONS.md"
+          ],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 14
+        },
+        {
+          "id": "CR-T15",
+          "title": "Corpus coverage is lopsided: near-duplicate cases alongside an uncovered capped branch",
+          "description": "The corpus spends cases on near-duplicates while leaving a capping branch bare. RS-INDEX-010's WARN/capped branch has zero coverage, while the analogous RS-DATA-014 scenario has two near-identical cases; `cascade_delete_fanout` / `perf-cascade-fanout` and `not_valid_validated_same_tx` / `rsconstraint-not-valid-same-tx` are near-duplicate pairs that could have covered the gap instead. Coverage is the credibility asset (PRD §12), so its shape matters, not just its count.",
+          "depends_on": [
+            "CR-T3"
+          ],
+          "spec_refs": [
+            "PRD §12",
+            "RFC §7.4",
+            "INV-CONFIDENCE-CAPPING"
+          ],
+          "acceptance_criteria": [
+            "RS-INDEX-010's WARN/capped branch has a corpus case asserting the capped verdict AND that the remediation names the resolving command.",
+            "Each near-duplicate pair is either differentiated (with the distinction stated in its expected.json description) or consolidated — decided per pair, not blanket-deleted.",
+            "A short coverage note records which finding-code branches have corpus cases and which do not, so the next gap is visible rather than rediscovered by audit.",
+            "Total corpus runtime does not regress materially."
+          ],
+          "verification": [
+            "go test ./corpus/harness/ (live PG)",
+            "Coverage note reviewed against the finding catalog"
+          ],
+          "artifacts": [
+            "corpus/cases/*/",
+            "corpus/README.md"
+          ],
+          "type": "code/asset",
+          "passes": false,
+          "status": "todo",
+          "priority": 15
+        },
+        {
+          "id": "CR-T16",
+          "title": "`explain` ignores --json on an unknown finding code",
+          "description": "cmd/explain.go honors --json on the success path but falls back to plain text when the code is unknown, so an agent that asked for JSON gets prose it cannot parse on the one path it must handle programmatically. Every other command's failure path returns structured JSON.",
+          "depends_on": [],
+          "spec_refs": [
+            "PRD §10",
+            "INV-VERDICT-SHAPE",
+            "INV-VERDICT-STABLE"
+          ],
+          "acceptance_criteria": [
+            "`rowshape explain BOGUS-CODE --json` emits structured JSON describing the error.",
+            "The exit code is unchanged from today's behavior.",
+            "Plain-text output without --json is unchanged.",
+            "A test covers unknown-code-with-json."
+          ],
+          "verification": [
+            "go test ./cmd/ -run Explain",
+            "rowshape explain RS-NOPE-999 --json | jq ."
+          ],
+          "artifacts": [
+            "cmd/explain.go",
+            "cmd/explain_test.go"
+          ],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 16
+        },
+        {
+          "id": "CR-T17",
+          "title": "internal/toolerror has no test file — its JSON shape is unpinned",
+          "description": "internal/toolerror ships the exit-3 taxonomy (P2-T17) and has no test file at all. Unlike verdict, nothing pins its JSON shape, so an accidental field rename is a silent breaking change to a public contract consumed by the Action and MCP clients.",
+          "depends_on": [],
+          "spec_refs": [
+            "PRD §10",
+            "INV-VERDICT-STABLE",
+            "P2-T17"
+          ],
+          "acceptance_criteria": [
+            "internal/toolerror/toolerror_test.go pins the emitted JSON field names and the exit code for each taxonomy category.",
+            "A golden-JSON test fails on any field rename or removal."
+          ],
+          "verification": [
+            "go test ./internal/toolerror/",
+            "go test ./..."
+          ],
+          "artifacts": [
+            "internal/toolerror/toolerror_test.go"
+          ],
+          "type": "test",
+          "passes": false,
+          "status": "todo",
+          "priority": 17
+        },
+        {
+          "id": "CR-T18",
+          "title": "Possible orphaned container when context is canceled mid-`docker run`",
+          "description": "internal/target/container.go can leak a container if the context is canceled in the window between `docker run` starting and the container id being recorded. Docker path only and a narrow window, but the failure mode is an accumulating resource on a developer machine or CI runner.",
+          "depends_on": [],
+          "spec_refs": [
+            "PRD §11",
+            "INV-BLAST-RADIUS-ZERO"
+          ],
+          "acceptance_criteria": [
+            "Cancellation during container start cannot leave an unrecorded container running — e.g. start with a pre-generated name/label so cleanup can find it without the returned id.",
+            "Cleanup is best-effort but reports a diagnostic rather than failing silently (see CR-T19).",
+            "A test or a documented manual repro covers the cancel-during-start window."
+          ],
+          "verification": [
+            "go test ./internal/target/ (Docker available)",
+            "Manual: cancel during start, then `docker ps -a --filter label=rowshape` is empty"
+          ],
+          "artifacts": [
+            "internal/target/container.go",
+            "internal/target/container_test.go"
+          ],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 18
+        },
+        {
+          "id": "CR-T19",
+          "title": "Disposable-DB teardown errors are fully swallowed",
+          "description": "cmd/hydrate.go and cmd/validate.go discard teardown errors (`_ = eph.Close(ctx)`), so a failed cleanup produces no diagnostic anywhere. Over many CI runs that accumulates orphan databases with nothing pointing at the cause. Note this is deliberately distinct from the ~14 reviewed `_ =` sites recorded under P0-T6: those are safe-by-inspection deferred closes on read paths; these discard the outcome of resource teardown.",
+          "depends_on": [],
+          "spec_refs": [
+            "PRD §5",
+            "PRD §10",
+            "INV-VERDICT-STABLE",
+            "P0-T6 note (the reviewed `_ =` convention)"
+          ],
+          "acceptance_criteria": [
+            "Teardown failures emit a diagnostic (stderr warning or structured log) naming the resource that could not be cleaned up.",
+            "The command's exit code and verdict are UNCHANGED — a teardown failure is not a verdict (INV-VERDICT-STABLE); it must not turn a PASS into a failure.",
+            "The diagnostic contains no connection details (PRD §5, consistent with CR-T7)."
+          ],
+          "verification": [
+            "go test ./cmd/",
+            "Manual: force a teardown failure and confirm the warning appears"
+          ],
+          "artifacts": [
+            "cmd/hydrate.go",
+            "cmd/validate.go"
+          ],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 19
+        },
+        {
+          "id": "CR-T20",
+          "title": "Drizzle runner does not detect .cjs / .json configs",
+          "description": "internal/runner/drizzle.go recognizes only .ts/.js/.mjs Drizzle config files. A project using drizzle.config.cjs or drizzle.config.json is silently not detected, so runner detection (P2-T6) reports no Drizzle project where one exists.",
+          "depends_on": [],
+          "spec_refs": [
+            "PRD §4",
+            "P2-T6"
+          ],
+          "acceptance_criteria": [
+            "Detection covers .ts, .js, .mjs, .cjs and .json Drizzle config filenames.",
+            "The detection order/precedence is deterministic when more than one is present.",
+            "A test covers each newly supported extension."
+          ],
+          "verification": [
+            "go test ./internal/runner/ -run Drizzle"
+          ],
+          "artifacts": [
+            "internal/runner/drizzle.go",
+            "internal/runner/drizzle_test.go"
+          ],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 20
+        },
+        {
+          "id": "CR-T21",
+          "title": "Dead / unreachable code: probeUniqueCount and versioned.ForFixture",
+          "description": "Two unreachable paths, both to be resolved the same way — decide 'wire it up' or 'delete it', and record which. (1) internal/profile/uniqueness.go probeUniqueCount implements RFC §7.2 route 3 but has no production caller. (2) internal/estimate/versioned.go ForFixture is unreachable because each analyzer duplicates the version-gate check itself instead of funneling through it — which also means the gate is enforced in N places and can drift.",
+          "depends_on": [],
+          "spec_refs": [
+            "RFC §7.2",
+            "RFC §9.1",
+            "INV-UNIQUENESS",
+            "INV-DURATIONS-BUCKETS"
+          ],
+          "acceptance_criteria": [
+            "probeUniqueCount is either called on a real path or deleted; if deleted, RFC §7.2 route 3 coverage is confirmed by the remaining routes and the decision is recorded.",
+            "The version gate has ONE enforcement point: either analyzers funnel through ForFixture, or ForFixture is deleted and the duplication is documented as intentional.",
+            "Whichever way each goes, the reason is recorded in docs/DECISIONS.md — unreachable code that gets silently deleted tends to get silently reinvented.",
+            "No behavior change in emitted verdicts (verified by the corpus)."
+          ],
+          "verification": [
+            "go test ./...",
+            "go test ./corpus/harness/ (live PG) — no verdict changes",
+            "golangci-lint run (unused check clean)"
+          ],
+          "artifacts": [
+            "internal/profile/uniqueness.go",
+            "internal/estimate/versioned.go",
+            "docs/DECISIONS.md"
+          ],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 21
+        },
+        {
+          "id": "CR-T22",
+          "title": "reverse.go identAfter mis-parses `DROP COLUMN IF EXISTS` (returns \"IF\")",
+          "description": "identAfter does not skip the optional `IF EXISTS`, so `ALTER TABLE t DROP COLUMN IF EXISTS c` yields the column name \"IF\". The finding then describes a column that does not exist, which is wrong evidence on a signed document even though the reversibility conclusion may coincidentally still be right.",
+          "depends_on": [],
+          "spec_refs": [
+            "PRD §10",
+            "INV-DSSE-SHAPE"
+          ],
+          "acceptance_criteria": [
+            "identAfter skips `IF EXISTS` (and `IF NOT EXISTS` where the grammar allows it) and returns the real identifier.",
+            "Quoted and case-varied spellings (`if exists`, `IF  EXISTS`) are handled.",
+            "Tests cover DROP COLUMN with and without IF EXISTS."
+          ],
+          "verification": [
+            "go test ./internal/findings/ -run Reverse"
+          ],
+          "artifacts": [
+            "internal/findings/reverse.go",
+            "internal/findings/reverse_test.go"
+          ],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 22
+        },
+        {
+          "id": "CR-T23",
+          "title": "FROZEN PKG: exit code 3 is a duplicated literal with no shared source of truth",
+          "description": "The exit-3 tool-error code is a bare literal in both internal/toolerror and internal/verdict, with nothing tying them together. INV-VERDICT-STABLE makes exit codes part of the public API; two independent literals is how they eventually disagree.",
+          "depends_on": [],
+          "spec_refs": [
+            "PRD §10",
+            "INV-VERDICT-STABLE"
+          ],
+          "acceptance_criteria": [
+            "Exit codes 0/1/2/3 are defined once as named constants and referenced everywhere.",
+            "No numeric exit-code literals remain outside the defining package.",
+            "The emitted values are unchanged — this is a refactor, not a contract change."
+          ],
+          "verification": [
+            "go test ./...",
+            "grep for bare exit-code literals returns only the defining package"
+          ],
+          "artifacts": [
+            "internal/toolerror/toolerror.go",
+            "internal/verdict/",
+            "internal/exitcode/"
+          ],
+          "type": "code",
+          "passes": false,
+          "status": "blocked",
+          "priority": 23,
+          "blocked_reason": "FROZEN PACKAGE — needs owner sign-off. Purely mechanical and behavior-preserving, but it moves a symbol across two consumer-facing packages; confirm the import direction before starting (a new internal/exitcode avoids a verdict<->toolerror cycle)."
+        },
+        {
+          "id": "CR-T24",
+          "title": "FROZEN PKG: factConfidence resolves ambiguously when a table has two FKs on one column",
+          "description": "internal/verdict/capping.go factConfidence picks the FIRST matching fact when a table has two foreign keys on the same column, rather than the WEAKEST confidence among them. The review classes this as format-level ambiguity rather than an engine bug — the fixture format does not make the intended match unique — but 'first match' is the wrong tie-break for a capping engine, where the safe answer is always the weakest.",
+          "depends_on": [],
+          "spec_refs": [
+            "RFC §6.1",
+            "RFC §7.4",
+            "INV-CONFIDENCE-CAPPING"
+          ],
+          "acceptance_criteria": [
+            "When more than one fact matches, factConfidence resolves to the WEAKEST confidence, never the first found.",
+            "Whether the fixture format should disambiguate FK facts is recorded as an RFC question in docs/DECISIONS.md rather than silently patched in the engine.",
+            "A capping test covers the two-FKs-one-column case."
+          ],
+          "verification": [
+            "go test ./internal/verdict/ (capping regression suite)"
+          ],
+          "artifacts": [
+            "internal/verdict/capping.go",
+            "internal/verdict/capping_test.go",
+            "docs/DECISIONS.md"
+          ],
+          "type": "code",
+          "passes": false,
+          "status": "blocked",
+          "priority": 24,
+          "blocked_reason": "FROZEN PACKAGE — needs owner sign-off. Touches the capping engine, which this file names as the one thing that must never be wrong. The change is in the SAFE direction (weakest wins) but must not regress the existing capping suite."
+        },
+        {
+          "id": "CR-T25",
+          "title": "init --agent silently discards a type-assertion failure on an existing MCP config",
+          "description": "cmd/init_agent_mcp.go discards a failed type assertion on an existing config's `servers` key and overwrites it — inconsistent with the function's own 'refuse, don't clobber' comment and with P3-T8/P3-T10's stated discipline of never clobbering a config the tool did not write. A malformed or differently-shaped servers value means someone else's setup is being destroyed, which is exactly the case the comment says to refuse.",
+          "depends_on": [],
+          "spec_refs": [
+            "PRD §6",
+            "P3-T8",
+            "P3-T10"
+          ],
+          "acceptance_criteria": [
+            "A `servers` key that is not the expected shape causes a REFUSAL with a clear message, not an overwrite.",
+            "The refusal names the file and what was found, so the user can fix it by hand.",
+            "The existing happy path (no config / well-formed config) is unchanged.",
+            "A test covers the malformed-servers case and asserts the file is left untouched."
+          ],
+          "verification": [
+            "go test ./cmd/ -run InitAgent",
+            "Manual: hand-write a malformed servers value; confirm refusal and file unchanged"
+          ],
+          "artifacts": [
+            "cmd/init_agent_mcp.go",
+            "cmd/init_agent_mcp_test.go"
+          ],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 25
+        },
+        {
+          "id": "CR-T26",
+          "title": "annotate.go Markdown escaping is incomplete for PR-summary table cells",
+          "description": "internal/annotate/annotate.go escapes only `|` and newline when building PR-summary table cells. Explicitly NOT an injection vector — GitHub sanitizes raw HTML and no structural break was found — but finding text containing backticks or leading markdown syntax renders wrong in the summary that P4-T2 makes the primary reviewer-facing surface. Cosmetic, and scoped as such.",
+          "depends_on": [],
+          "spec_refs": [
+            "PRD §10",
+            "P4-T2",
+            "INV-VERDICT-SHAPE"
+          ],
+          "acceptance_criteria": [
+            "Cell escaping covers backticks and leading markdown control characters in addition to `|` and newline.",
+            "A finding whose title contains backticks and a pipe renders as literal text in the table.",
+            "No change to the Verdict JSON — rendering only."
+          ],
+          "verification": [
+            "go test ./internal/annotate/",
+            "Manual: render a summary with adversarial finding text"
+          ],
+          "artifacts": [
+            "internal/annotate/annotate.go",
+            "internal/annotate/annotate_test.go"
+          ],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 26
+        },
+        {
+          "id": "CR-T27",
+          "title": "Published JSON Schema does not enforce RFC §6.1's 'no range on text/bytea'",
+          "description": "fixture-spec/schema/rowshape.schema.json does not encode the RFC §6.1 rule that text and bytea columns carry no range — only the Go conformance suite enforces it. A third-party emitter validating against the published schema alone produces a fixture rowshape considers invalid, which undercuts the point of publishing the schema (P2-T16).",
+          "depends_on": [],
+          "spec_refs": [
+            "RFC §6.1",
+            "RFC §12",
+            "PRD §12",
+            "P2-T16",
+            "INV-NO-ROWS"
+          ],
+          "acceptance_criteria": [
+            "The JSON Schema encodes the no-range-on-text/bytea constraint (e.g. conditional subschema on column type).",
+            "A fixture violating the rule FAILS plain JSON Schema validation, independent of the Go suite.",
+            "The Go conformance suite and the schema agree on every existing corpus fixture — no currently-valid fixture is newly rejected.",
+            "The schema version is bumped per the spec's own versioning rules if the change is not purely additive."
+          ],
+          "verification": [
+            "go test ./fixture-spec/... (conformance suite)",
+            "Validate every corpus fixture with a standalone JSON Schema validator; results match the Go suite"
+          ],
+          "artifacts": [
+            "fixture-spec/schema/rowshape.schema.json",
+            "fixture-spec/conformance/*"
+          ],
+          "type": "docs/spec",
+          "passes": false,
+          "status": "todo",
+          "priority": 27
+        },
+        {
+          "id": "CR-T28",
+          "title": "`profile --exact` computes an exact row count and then throws it away",
+          "description": "internal/profile's --exact mode does a full streaming pass and computes an exact row count during it, but never uses it to upgrade the table's row-count confidence past `estimated`. The user pays the full cost of the exact pass and does not get the confidence upgrade it earns — which, under INV-CONFIDENCE-CAPPING, is the difference between a capped WARN and an allowed PASS. This is the one item in this phase that makes verdicts STRONGER, so it needs the most care: it must be provably the exact count, not an estimate promoted by accident.",
+          "depends_on": [],
+          "spec_refs": [
+            "RFC §7.4",
+            "RFC §7.2",
+            "PRD §10",
+            "INV-CONFIDENCE-CAPPING",
+            "P1b-T5"
+          ],
+          "acceptance_criteria": [
+            "--exact records the row count it computed and marks the table's rows confidence `exact`.",
+            "The upgrade happens ONLY when the full pass genuinely completed — an aborted, sampled, cost-capped (P1b-T4) or partial pass must NOT upgrade confidence.",
+            "Fast-mode profiling is unchanged and still yields `estimated`.",
+            "A capping test proves a finding resting on an --exact row count can reach PASS, and that the same finding on a fast-mode count is still capped to WARN.",
+            "Mutation-tested: forcing the pass to abort early must not produce `exact`."
+          ],
+          "verification": [
+            "go test ./internal/profile/ (live PG)",
+            "go test ./internal/verdict/ (capping suite)",
+            "go test ./corpus/harness/ (live PG)"
+          ],
+          "artifacts": [
+            "internal/profile/",
+            "internal/profile/exact_test.go"
+          ],
+          "type": "code",
+          "passes": false,
+          "status": "todo",
+          "priority": 28
+        },
+        {
+          "id": "CR-T29",
+          "title": "README still describes the commands as phase-0 stubs returning exit code 3",
+          "description": "README.md describes rowshape's commands as 'phase 0 ... stubs that return exit code 3'. docs/DECISIONS.md (D-008/D-009) and the commit history show the implementation is many phases past that. It is the first thing a visitor reads, and it currently says the tool does nothing. Doc drift only — everything else checked (the README's Docker-free initdb testing recipe was followed verbatim during review and worked exactly as written; CI workflows are consistent with the code).",
+          "depends_on": [],
+          "spec_refs": [
+            "PRD §13",
+            "docs/DECISIONS.md D-008/D-009"
+          ],
+          "acceptance_criteria": [
+            "The stale phase-0 stub language is removed.",
+            "The README accurately states which commands are implemented today.",
+            "The Docker-free initdb testing recipe is preserved verbatim — it was verified correct during review.",
+            "No other stale phase claims remain in README.md."
+          ],
+          "verification": [
+            "Manual read of README.md against the current subcommand list",
+            "rowshape --help output matches what the README claims"
+          ],
+          "artifacts": [
+            "README.md"
+          ],
+          "type": "docs",
+          "passes": false,
+          "status": "todo",
+          "priority": 29
+        }
+      ]
+    },
+    {
+      "id": "phase-4",
+      "order": 6,
       "name": "GitHub Action, docs site (Cloudflare Pages), the agent-loop demo",
       "weeks": "12",
       "ships": "The three launch surfaces: a GitHub Action that runs `validate` in anyone's CI and renders the shared Verdict, the docs site (Astro Starlight on Cloudflare Pages), and the end-to-end agent-loop demo that is the launch and the week-12 kill-criterion gate.",
@@ -1386,7 +2276,7 @@
     },
     {
       "id": "phase-5",
-      "order": 6,
+      "order": 7,
       "name": "Findings breadth, version matrix depth, MySQL, then cloud only if pull-through is real",
       "weeks": "13+",
       "deferred": true,
