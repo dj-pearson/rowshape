@@ -1827,9 +1827,10 @@
             "cmd/validate.go"
           ],
           "type": "code",
-          "passes": false,
-          "status": "todo",
-          "priority": 19
+          "passes": true,
+          "status": "done",
+          "priority": 19,
+          "note": "Closed. Both sites now route the teardown error through warnTeardown instead of discarding it.\n\nTHE DISTINCTION THAT MATTERS, and why this is not a regression against P0-T6: that story deliberately established `_ =` as a VISIBLE, reviewable claim at ~14 safe-by-inspection deferred closes on READ paths, where there is genuinely nothing to report. These two are different in kind — the discarded value is the outcome of RELEASING A RESOURCE, so silence means orphan databases accumulating across CI runs with nothing pointing at the cause. The convention is intact; these two were miscategorised under it.\n\nIT WARNS AND DOES NOT FAIL, which is the load-bearing design choice. A teardown failure is not a verdict (INV-VERDICT-STABLE); turning a clean PASS into an error because cleanup stumbled would make the tool wrong about the migration, which is the one thing it must never be. Verified on a real run rather than by reading: a WARN-verdict validate against the live cluster still exits 2.\n\nThe warning carries NO connection details (PRD §5), reusing the CR-T7 discipline and its ROWSHAPE_DEBUG gate for the underlying error — tested with the same planted-credentials DSN, so the leak assertion is shared rather than re-invented.\n\nTests: reports on failure without leaking, says NOTHING on success (a warning that always fires is noise that gets filtered, and then the real one is invisible too), and reveals the error under ROWSHAPE_DEBUG.\n\nVerified: gofmt/vet clean, golangci-lint 0 issues, internal + cmd + corpus green against live PG 18."
         },
         {
           "id": "CR-T20",

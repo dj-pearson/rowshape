@@ -155,7 +155,7 @@ func hydrateApplyEphemeral(ctx context.Context, f *fixture.Fixture, opts *valida
 	if err != nil {
 		return nil, toolerror.New(toolerror.TargetUnavailable, "could not create a disposable database", "check the admin connection (--ephemeral); a disposable Postgres must be reachable (PRD §17.2)")
 	}
-	defer func() { _ = eph.Close(ctx) }()
+	defer func() { warnTeardown("validate", eph.Close(ctx)) }()
 
 	report, err := target.Load(ctx, eph, f, hydrate.Options{Seed: opts.seed, Scale: scale, MaxRows: opts.maxRows})
 	if err != nil {
@@ -244,6 +244,33 @@ func emitToolError(asJSON bool, te *toolerror.ToolError) error {
 		te.WriteHuman(os.Stderr)
 	}
 	return &ExitError{Code: te.ExitCode()}
+}
+
+// warnTeardown reports a disposable-database teardown failure without changing
+// the outcome of the command.
+//
+// CR-T19: these two sites discarded the error entirely (`_ = eph.Close(ctx)`),
+// so a failed cleanup produced no diagnostic anywhere and orphan databases could
+// accumulate across CI runs with nothing pointing at the cause. This is
+// deliberately DIFFERENT from the ~14 reviewed `_ =` sites recorded under P0-T6:
+// those are safe-by-inspection deferred closes on read paths, where there is
+// genuinely nothing to report. Here the discarded value is the outcome of
+// releasing a resource.
+//
+// It warns and does not fail. A teardown failure is not a verdict
+// (INV-VERDICT-STABLE), and turning a clean PASS into an error because cleanup
+// stumbled would make the tool wrong about the migration, which is the one thing
+// it must not be. The message carries no connection details (PRD §5, and
+// consistent with CR-T7).
+func warnTeardown(cmdName string, err error) {
+	if err == nil {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "rowshape %s: warning: could not drop the disposable database; "+
+		"it may need removing by hand (set ROWSHAPE_DEBUG=1 for the underlying error)\n", cmdName)
+	if os.Getenv("ROWSHAPE_DEBUG") != "" {
+		fmt.Fprintf(os.Stderr, "rowshape %s: teardown error: %v\n", cmdName, err)
+	}
 }
 
 // redactedTargetError describes a failure that touched the target WITHOUT

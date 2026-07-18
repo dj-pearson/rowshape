@@ -288,3 +288,50 @@ func TestRedactedTargetErrorDebugOptIn(t *testing.T) {
 		}
 	})
 }
+
+// --- CR-T19: teardown failures are reported, never silent -------------------
+//
+// Both commands discarded the teardown error (`_ = eph.Close(ctx)`), so a failed
+// cleanup produced no diagnostic anywhere and orphan databases could accumulate
+// across CI runs with nothing pointing at the cause. Deliberately different from
+// the ~14 reviewed `_ =` sites under P0-T6: those are safe-by-inspection
+// deferred closes on read paths; this one discards the outcome of releasing a
+// resource.
+
+func TestWarnTeardownReportsWithoutLeakingDetails(t *testing.T) {
+	t.Setenv("ROWSHAPE_DEBUG", "")
+	err := errors.New("failed to connect to `user=leakuser database=leakdb` on 127.0.0.1:15432")
+
+	_, stderr := captureOutput(t, func() error {
+		warnTeardown("validate", err)
+		return nil
+	})
+
+	if !strings.Contains(stderr, "could not drop the disposable database") {
+		t.Errorf("a teardown failure must be reported, got %q", stderr)
+	}
+	// PRD §5, consistent with CR-T7: the warning must not echo the connection.
+	assertNoLeak(t, "teardown warning", stderr)
+}
+
+func TestWarnTeardownSilentOnSuccess(t *testing.T) {
+	_, stderr := captureOutput(t, func() error {
+		warnTeardown("validate", nil)
+		return nil
+	})
+	if stderr != "" {
+		t.Errorf("a successful teardown must say nothing, got %q", stderr)
+	}
+}
+
+// TestWarnTeardownDebugOptIn: the underlying error is gated, not destroyed.
+func TestWarnTeardownDebugOptIn(t *testing.T) {
+	t.Setenv("ROWSHAPE_DEBUG", "1")
+	_, stderr := captureOutput(t, func() error {
+		warnTeardown("hydrate", errors.New("drop database failed: still in use"))
+		return nil
+	})
+	if !strings.Contains(stderr, "still in use") {
+		t.Errorf("ROWSHAPE_DEBUG must reveal the teardown error, got %q", stderr)
+	}
+}

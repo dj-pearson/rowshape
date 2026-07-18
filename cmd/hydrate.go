@@ -168,7 +168,9 @@ func loadIntoTarget(f *fixture.Fixture, genOpts hydrate.Options, opts *hydrateOp
 			return toolError()
 		}
 		// A disposable target is always torn down, even on failure.
-		defer func() { _ = eph.Close(ctx) }()
+		// A disposable target is always torn down, and a failure to do so is
+		// reported rather than discarded (CR-T19) — without changing the exit code.
+		defer func() { warnTeardown("hydrate", eph.Close(ctx)) }()
 		t = eph
 	}
 
