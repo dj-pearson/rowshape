@@ -485,3 +485,54 @@ boundary. The defect was that the record asserted an observation nobody had made
 which is the same class of problem as CR-T13 (a guard naming a guarantee it did
 not check). Stating the limit costs nothing and stops the claim being read as
 stronger than the evidence.
+
+---
+
+## D-016 — Two ordering violations, and the exposure they created (CR-loop audit)
+
+**Status:** recorded and quantified. No story's `passes` changed — the work is
+real. What is recorded is the risk the violated dependencies existed to prevent.
+
+Auditing the `depends_on` graph (102 stories: no cycles, no dangling refs, no
+backwards phase dependencies) found **two passing stories whose dependency does
+not pass**, which the loop's own rule forbids: *"a story may only be selected
+when every id in its `depends_on` has `passes: true`."*
+
+| Passing story | Unmet dependency |
+|---|---|
+| `P0-T3` — Scaffold the Go CLI module **and fix the module path** | `P0-T1` — Reserve all namespaces (**blocked**) |
+| `P2-T16` — Conformance suite + **published** JSON Schema | `P0-T2` — Publish the spec as its own public repo (**todo**) |
+
+Neither is bookkeeping. Both dependencies encode an **external act** — reserving
+a namespace, publishing a repo — that no amount of local work can satisfy, so in
+each case code was written against an assumption the dependency exists to remove.
+
+### The exposure, measured
+
+`P0-T3` fixed the module path to `github.com/rowshape/rowshape` **before**
+`P0-T1` reserved the name. As of this audit:
+
+- **97 Go files** contain that import path
+- **21** further occurrences in `.goreleaser.yaml` and `npm/package.json`
+- **50 passing stories** transitively depend on `P0-T1`
+- the GitHub org `rowshape` and the npm package `rowshape` are **still free but
+  still unreserved** (re-verified this session: both 404)
+
+`P0-T1`'s own `namespace_check` states the consequence exactly: *"If any of it
+were taken this is not a blocked story, it is a redesign."* The ordering
+violation is the mechanism by which that risk spread from one story to fifty.
+
+`rowshape.com` is registered and delegated to Cloudflare, so the domain leg is
+likely already held.
+
+### Why nothing is being reverted
+
+The work is correct and verified; unwinding it would destroy value and fix
+nothing. The dependency was violated in the only direction that is recoverable —
+**the name is still available**. The action that closes this is not a code
+change: create the GitHub org and reserve the npm name, which costs minutes and
+retires the exposure on all 50 stories at once.
+
+`TestNoNewOrderingViolations` allow-lists exactly these two with reasons, fails
+on any new one, and fails if an entry goes stale — so an exemption cannot
+silently start covering a different violation later.

@@ -175,3 +175,99 @@ func TestEveryInvariantIsTraceable(t *testing.T) {
 			"promise is unenforced.", inv.ID)
 	}
 }
+
+// knownOrderingViolations are passing stories whose dependency does NOT pass,
+// each allowed with a stated reason. New ones must not appear silently.
+//
+// The loop's rule is "a story may only be selected when every id in its
+// depends_on has passes: true". Both entries below break it, and neither is
+// bookkeeping: each depends on an EXTERNAL act (reserving a namespace,
+// publishing a repo) that no amount of local work can satisfy, so the code was
+// written against an assumption the dependency exists to remove. See D-016.
+var knownOrderingViolations = map[string]string{
+	"P0-T3->P0-T1": "the module path github.com/rowshape/rowshape was fixed before the " +
+		"namespace was reserved; the name is still free but unreserved, so 97 Go files and " +
+		"50 passing stories rest on an assumption P0-T1 exists to remove (D-016)",
+	"P2-T16->P0-T2": "the conformance suite and JSON Schema exist and are verified locally, " +
+		"but 'published as its own public repo' needs the org from P0-T1 (D-016)",
+}
+
+// TestNoNewOrderingViolations: a passing story whose dependency does not pass
+// means work was accepted before its prerequisite. That is worth catching,
+// because the prerequisite usually encodes a risk the work then inherits.
+func TestNoNewOrderingViolations(t *testing.T) {
+	root := filepath.Join("..", "..")
+	raw, err := os.ReadFile(filepath.Join(root, "prd.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Phases []struct {
+			Tasks []struct {
+				ID        string   `json:"id"`
+				Passes    bool     `json:"passes"`
+				DependsOn []string `json:"depends_on"`
+			} `json:"tasks"`
+		} `json:"phases"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+
+	passes := map[string]bool{}
+	var all []struct {
+		ID        string
+		Passes    bool
+		DependsOn []string
+	}
+	for _, ph := range doc.Phases {
+		for _, task := range ph.Tasks {
+			passes[task.ID] = task.Passes
+			all = append(all, struct {
+				ID        string
+				Passes    bool
+				DependsOn []string
+			}{task.ID, task.Passes, task.DependsOn})
+		}
+	}
+	if len(all) == 0 {
+		t.Fatal("no stories parsed; this audit would pass over nothing")
+	}
+
+	seen := map[string]bool{}
+	for _, task := range all {
+		if !task.Passes {
+			continue
+		}
+		for _, dep := range task.DependsOn {
+			known, isDep := passes[dep]
+			if !isDep {
+				t.Errorf("%s depends on %q, which is not a story", task.ID, dep)
+				continue
+			}
+			if known {
+				continue
+			}
+			key := task.ID + "->" + dep
+			seen[key] = true
+			if reason, ok := knownOrderingViolations[key]; ok {
+				t.Logf("known ordering violation %s: %s", key, reason)
+				continue
+			}
+			t.Errorf("%s is marked passes:true but its dependency %s is not. The loop's rule is "+
+				"that a story may only be selected once every depends_on passes — accepting work "+
+				"before its prerequisite means the work inherits whatever risk the prerequisite "+
+				"exists to remove. If this is deliberate, add it to knownOrderingViolations WITH "+
+				"A REASON.", task.ID, dep)
+		}
+	}
+
+	// A stale allow-list entry is its own bug: it would silently permit a real
+	// violation later.
+	for key := range knownOrderingViolations {
+		if !seen[key] {
+			t.Errorf("knownOrderingViolations has a stale entry %q — the violation is gone, so "+
+				"remove the exemption rather than leaving it to cover a future one", key)
+		}
+	}
+}
