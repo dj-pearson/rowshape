@@ -13,6 +13,7 @@ import (
 	"github.com/rowshape/rowshape/internal/fixture"
 	"github.com/rowshape/rowshape/internal/plan"
 	"github.com/rowshape/rowshape/internal/validate"
+	"github.com/rowshape/rowshape/internal/verdict"
 )
 
 var pvCounter atomic.Int64
@@ -174,11 +175,19 @@ tables:
       email: {type: text, nullable: false}
       phone: {type: text, nullable: false}
 `)
+	var runErr error
 	stdout, _ := captureOutput(t, func() error {
-		return runVerify(&verifyOptions{against: url, fixturePath: fx})
+		runErr = runVerify(&verifyOptions{against: url, fixturePath: fx})
+		return runErr
 	})
 	if !strings.Contains(stdout, "users.phone") || !strings.Contains(stdout, "DRIFT") {
 		t.Errorf("verify should report the missing phone column as drift, got:\n%s", stdout)
+	}
+	// Drift must exit 1 (the deploy gate branches on this). Previously the
+	// returned error was discarded, so the exit code went unasserted
+	// (docs/TESTING-GAPS.md item 4).
+	if code := exitCodeOf(runErr); code != verdict.ExitFail {
+		t.Errorf("verify drift exit code = %d, want %d", code, verdict.ExitFail)
 	}
 	// Read-only: verify must not have created the missing column.
 	if columnExists(t, url, "public.users", "phone") {
@@ -203,10 +212,16 @@ tables:
       id: {type: bigint, nullable: false}
       email: {type: text, nullable: false}
 `)
+	var runErr error
 	stdout, stderr := captureOutput(t, func() error {
-		return runVerify(&verifyOptions{against: url, fixturePath: fx})
+		runErr = runVerify(&verifyOptions{against: url, fixturePath: fx})
+		return runErr
 	})
 	if !strings.Contains(stdout, "matches intent") {
 		t.Errorf("verify should report a match, got:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+	// A match exits 0 (nil error).
+	if code := exitCodeOf(runErr); code != verdict.ExitPass {
+		t.Errorf("verify match exit code = %d, want %d", code, verdict.ExitPass)
 	}
 }

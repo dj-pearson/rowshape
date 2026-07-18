@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/rowshape/rowshape/internal/fixture"
 	"github.com/rowshape/rowshape/internal/profile"
+	"github.com/rowshape/rowshape/internal/sqlkind"
 	"github.com/rowshape/rowshape/internal/validate"
 )
 
@@ -52,7 +53,7 @@ func Items(current *fixture.Fixture, stmts []string) []Item {
 	var items []Item
 	for _, raw := range stmts {
 		s := collapse(raw)
-		if s == "" || isTxControl(s) {
+		if s == "" || sqlkind.IsTxControl(s) {
 			continue
 		}
 		items = append(items, classify(current, s))
@@ -160,16 +161,6 @@ func RedactURL(url string) string {
 
 func collapse(s string) string { return strings.Join(strings.Fields(s), " ") }
 
-func isTxControl(s string) bool {
-	up := strings.ToUpper(s)
-	for _, kw := range []string{"BEGIN", "COMMIT", "ROLLBACK", "START TRANSACTION", "END", "SAVEPOINT", "RELEASE"} {
-		if up == kw || strings.HasPrefix(up, kw+" ") || strings.HasPrefix(up, kw+";") {
-			return true
-		}
-	}
-	return false
-}
-
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -208,7 +199,16 @@ func planTable(s, up string) string {
 		j := strings.Index(up, " ON ")
 		rest := strings.Fields(s[j+4:])
 		if len(rest) > 0 {
-			return strings.Trim(strings.TrimRight(rest[0], "("), `"`)
+			// The column list may abut the table with no space
+			// (CREATE INDEX i ON t(col)), so cut at the first "(" as well
+			// as trimming a trailing one; otherwise the table name carries
+			// "(col)" and never matches the live schema — a real index on an
+			// existing table would misreport as missing-target.
+			tok := rest[0]
+			if k := strings.IndexByte(tok, '('); k >= 0 {
+				tok = tok[:k]
+			}
+			return strings.Trim(tok, `"`)
 		}
 	}
 	return ""

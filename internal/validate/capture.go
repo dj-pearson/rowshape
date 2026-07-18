@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/rowshape/rowshape/internal/sqlkind"
 )
 
 // Capture is the record of applying a migration: the six signal classes a
@@ -107,7 +108,7 @@ func Apply(ctx context.Context, conn *pgx.Conn, statements []Located) *Capture {
 		// NOT VALID + VALIDATE in one transaction), but they are not executed:
 		// each DDL statement is applied in its own transaction for lock
 		// inspection, so replaying the migration's own BEGIN/COMMIT would clash.
-		if isTxControl(sql) {
+		if sqlkind.IsTxControl(sql) {
 			cap.Statements = append(cap.Statements, Statement{SQL: sql, File: loc.File, Line: loc.Line})
 			continue
 		}
@@ -199,18 +200,6 @@ func strongestLock(ctx context.Context, tx pgx.Tx) (mode, table string) {
 		return "", ""
 	}
 	return mode, table
-}
-
-// isTxControl reports whether a statement is transaction control (BEGIN, COMMIT,
-// ROLLBACK, START TRANSACTION, END, SAVEPOINT, RELEASE) rather than DDL/DML.
-func isTxControl(sql string) bool {
-	u := strings.ToUpper(strings.TrimSpace(sql))
-	for _, kw := range []string{"BEGIN", "COMMIT", "ROLLBACK", "START TRANSACTION", "END", "SAVEPOINT", "RELEASE"} {
-		if u == kw || strings.HasPrefix(u, kw+" ") || strings.HasPrefix(u, kw+";") {
-			return true
-		}
-	}
-	return false
 }
 
 // classifyIndexBuild reports whether sql builds an index and whether it does so

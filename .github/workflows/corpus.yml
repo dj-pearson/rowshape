@@ -67,4 +67,11 @@ jobs:
         # and silently broke every corpus case on 10/11/12 until the matrix caught
         # it. The matrix already exists; pointing it at the packages that speak SQL
         # costs a few minutes and is what turns "guarded" into "verified".
-        run: go test ./corpus/... ./internal/profile/... ./internal/target/... ./test/pathology/... -count=1
+        #
+        # ./cmd/... is included so the CLI command wiring — validate's exit-code
+        # mapping (FAIL->1, WARN->2), verify's drift exit, plan --against, and
+        # pull's read-only posture — is exercised on every major, not just PG 16
+        # (ci.yml). A version bug in the command layer that assembles a verdict is
+        # a different bug from one in an analyzer, and the corpus alone would miss
+        # it.
+        run: go test ./cmd/... ./corpus/... ./internal/profile/... ./internal/target/... ./test/pathology/... -count=1

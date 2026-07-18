@@ -51,6 +51,39 @@ jobs:
           ROWSHAPE_TEST_PG_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
         run: go test ./...
 
+  race:
+    # Nothing ran the race detector, yet the capture path holds a pgx connection
+    # across a transaction and the profiler fans work out across columns — the two
+    # places a data race could actually live. This runs the library + command
+    # tests under -race against a real Postgres. It skips the heavy test/demo and
+    # test/action end-to-end suites (they build and exec the binary; -race there
+    # buys little for a lot of wall-clock) and stays on a single representative
+    # major — a race is not version-conditional.
+    name: race detector
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: go test -race (library + command tests)
+        env:
+          ROWSHAPE_TEST_PG_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+        run: go test -race ./internal/... ./cmd/... -count=1
+
   canonical-cross-platform:
     # RFC §11 / §13: the canonical form, digest, and hydrate output MUST be
     # byte-identical across platforms. The fixture and hydrate packages' golden,
