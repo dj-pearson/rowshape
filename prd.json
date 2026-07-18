@@ -2063,9 +2063,10 @@
             "fixture-spec/conformance/*"
           ],
           "type": "docs/spec",
-          "passes": false,
-          "status": "todo",
-          "priority": 27
+          "passes": true,
+          "status": "done",
+          "priority": 27,
+          "note": "Closed. The published JSON Schema now encodes RFC §6.1's \"no range on text/bytea\" as an if/then on the column definition, so a third-party emitter validating against the schema ALONE — which is the entire point of publishing it (P2-T16) — is told, instead of producing a fixture rowshape considers invalid and hearing nothing.\n\nVERIFIED WITH A STANDALONE VALIDATOR, not the Go suite, because \"the Go suite agrees with itself\" would prove nothing here. Using python jsonschema (Draft202012Validator, schema self-check included), in all three directions:\n- VIOLATIONS rejected: text, bytea, varchar, varchar(255), character varying, citext, json, jsonb, char, character — and the case variants TEXT and Text.\n- LEGITIMATE ranges accepted: bigint, integer, numeric(10,2), timestamptz, date, double precision. A range on a numeric or temporal column is a BOUND; on text it is DATA, which is the distinction the rule exists for (INV-NO-ROWS).\n- Text WITHOUT a range accepted, so the constraint is on the combination and not on the type.\nAll 27 corpus fixtures still validate — no currently-valid fixture is newly rejected.\n\nThe pattern spells each letter as a case-insensitive class and allows an optional type modifier and array suffix, matching what the Go side gets from baseType() + strings.ToLower(): `varchar(255)` and `TEXT` both resolve, which a naive lowercase-only enum would have missed.\n\nVERSION NOT BUMPED, deliberately. This looks non-additive (a fixture that validated before may not now) but the RULE did not change — RFC §6.1 always forbade this, and such a fixture was always invalid; only the schema's EXPRESSION of the rule was incomplete. Bumping the format version would tell every reader the format changed when it did not.\n\nDRIFT GUARD: the two enforcement points now agree by test, not by hope. TestSchemaAndGoAgreeOnTextTypes reads the published schema and asserts every spelling in the Go textTypes map appears in the schema's pattern. Mutation-tested in BOTH directions — deleting the schema constraint fails, and adding a type to the Go map without adding it to the schema fails with \"the two enforcement points have drifted\". That second one is the realistic future mistake.\n\nVerified: gofmt/vet clean, golangci-lint 0 issues, fixture-spec + internal + cmd + corpus + tools green against live PG 18."
         },
         {
           "id": "CR-T28",

@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -167,5 +168,67 @@ func TestCheckEmitterYAMLIsTheThirdPartyEntryPoint(t *testing.T) {
 	if _, err := CheckEmitterYAML([]byte("{{{ not yaml")); err == nil {
 		t.Error("unreadable bytes must error rather than report zero violations — " +
 			"silence would read as 'conformant'")
+	}
+}
+
+// --- CR-T27: the published schema must encode the same rule as the Go suite --
+//
+// RFC §6.1's "no range on text/bytea" was enforced ONLY by this Go suite. A
+// third-party emitter validating against the published JSON Schema alone — which
+// is the entire point of publishing it (P2-T16) — would produce a fixture
+// rowshape considers invalid and get no warning.
+//
+// The schema now carries the constraint as an if/then. This test pins the two
+// implementations to the same TYPE LIST, which is where they would drift: adding
+// a spelling to textTypes without adding it to the schema silently re-opens the
+// gap for third-party emitters.
+func TestSchemaAndGoAgreeOnTextTypes(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "schema", "rowshape.schema.json"))
+	if err != nil {
+		t.Fatalf("read schema: %v", err)
+	}
+	var schema struct {
+		Defs struct {
+			Column struct {
+				AllOf []struct {
+					If struct {
+						Properties struct {
+							Type struct {
+								Pattern string `json:"pattern"`
+							} `json:"type"`
+						} `json:"properties"`
+					} `json:"if"`
+				} `json:"allOf"`
+			} `json:"column"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatalf("parse schema: %v", err)
+	}
+	if len(schema.Defs.Column.AllOf) == 0 {
+		t.Fatal("the schema has no allOf constraint on `column`; the RFC §6.1 rule is not encoded " +
+			"and a third-party emitter validating against the schema alone would not be told")
+	}
+	pattern := schema.Defs.Column.AllOf[0].If.Properties.Type.Pattern
+	if pattern == "" {
+		t.Fatal("the §6.1 constraint has no type pattern")
+	}
+
+	// Every spelling the Go suite rejects must appear in the schema's pattern.
+	// Compared letter-by-letter because the pattern spells each character as a
+	// case-insensitive class, e.g. [tT][eE][xX][tT].
+	for typ := range textTypes {
+		want := ""
+		for _, ch := range typ {
+			if ch == ' ' {
+				want += `\s+`
+				continue
+			}
+			want += "[" + strings.ToLower(string(ch)) + strings.ToUpper(string(ch)) + "]"
+		}
+		if !strings.Contains(pattern, want) {
+			t.Errorf("Go rejects a range on %q but the published schema's pattern does not cover it; "+
+				"the two enforcement points have drifted (schema pattern: %s)", typ, pattern)
+		}
 	}
 }
