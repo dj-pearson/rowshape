@@ -134,6 +134,20 @@ func TestRSIndexReindexBytesBasis(t *testing.T) {
 	if fnd.Estimate == nil || fnd.Estimate.Bucket != verdict.BucketOutage {
 		t.Errorf("4.2 GB reindex should bucket as outage, got %+v", fnd.Estimate)
 	}
+	// The estimate rests on the index's bytes, NOT the row count. Declaring
+	// <table>.rows was false provenance (a fact this finding never reads) and
+	// borrowed that fact's confidence for a byte-based claim (CR-CONSTRAINT-010
+	// bug class). depends_on must not cite rows.
+	for _, dep := range fnd.DependsOn {
+		if strings.HasSuffix(dep, ".rows") {
+			t.Errorf("depends_on = %v cites a row-count fact the byte-based estimate never reads", fnd.DependsOn)
+		}
+	}
+	// The byte→duration projection is a model, so the estimate is `estimated`,
+	// not left blank.
+	if fnd.Estimate.Confidence != string(fixture.Estimated) {
+		t.Errorf("estimate confidence = %q, want %q (a bucket modelled from bytes)", fnd.Estimate.Confidence, fixture.Estimated)
+	}
 }
 
 // TestRSIndexConcurrentNotFlagged: CREATE INDEX CONCURRENTLY takes no exclusive
@@ -272,8 +286,16 @@ func TestUnqualifiedReindexTableResolves(t *testing.T) {
 	if unqualified == nil {
 		t.Fatal("`REINDEX TABLE orders` produced NO RS-INDEX-020, but the qualified form did")
 	}
-	if unqualified.DependsOn[0] != qualified.DependsOn[0] {
-		t.Errorf("depends_on differs: unqualified=%v qualified=%v", unqualified.DependsOn, qualified.DependsOn)
+	// Both forms must resolve to the SAME table's largest index — proven by an
+	// identical byte-based estimate. (depends_on is deliberately empty on this
+	// finding: the estimate rests on index bytes, not the row count.)
+	qb, _ := qualified.Evidence.(map[string]any)
+	ub, _ := unqualified.Evidence.(map[string]any)
+	if qb["index_bytes"] != ub["index_bytes"] {
+		t.Errorf("resolved to different indexes: unqualified bytes=%v qualified bytes=%v", ub["index_bytes"], qb["index_bytes"])
+	}
+	if qualified.Estimate == nil || unqualified.Estimate == nil || qualified.Estimate.Bucket != unqualified.Estimate.Bucket {
+		t.Errorf("estimate buckets differ: unqualified=%+v qualified=%+v", unqualified.Estimate, qualified.Estimate)
 	}
 
 	// REINDEX INDEX still resolves by index name, unaffected by table resolution.

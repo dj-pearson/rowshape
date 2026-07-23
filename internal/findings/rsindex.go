@@ -156,7 +156,7 @@ func partialWhere(predicate string) string {
 // reindexFinding flags a non-concurrent REINDEX and buckets its duration from the
 // index's on-disk bytes/bloat (RFC §6.5).
 func reindexFinding(f *fixture.Fixture, name string, isTable bool) (verdict.Finding, bool) {
-	table, idx, ok := findIndex(f, name, isTable)
+	_, idx, ok := findIndex(f, name, isTable)
 	if !ok {
 		return verdict.Finding{}, false
 	}
@@ -166,13 +166,22 @@ func reindexFinding(f *fixture.Fixture, name string, isTable bool) (verdict.Find
 		bloat = *idx.BloatEstimate
 	}
 	fnd := verdict.Finding{
-		Code:        "RS-INDEX-020",
-		Severity:    verdict.SeverityWarn,
-		Title:       fmt.Sprintf("Non-concurrent REINDEX of %s rebuilds under lock (%s)", name, estimate.BucketFromBytes(bytes)),
-		Detail:      fmt.Sprintf("REINDEX rewrites the whole index (%d bytes, bloat estimate %.0f%%) while holding a lock that blocks writes.", bytes, bloat*100),
-		Evidence:    map[string]any{"index_bytes": bytes, "bloat_estimate": bloat},
-		DependsOn:   []string{table + ".rows"},
-		Estimate:    &verdict.Estimate{Bucket: estimate.BucketFromBytes(bytes), Model: "reindex_bytes"},
+		Code:     "RS-INDEX-020",
+		Severity: verdict.SeverityWarn,
+		Title:    fmt.Sprintf("Non-concurrent REINDEX of %s rebuilds under lock (%s)", name, estimate.BucketFromBytes(bytes)),
+		Detail:   fmt.Sprintf("REINDEX rewrites the whole index (%d bytes, bloat estimate %.0f%%) while holding a lock that blocks writes.", bytes, bloat*100),
+		Evidence: map[string]any{"index_bytes": bytes, "bloat_estimate": bloat},
+		// The duration rests entirely on the index's on-disk BYTES — an exact catalog
+		// read (pg_total_relation_size), not the row count. Declaring `<table>.rows`
+		// was false provenance in a signed document: a fact this finding never reads,
+		// whose confidence it borrowed for a claim about bytes (the CR-CONSTRAINT-010
+		// bug class). There is no factConfidence path for index bytes, and they are
+		// exact, so the finding rests on no uncertain fact — an empty depends_on,
+		// which the engine treats as exact (as RS-INDEX-010 already does when it
+		// deliberately declines a fact). The bucket itself is a model over bytes, so
+		// the Estimate carries `estimated`, exactly as the row-based model does.
+		DependsOn:   nil,
+		Estimate:    &verdict.Estimate{Bucket: estimate.BucketFromBytes(bytes), Model: "reindex_bytes", Confidence: string(fixture.Estimated)},
 		Remediation: remediation("RS-INDEX-020"),
 		Explain:     "rowshape explain RS-INDEX-020",
 	}
