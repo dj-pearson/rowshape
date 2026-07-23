@@ -218,6 +218,65 @@ func indexFindingByCode(f *fixture.Fixture, c *validate.Capture, code string) *v
 	return nil
 }
 
+// TestAddPrimaryKeyFlagged: ADD [CONSTRAINT] PRIMARY KEY builds a unique index
+// under ACCESS EXCLUSIVE. Nothing flagged it before (rsLock excludes ADD PRIMARY,
+// rsConstraint files it under OTHER, rsData keys on UNIQUE), so a PK added to a
+// 50M-row table returned PASS with zero findings. It must now warn with a
+// row-based build estimate.
+func TestAddPrimaryKeyFlagged(t *testing.T) {
+	f := indexFixture(t) // public.orders declared at 50M rows
+
+	fnd := indexFindingByCode(f,
+		indexCapture("ALTER TABLE public.orders ADD CONSTRAINT orders_pkey PRIMARY KEY (id)"),
+		"RS-INDEX-002")
+	if fnd == nil {
+		t.Fatal("ADD PRIMARY KEY produced no RS-INDEX-002 — a large-table PK addition passes clean")
+	}
+	if fnd.Severity != verdict.SeverityWarn {
+		t.Errorf("severity = %q, want warn", fnd.Severity)
+	}
+	if len(fnd.DependsOn) != 1 || fnd.DependsOn[0] != "public.orders.rows" {
+		t.Errorf("depends_on = %v, want [public.orders.rows]", fnd.DependsOn)
+	}
+	// 50M-row build extrapolated → an outage bucket, not the hydrated-rows instant.
+	if fnd.Estimate == nil || fnd.Estimate.Bucket == verdict.BucketInstant {
+		t.Errorf("expected an extrapolated build bucket, got %+v", fnd.Estimate)
+	}
+
+	// The bare (no CONSTRAINT name) table-constraint form also fires.
+	if indexFindingByCode(f, indexCapture("ALTER TABLE public.orders ADD PRIMARY KEY (id)"), "RS-INDEX-002") == nil {
+		t.Error("`ADD PRIMARY KEY (id)` (no constraint name) must also be flagged")
+	}
+}
+
+// TestAddColumnPrimaryKeyNotFlagged: the COLUMN form `ADD COLUMN c type PRIMARY
+// KEY` adds a NEW column — a different operation from a table-constraint PK over
+// existing data — and must NOT be flagged as an existing-data index build.
+func TestAddColumnPrimaryKeyNotFlagged(t *testing.T) {
+	f := indexFixture(t)
+	if fnd := indexFindingByCode(f,
+		indexCapture("ALTER TABLE public.orders ADD COLUMN pk bigint PRIMARY KEY"),
+		"RS-INDEX-002"); fnd != nil {
+		t.Errorf("ADD COLUMN ... PRIMARY KEY must not fire RS-INDEX-002 (it is a new column), got %+v", fnd)
+	}
+}
+
+// TestAddPrimaryKeyUnqualifiedResolves: the table name is resolved like every
+// other analyzer, so `ADD PRIMARY KEY` on an unqualified table still reaches the
+// fixture's row count instead of reading zero and reporting instant.
+func TestAddPrimaryKeyUnqualifiedResolves(t *testing.T) {
+	f := indexFixture(t)
+	qualified := indexFindingByCode(f, indexCapture("ALTER TABLE public.orders ADD PRIMARY KEY (id)"), "RS-INDEX-002")
+	unqualified := indexFindingByCode(f, indexCapture("ALTER TABLE orders ADD PRIMARY KEY (id)"), "RS-INDEX-002")
+	if qualified == nil || unqualified == nil {
+		t.Fatalf("both forms must fire: qualified=%v unqualified=%v", qualified, unqualified)
+	}
+	if qualified.Estimate.Bucket != unqualified.Estimate.Bucket {
+		t.Errorf("unqualified form got a different bucket (%s vs %s) — it did not resolve to public.orders",
+			unqualified.Estimate.Bucket, qualified.Estimate.Bucket)
+	}
+}
+
 // TestUnqualifiedCreateIndexGetsTheSameEstimate is the rsindex twin of
 // rslock's TestUnqualifiedTableGetsTheSameEstimate.
 func TestUnqualifiedCreateIndexGetsTheSameEstimate(t *testing.T) {

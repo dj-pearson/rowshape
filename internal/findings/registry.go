@@ -66,6 +66,13 @@ var catalog = map[string]Explanation{
 		Remediation: "Use CREATE INDEX CONCURRENTLY: it builds in two passes without an exclusive lock, so writes continue. Run it outside a transaction block.",
 		References:  []string{"RFC §6.5", "RFC §9.1", "PRD §10"},
 	},
+	"RS-INDEX-002": {
+		Code:        "RS-INDEX-002",
+		Title:       "ADD PRIMARY KEY builds a unique index under ACCESS EXCLUSIVE",
+		Summary:     "Adding a PRIMARY KEY over existing data scans the column for NULLs and builds a unique index while holding an ACCESS EXCLUSIVE lock — no reads or writes proceed for the whole O(n log n) build. On a large table that is a full outage, not just a write block.",
+		Remediation: "Build the index first without the exclusive lock, then adopt it: CREATE UNIQUE INDEX CONCURRENTLY on the column(s), ensure the column is already NOT NULL (add a validated CHECK (col IS NOT NULL) if needed), then ALTER TABLE ... ADD PRIMARY KEY USING INDEX <name>, which attaches the prebuilt index and holds the exclusive lock only briefly.",
+		References:  []string{"RFC §6.5", "RFC §9.1", "PRD §10"},
+	},
 	"RS-INDEX-010": {
 		Code:        "RS-INDEX-010",
 		Title:       "CREATE UNIQUE INDEX without proven uniqueness",

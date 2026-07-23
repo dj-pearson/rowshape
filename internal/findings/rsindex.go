@@ -45,6 +45,10 @@ func (rsIndex) Analyze(f *fixture.Fixture, c *validate.Capture) []verdict.Findin
 			}
 			continue
 		}
+		if table, ok := parseAddPrimaryKey(clean, upper); ok {
+			out = append(out, addPrimaryKeyFinding(f, c, i, resolveTable(f, table), hasVersion))
+			continue
+		}
 		if name, isTable, concurrent, ok := parseReindex(clean, upper); ok && !concurrent {
 			// Only REINDEX TABLE names a table. REINDEX INDEX names an INDEX, which
 			// findIndex matches against index names rather than fixture table keys,
@@ -75,6 +79,57 @@ func nonConcurrentFinding(f *fixture.Fixture, c *validate.Capture, i int, table 
 	}
 	fnd.Estimate = estimateFor(c, i, estimate.BTreeBuild, table, tbl.Rows.Value, tbl.Rows.Confidence, tableKnown(f, table), hasVersion)
 	return fnd
+}
+
+// addPrimaryKeyFinding flags an ALTER TABLE ... ADD PRIMARY KEY (statement i). It
+// builds a unique index under ACCESS EXCLUSIVE — a stronger lock than a plain
+// CREATE INDEX's SHARE (reads block too) — and the cost is the same O(n log n)
+// index build, so the duration is extrapolated with the same B-tree model.
+//
+// Nothing flagged this before: rsLock excludes ADD PRIMARY, rsConstraint
+// classifies PRIMARY KEY as OTHER, and rsData keys on UNIQUE — so a PRIMARY KEY
+// added to a large table applied fast against the small hydrated fixture and
+// returned PASS with zero findings, the exact production-scale lock the tool
+// exists to surface.
+func addPrimaryKeyFinding(f *fixture.Fixture, c *validate.Capture, i int, table string, hasVersion bool) verdict.Finding {
+	tbl := f.Tables[table]
+	fnd := verdict.Finding{
+		Code:        "RS-INDEX-002",
+		Severity:    verdict.SeverityWarn,
+		Title:       fmt.Sprintf("ADD PRIMARY KEY on %s builds a unique index under ACCESS EXCLUSIVE, blocking reads and writes", shortTable(table)),
+		Detail:      "ALTER TABLE ... ADD PRIMARY KEY scans for NULLs and builds a unique index while holding an ACCESS EXCLUSIVE lock, so neither reads nor writes proceed until it finishes.",
+		Evidence:    map[string]any{"lock_mode": "ACCESS EXCLUSIVE"},
+		DependsOn:   []string{table + ".rows"},
+		Remediation: remediation("RS-INDEX-002"),
+		Explain:     "rowshape explain RS-INDEX-002",
+	}
+	fnd.Estimate = estimateFor(c, i, estimate.BTreeBuild, table, tbl.Rows.Value, tbl.Rows.Confidence, tableKnown(f, table), hasVersion)
+	return fnd
+}
+
+// parseAddPrimaryKey recognizes the TABLE-CONSTRAINT form
+// `ALTER TABLE <t> ADD [CONSTRAINT <name>] PRIMARY KEY (<cols>)`, which builds an
+// index over EXISTING data. It deliberately does NOT match the column form
+// `ADD COLUMN <c> <type> PRIMARY KEY` (a new column, a different operation): the
+// table-constraint form is the only one whose "PRIMARY KEY" is immediately
+// followed by a parenthesized column list.
+func parseAddPrimaryKey(clean, upper string) (string, bool) {
+	if !strings.HasPrefix(upper, "ALTER TABLE") || !strings.Contains(upper, " ADD ") {
+		return "", false
+	}
+	if strings.Contains(upper, "ADD COLUMN") {
+		return "", false
+	}
+	i := strings.Index(upper, "PRIMARY KEY")
+	if i < 0 {
+		return "", false
+	}
+	// The column list must follow (table-constraint form), not be a column
+	// attribute at the end of an ADD COLUMN clause.
+	if after := strings.TrimSpace(upper[i+len("PRIMARY KEY"):]); !strings.HasPrefix(after, "(") {
+		return "", false
+	}
+	return alterTableTarget(clean), true
 }
 
 // indexUniqueFinding certifies (or refuses) a CREATE UNIQUE INDEX by the column's
