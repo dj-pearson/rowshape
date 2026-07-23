@@ -68,9 +68,9 @@ var catalog = map[string]Explanation{
 	},
 	"RS-INDEX-002": {
 		Code:        "RS-INDEX-002",
-		Title:       "ADD PRIMARY KEY builds a unique index under ACCESS EXCLUSIVE",
-		Summary:     "Adding a PRIMARY KEY over existing data scans the column for NULLs and builds a unique index while holding an ACCESS EXCLUSIVE lock — no reads or writes proceed for the whole O(n log n) build. On a large table that is a full outage, not just a write block.",
-		Remediation: "Build the index first without the exclusive lock, then adopt it: CREATE UNIQUE INDEX CONCURRENTLY on the column(s), ensure the column is already NOT NULL (add a validated CHECK (col IS NOT NULL) if needed), then ALTER TABLE ... ADD PRIMARY KEY USING INDEX <name>, which attaches the prebuilt index and holds the exclusive lock only briefly.",
+		Title:       "ADD PRIMARY KEY or UNIQUE builds an index under ACCESS EXCLUSIVE",
+		Summary:     "Adding a PRIMARY KEY or UNIQUE constraint over existing data builds a unique index while holding an ACCESS EXCLUSIVE lock — no reads or writes proceed for the whole O(n log n) build, and ADD PRIMARY KEY also scans the column for NULLs. On a large table that is a full outage, not just a write block. This is the lock cost of building the constraint, separate from whether the data lets it build at all (RS-DATA-014).",
+		Remediation: "Build the index first without the exclusive lock, then adopt it: CREATE UNIQUE INDEX CONCURRENTLY on the column(s), then attach it with ALTER TABLE ... ADD PRIMARY KEY/UNIQUE USING INDEX <name>, which holds the exclusive lock only briefly. For a PRIMARY KEY, ensure the column is already NOT NULL first (add a validated CHECK (col IS NOT NULL) if needed).",
 		References:  []string{"RFC §6.5", "RFC §9.1", "PRD §10"},
 	},
 	"RS-INDEX-010": {

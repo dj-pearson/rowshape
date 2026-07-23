@@ -249,6 +249,47 @@ func TestAddPrimaryKeyFlagged(t *testing.T) {
 	}
 }
 
+// TestAddUniqueConstraintFlagged: ADD CONSTRAINT ... UNIQUE builds a unique index
+// under ACCESS EXCLUSIVE too — the lock hazard is distinct from RS-DATA-014's
+// question of whether the data lets it build.
+func TestAddUniqueConstraintFlagged(t *testing.T) {
+	f := indexFixture(t)
+	fnd := indexFindingByCode(f,
+		indexCapture("ALTER TABLE public.orders ADD CONSTRAINT orders_email_key UNIQUE (email)"),
+		"RS-INDEX-002")
+	if fnd == nil {
+		t.Fatal("ADD UNIQUE produced no RS-INDEX-002 lock finding")
+	}
+	if fnd.Severity != verdict.SeverityWarn {
+		t.Errorf("severity = %q, want warn", fnd.Severity)
+	}
+	// The constraint NAME `orders_email_key` contains no UNIQUE token; the keyword
+	// is the constraint keyword, and the table must still resolve.
+	if len(fnd.DependsOn) != 1 || fnd.DependsOn[0] != "public.orders.rows" {
+		t.Errorf("depends_on = %v, want [public.orders.rows]", fnd.DependsOn)
+	}
+	// Bare `ADD UNIQUE (col)` (no constraint name) also fires.
+	if indexFindingByCode(f, indexCapture("ALTER TABLE public.orders ADD UNIQUE (email)"), "RS-INDEX-002") == nil {
+		t.Error("`ADD UNIQUE (email)` (no constraint name) must also be flagged")
+	}
+}
+
+// TestAddConstraintUsingIndexNotFlagged: the adopt form ADD PRIMARY KEY/UNIQUE
+// USING INDEX attaches a prebuilt index and holds the exclusive lock only
+// briefly — it is exactly what RS-INDEX-002's remediation recommends, so the
+// finding must not fire on its own fix.
+func TestAddConstraintUsingIndexNotFlagged(t *testing.T) {
+	f := indexFixture(t)
+	for _, sql := range []string{
+		"ALTER TABLE public.orders ADD PRIMARY KEY USING INDEX orders_pkey_idx",
+		"ALTER TABLE public.orders ADD CONSTRAINT orders_email_key UNIQUE USING INDEX orders_email_idx",
+	} {
+		if fnd := indexFindingByCode(f, indexCapture(sql), "RS-INDEX-002"); fnd != nil {
+			t.Errorf("USING INDEX adopt form must not fire RS-INDEX-002 (it is the remediation): %q -> %+v", sql, fnd)
+		}
+	}
+}
+
 // TestAddColumnPrimaryKeyNotFlagged: the COLUMN form `ADD COLUMN c type PRIMARY
 // KEY` adds a NEW column — a different operation from a table-constraint PK over
 // existing data — and must NOT be flagged as an existing-data index build.

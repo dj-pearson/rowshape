@@ -63,19 +63,30 @@ tables:
 		t.Errorf("exit_code = %v, want %d (WARN-only)", out["exit_code"], verdict.ExitWarnOnly)
 	}
 	findings, _ := out["findings"].([]any)
-	if len(findings) != 1 {
-		t.Fatalf("expected 1 finding, got %d", len(findings))
+	// Two distinct hazards on the same statement: the data cannot certify the
+	// build (RS-DATA-014, capping) AND the build itself locks the table
+	// (RS-INDEX-002). Both are WARN, so the verdict stays WARN.
+	if len(findings) != 2 {
+		t.Fatalf("expected 2 findings (RS-DATA-014 + RS-INDEX-002), got %d: %v", len(findings), findings)
 	}
-	f0 := findings[0].(map[string]any)
-	if f0["code"] != "RS-DATA-014" {
-		t.Errorf("code = %v, want RS-DATA-014", f0["code"])
+	var dataFinding map[string]any
+	codes := map[string]bool{}
+	for _, f := range findings {
+		fm := f.(map[string]any)
+		codes[fm["code"].(string)] = true
+		if fm["code"] == "RS-DATA-014" {
+			dataFinding = fm
+		}
 	}
-	// Compact: the finding carries a code and an explain path, NOT remediation prose.
-	if _, hasRemediation := f0["remediation"]; hasRemediation {
+	if !codes["RS-DATA-014"] || !codes["RS-INDEX-002"] {
+		t.Fatalf("want both RS-DATA-014 and RS-INDEX-002, got %v", codes)
+	}
+	// Compact: findings carry a code and an explain path, NOT remediation prose.
+	if _, hasRemediation := dataFinding["remediation"]; hasRemediation {
 		t.Error("compact finding must not inline remediation prose")
 	}
-	if !strings.Contains(f0["explain"].(string), "RS-DATA-014") {
-		t.Errorf("finding should carry the explain_finding expansion path, got %v", f0["explain"])
+	if !strings.Contains(dataFinding["explain"].(string), "RS-DATA-014") {
+		t.Errorf("finding should carry the explain_finding expansion path, got %v", dataFinding["explain"])
 	}
 }
 

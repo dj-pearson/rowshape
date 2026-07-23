@@ -87,15 +87,23 @@ func (e *Engine) Cap(want string, f Finding) (string, Finding) {
 	return got, f
 }
 
-// ResolveCommand returns the command that would raise the weakest declared
+// ResolveCommand returns the instruction that would raise the weakest declared
 // dependency to a certifying confidence — the "here is how to turn this WARN into
-// a PASS" string (RFC §7.4, e.g. `rowshape pull --exact public.users.email`).
+// a PASS" string (RFC §7.4).
+//
+// It names `pull --exact` and the fact that needs raising, but is deliberately NOT
+// a bare `rowshape pull --exact <target>`: `--exact` is a boolean that re-profiles
+// the WHOLE source, and `pull` takes a connection URL, not a column selector. The
+// old form `rowshape pull --exact public.users.email` fed the selector in where a
+// DSN belongs, so an agent that ran it verbatim — as init --agent's rule tells it
+// to — got a connection-parse tool error, not a re-pull. This phrasing is honest
+// about what to run (an exact re-pull of the source) and why (to raise this fact).
 func (e *Engine) ResolveCommand(deps []string) string {
 	target := e.weakestTarget(deps)
 	if target == "" {
 		return ""
 	}
-	return "rowshape pull --exact " + target
+	return "rowshape pull --exact <source-url> (re-profiles the source, raising " + target + " to exact)"
 }
 
 // capToCeiling downgrades a PASS that exceeds the ceiling to WARN; it never

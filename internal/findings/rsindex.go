@@ -45,8 +45,8 @@ func (rsIndex) Analyze(f *fixture.Fixture, c *validate.Capture) []verdict.Findin
 			}
 			continue
 		}
-		if table, ok := parseAddPrimaryKey(clean, upper); ok {
-			out = append(out, addPrimaryKeyFinding(f, c, i, resolveTable(f, table), hasVersion))
+		if table, kind, ok := parseAddIndexConstraint(clean, upper); ok {
+			out = append(out, addIndexConstraintFinding(f, c, i, resolveTable(f, table), kind, hasVersion))
 			continue
 		}
 		if name, isTable, concurrent, ok := parseReindex(clean, upper); ok && !concurrent {
@@ -81,24 +81,29 @@ func nonConcurrentFinding(f *fixture.Fixture, c *validate.Capture, i int, table 
 	return fnd
 }
 
-// addPrimaryKeyFinding flags an ALTER TABLE ... ADD PRIMARY KEY (statement i). It
-// builds a unique index under ACCESS EXCLUSIVE — a stronger lock than a plain
-// CREATE INDEX's SHARE (reads block too) — and the cost is the same O(n log n)
-// index build, so the duration is extrapolated with the same B-tree model.
+// addIndexConstraintFinding flags an ALTER TABLE ... ADD PRIMARY KEY / ADD UNIQUE
+// (statement i). Both build a unique index while holding ACCESS EXCLUSIVE — a
+// stronger lock than a plain CREATE INDEX's SHARE (reads block too) — at the same
+// O(n log n) cost, so the duration uses the same B-tree model.
 //
-// Nothing flagged this before: rsLock excludes ADD PRIMARY, rsConstraint
-// classifies PRIMARY KEY as OTHER, and rsData keys on UNIQUE — so a PRIMARY KEY
-// added to a large table applied fast against the small hydrated fixture and
-// returned PASS with zero findings, the exact production-scale lock the tool
-// exists to surface.
-func addPrimaryKeyFinding(f *fixture.Fixture, c *validate.Capture, i int, table string, hasVersion bool) verdict.Finding {
+// Nothing flagged the lock before: rsLock excludes ADD PRIMARY / ADD UNIQUE,
+// rsConstraint files PRIMARY KEY under OTHER, and rsData's RS-DATA-014 speaks to
+// whether an ADD UNIQUE will BUILD (uniqueness of the data), not to the lock it
+// takes while building. The two are distinct hazards on the same statement: a
+// proven-unique ADD UNIQUE still locks the table for the whole build.
+func addIndexConstraintFinding(f *fixture.Fixture, c *validate.Capture, i int, table, kind string, hasVersion bool) verdict.Finding {
 	tbl := f.Tables[table]
+	label := "ADD PRIMARY KEY"
+	scans := "scans the column for NULLs and builds"
+	if kind == "UNIQUE" {
+		label, scans = "ADD UNIQUE constraint", "builds"
+	}
 	fnd := verdict.Finding{
 		Code:        "RS-INDEX-002",
 		Severity:    verdict.SeverityWarn,
-		Title:       fmt.Sprintf("ADD PRIMARY KEY on %s builds a unique index under ACCESS EXCLUSIVE, blocking reads and writes", shortTable(table)),
-		Detail:      "ALTER TABLE ... ADD PRIMARY KEY scans for NULLs and builds a unique index while holding an ACCESS EXCLUSIVE lock, so neither reads nor writes proceed until it finishes.",
-		Evidence:    map[string]any{"lock_mode": "ACCESS EXCLUSIVE"},
+		Title:       fmt.Sprintf("%s on %s builds a unique index under ACCESS EXCLUSIVE, blocking reads and writes", label, shortTable(table)),
+		Detail:      fmt.Sprintf("ALTER TABLE ... %s %s a unique index while holding an ACCESS EXCLUSIVE lock, so neither reads nor writes proceed until it finishes.", label, scans),
+		Evidence:    map[string]any{"lock_mode": "ACCESS EXCLUSIVE", "constraint": kind},
 		DependsOn:   []string{table + ".rows"},
 		Remediation: remediation("RS-INDEX-002"),
 		Explain:     "rowshape explain RS-INDEX-002",
@@ -107,29 +112,49 @@ func addPrimaryKeyFinding(f *fixture.Fixture, c *validate.Capture, i int, table 
 	return fnd
 }
 
-// parseAddPrimaryKey recognizes the TABLE-CONSTRAINT form
-// `ALTER TABLE <t> ADD [CONSTRAINT <name>] PRIMARY KEY (<cols>)`, which builds an
-// index over EXISTING data. It deliberately does NOT match the column form
-// `ADD COLUMN <c> <type> PRIMARY KEY` (a new column, a different operation): the
-// table-constraint form is the only one whose "PRIMARY KEY" is immediately
-// followed by a parenthesized column list.
-func parseAddPrimaryKey(clean, upper string) (string, bool) {
+// parseAddIndexConstraint recognizes the TABLE-CONSTRAINT forms
+// `ALTER TABLE <t> ADD [CONSTRAINT <name>] {PRIMARY KEY|UNIQUE} (<cols>)`, which
+// build an index over EXISTING data under ACCESS EXCLUSIVE. It returns the target
+// table and the constraint kind ("PRIMARY KEY" or "UNIQUE").
+//
+// It deliberately does NOT match:
+//   - the COLUMN form `ADD COLUMN c type PRIMARY KEY` (a new column);
+//   - the adopt form `ADD PRIMARY KEY USING INDEX i` / `ADD UNIQUE USING INDEX i`
+//     — a prebuilt index attached cheaply, which is exactly what this finding's
+//     remediation recommends; a check that fired on its own fix would train people
+//     to switch it off. Both are excluded because they carry no `(col)` list.
+func parseAddIndexConstraint(clean, upper string) (table, kind string, ok bool) {
 	if !strings.HasPrefix(upper, "ALTER TABLE") || !strings.Contains(upper, " ADD ") {
-		return "", false
+		return "", "", false
 	}
 	if strings.Contains(upper, "ADD COLUMN") {
-		return "", false
+		return "", "", false
 	}
-	i := strings.Index(upper, "PRIMARY KEY")
-	if i < 0 {
-		return "", false
+	for _, k := range []string{"PRIMARY KEY", "UNIQUE"} {
+		if keywordBeforeParen(upper, k) {
+			return alterTableTarget(clean), k, true
+		}
 	}
-	// The column list must follow (table-constraint form), not be a column
-	// attribute at the end of an ADD COLUMN clause.
-	if after := strings.TrimSpace(upper[i+len("PRIMARY KEY"):]); !strings.HasPrefix(after, "(") {
-		return "", false
+	return "", "", false
+}
+
+// keywordBeforeParen reports whether kw appears as a standalone constraint keyword
+// — a token boundary on its left and a "(" column list on its right. The left
+// boundary keeps `UNIQUE` inside a constraint NAME (e.g. `users_unique_key`) from
+// matching, and the required "(" keeps the USING INDEX adopt form out.
+func keywordBeforeParen(upper, kw string) bool {
+	for from := 0; ; {
+		i := strings.Index(upper[from:], kw)
+		if i < 0 {
+			return false
+		}
+		i += from
+		leftOK := i == 0 || upper[i-1] == ' '
+		if leftOK && strings.HasPrefix(strings.TrimSpace(upper[i+len(kw):]), "(") {
+			return true
+		}
+		from = i + len(kw)
 	}
-	return alterTableTarget(clean), true
 }
 
 // indexUniqueFinding certifies (or refuses) a CREATE UNIQUE INDEX by the column's

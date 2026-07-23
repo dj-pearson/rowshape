@@ -78,8 +78,11 @@ func TestRSDataUnprovenUnique(t *testing.T) {
 	if fnd.Confidence == string(fixture.Exact) || fnd.Confidence == string(fixture.Measured) {
 		t.Errorf("confidence = %q, must be capped below measured for unproven uniqueness", fnd.Confidence)
 	}
-	if !strings.Contains(fnd.Remediation, "rowshape pull --exact public.users.email") {
-		t.Errorf("remediation must name the resolving command, got %q", fnd.Remediation)
+	// The resolve clause must name `pull --exact` AND the fact to raise. It is not
+	// a bare `pull --exact <column>` — that fed a column selector where a DSN
+	// belongs and errored when run verbatim.
+	if !strings.Contains(fnd.Remediation, "pull --exact") || !strings.Contains(fnd.Remediation, "public.users.email") {
+		t.Errorf("remediation must name the resolving command and the target fact, got %q", fnd.Remediation)
 	}
 }
 
