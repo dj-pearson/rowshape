@@ -318,6 +318,67 @@ func TestAddPrimaryKeyUnqualifiedResolves(t *testing.T) {
 	}
 }
 
+// TestReindexScopeTotals: REINDEX rebuilds EVERY index in its scope
+// sequentially, so the duration must bucket from the SUM of their bytes, not the
+// single largest — and REINDEX SCHEMA / DATABASE (previously silent) must produce
+// a finding at all.
+func TestReindexScopeTotals(t *testing.T) {
+	f, err := fixture.Parse([]byte(`rowshape_fixture: "1"
+meta: {id: t, engine: {name: postgres, version: "16"}}
+tables:
+  public.orders:
+    rows: {value: 10000000, confidence: exact}
+    columns:
+      id: {type: bigint, nullable: false}
+    indexes:
+      - {name: orders_a_idx, method: btree, columns: [id], bytes: 30000000000}
+      - {name: orders_b_idx, method: btree, columns: [id], bytes: 30000000000}
+  analytics.events:
+    rows: {value: 5000000, confidence: exact}
+    columns:
+      id: {type: bigint, nullable: false}
+    indexes:
+      - {name: events_idx, method: btree, columns: [id], bytes: 20000000000}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	get := func(sql string) *verdict.Finding {
+		return indexFindingByCode(f, indexCapture(sql), "RS-INDEX-020")
+	}
+	ev := func(fnd *verdict.Finding) (int64, int) {
+		m := fnd.Evidence.(map[string]any)
+		return m["index_bytes"].(int64), m["index_count"].(int)
+	}
+
+	// REINDEX TABLE sums BOTH of orders' indexes (60 GB), not just one (30 GB).
+	tbl := get("REINDEX TABLE public.orders")
+	if tbl == nil {
+		t.Fatal("REINDEX TABLE produced no finding")
+	}
+	if b, n := ev(tbl); b != 60000000000 || n != 2 {
+		t.Errorf("REINDEX TABLE totals = %d bytes / %d indexes, want 60000000000 / 2 (sum, not largest)", b, n)
+	}
+
+	// REINDEX SCHEMA public: only public.orders' indexes (60 GB), not analytics.
+	sch := get("REINDEX SCHEMA public")
+	if sch == nil {
+		t.Fatal("REINDEX SCHEMA produced no finding (was silent before)")
+	}
+	if b, n := ev(sch); b != 60000000000 || n != 2 {
+		t.Errorf("REINDEX SCHEMA public totals = %d / %d, want 60000000000 / 2", b, n)
+	}
+
+	// REINDEX DATABASE: every index across all schemas (80 GB / 3 indexes).
+	db := get("REINDEX DATABASE app")
+	if db == nil {
+		t.Fatal("REINDEX DATABASE produced no finding (was silent before)")
+	}
+	if b, n := ev(db); b != 80000000000 || n != 3 {
+		t.Errorf("REINDEX DATABASE totals = %d / %d, want 80000000000 / 3", b, n)
+	}
+}
+
 // TestUnqualifiedCreateIndexGetsTheSameEstimate is the rsindex twin of
 // rslock's TestUnqualifiedTableGetsTheSameEstimate.
 func TestUnqualifiedCreateIndexGetsTheSameEstimate(t *testing.T) {
