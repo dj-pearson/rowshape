@@ -57,6 +57,43 @@ func TestRSDataCorpusVerdicts(t *testing.T) {
 	}
 }
 
+// TestRSDataNonExactUniqueIsNotProof: `unique` MUST be exact or absent (RFC §7.2,
+// INV-UNIQUENESS). A fact carrying a weaker confidence — which a hand-authored or
+// non-conformant fixture can slip past ParseVerified (it checks only the digest) —
+// is not a proof in either direction. A non-exact unique=false must NOT drive a
+// confident FAIL; it must be treated as absent and cap to WARN.
+func TestRSDataNonExactUniqueIsNotProof(t *testing.T) {
+	// unique=false at ESTIMATED confidence: an emitter guessing non-uniqueness from
+	// n_distinct < rows. Reading Value produced a FAIL asserting an exactness the
+	// fact never had.
+	f, err := fixture.Parse([]byte(`rowshape_fixture: "1"
+meta: {id: t, engine: {name: postgres, version: "16"}}
+tables:
+  public.users:
+    rows: {value: 2000000, confidence: exact}
+    columns:
+      email: {type: text, nullable: false, unique: {value: false, confidence: estimated, via: pg_stats}}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mig := "ALTER TABLE public.users ADD CONSTRAINT u UNIQUE (email);"
+	res := validate.BuildResult(f, plainCapture(mig), []validate.Analyzer{rsData{}}, false)
+
+	if res.Verdict != verdict.VerdictWarn {
+		t.Fatalf("verdict = %s, want WARN — a non-exact unique fact is not a proof and must not FAIL", res.Verdict)
+	}
+	if len(res.Findings) != 1 || res.Findings[0].Code != "RS-DATA-014" {
+		t.Fatalf("want one RS-DATA-014 finding, got %+v", res.Findings)
+	}
+	if sev := res.Findings[0].Severity; sev == verdict.SeverityError {
+		t.Errorf("severity = %q, must not be a confident FAIL on non-exact evidence", sev)
+	}
+	if d := res.Findings[0].Detail; strings.Contains(d, "proven non-unique") {
+		t.Errorf("detail must not claim a proven violation from non-exact evidence: %q", d)
+	}
+}
+
 // TestRSDataUnprovenUnique: RS-DATA-014 warns (never PASS) when uniqueness is
 // unproven, declares depends_on, carries capped confidence, and names
 // `rowshape pull --exact <col>` (RFC §7.4, INV-UNIQUENESS).
