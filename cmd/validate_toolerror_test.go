@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -18,7 +19,7 @@ func runToolError(t *testing.T, opts *validateOptions) (int, toolerror.ToolError
 	t.Helper()
 	opts.asJSON = true
 	var runErr error
-	stdout, stderr := captureOutput(t, func() error { runErr = runValidate(opts); return runErr })
+	stdout, stderr := captureOutput(t, func() error { runErr = runValidate(context.Background(), opts); return runErr })
 
 	code := 0
 	var ee *ExitError
@@ -115,7 +116,7 @@ tables: {}
 	writeFile(t, mig, "SELECT 1;")
 
 	opts := &validateOptions{fixturePath: badVersion, migrations: mig, ephemeral: "postgres://u@localhost:1/x", scale: 1, asJSON: true}
-	stdout, _ := captureOutput(t, func() error { return runValidate(opts) })
+	stdout, _ := captureOutput(t, func() error { return runValidate(context.Background(), opts) })
 
 	var raw map[string]any
 	if err := json.Unmarshal([]byte(stdout), &raw); err != nil {
