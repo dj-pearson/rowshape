@@ -51,11 +51,11 @@ func newValidateCmd() *cobra.Command {
 			"verdict. Against a provided live branch (--target) the facts are ground\n" +
 			"truth. validate never touches the fixture's source database.",
 		Args: cobra.MaximumNArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 1 {
 				opts.fixturePath = args[0]
 			}
-			return runValidate(opts)
+			return runValidate(cmd.Context(), opts)
 		},
 	}
 	f := cmd.Flags()
@@ -72,9 +72,7 @@ func newValidateCmd() *cobra.Command {
 	return cmd
 }
 
-func runValidate(opts *validateOptions) error {
-	ctx := context.Background()
-
+func runValidate(ctx context.Context, opts *validateOptions) error {
 	data, err := os.ReadFile(opts.fixturePath)
 	if err != nil {
 		return emitToolError(opts.asJSON, toolerror.New(toolerror.FixtureParse, fmt.Sprintf("reading %s failed: %v", opts.fixturePath, err), "check the fixture path"))

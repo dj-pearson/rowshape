@@ -2,7 +2,11 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
 
 	// Registers the RS-* finding analyzers with the validate pipeline (P2-T8+).
 	_ "github.com/rowshape/rowshape/internal/findings"
@@ -46,6 +50,14 @@ func NewRootCmd() *cobra.Command {
 }
 
 // Execute runs the root command. main maps the returned error onto an exit code.
+//
+// It runs under a signal-aware context: the first SIGINT/SIGTERM cancels it
+// instead of killing the process, so a command mid-run — hydrating a disposable
+// database, say — unwinds normally and its deferred teardown drops that database
+// rather than orphaning it on the admin server (the disposable-target lifecycle,
+// INV-BLAST-RADIUS-ZERO's cleanup half).
 func Execute() error {
-	return NewRootCmd().Execute()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return NewRootCmd().ExecuteContext(ctx)
 }

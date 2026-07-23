@@ -113,7 +113,7 @@ func generateTable(f *fixture.Fixture, name string, tbl fixture.Table, seed int6
 			case isFK:
 				// fk[ord] is the assigned parent ordinal; map it to the id value
 				// the parent's identity column actually generated for that ordinal.
-				v = parentIDValue(f, fkRefs[col], fk[ord], rowCounts[parentTable(fkRefs[col].To)])
+				v = parentIDValue(seed, f, fkRefs[col], fk[ord], rowCounts[parentTable(fkRefs[col].To)])
 			default:
 				v = generateValue(seed, name, col, c, ord)
 			}
@@ -352,25 +352,53 @@ func fakeUUID(n int64) string {
 // the two in step whatever the range is — and if the fixture carries no facts for
 // the parent column, generation falls back to the ordinal, which is what the id
 // would be in that case anyway.
-func parentIDValue(f *fixture.Fixture, ref fixture.Reference, parentOrdinal, parentN int64) int64 {
+//
+// The value must also carry the parent column's TYPE, not just its numeric shape.
+// A `uuid`/`text`/`cuid` primary key — the modern default (Prisma, Drizzle,
+// Rails-uuid) — generates a string id (fakeUUID / fakeValue), so a FK to it must
+// be that same string. The earlier form returned int64 unconditionally, which
+// closed the numeric-orphan case but fed the ordinal `0` into a uuid FK column;
+// the binary COPY then failed to encode an int into a uuid and hydration aborted
+// with a tool error for every non-integer-keyed schema that has a foreign key.
+// Reproducing fakeValue over the same ordinal keeps the child cell type-identical
+// to the parent id it references.
+func parentIDValue(seed int64, f *fixture.Fixture, ref fixture.Reference, parentOrdinal, parentN int64) any {
 	col, ok := parentIDColumn(f, ref)
 	if !ok {
 		return parentOrdinal
 	}
-	// An ordinal at or beyond parentN is a deliberate orphan (assignForeignKeys
-	// hands these out to honour orphan_fraction). It must be an id NO parent has,
-	// and "beyond the largest one generated" is the only choice that holds
-	// whatever the column's range is: min + (ordinal % span) wraps, so picking an
-	// unused ordinal is not enough when the span is narrower than the parent
-	// count — the wrap would land on a real parent and the orphan would quietly
-	// become valid.
-	if parentOrdinal >= parentN && parentN > 0 {
+	ptable := parentTable(ref.To)
+	pcol := ref.To[strings.LastIndex(ref.To, ".")+1:]
+
+	// Non-orphan: reproduce exactly what the parent's unique id column generated
+	// for this ordinal (generateValue's unique path — no null, no histogram —
+	// which is fakeValue over the ordinal), so the reference resolves whatever the
+	// parent's type is.
+	if parentOrdinal < parentN || parentN <= 0 {
+		return parentUniqueValue(seed, ptable, pcol, col, parentOrdinal)
+	}
+
+	// A deliberate orphan (assignForeignKeys hands out ordinals >= parentN to
+	// honour orphan_fraction): it must be an id NO parent has.
+	val := parentUniqueValue(seed, ptable, pcol, col, parentOrdinal)
+	if _, isInt := val.(int64); isInt {
+		// numericInRange wraps (min + ordinal % span), so an unused ordinal is not
+		// enough — the wrap could land on a real parent. Step above the largest id
+		// the parent generated instead.
 		return maxParentID(col, parentN) + 1 + (parentOrdinal - parentN)
 	}
-	if v, ok := numericInRange(col, parentOrdinal).(int64); ok {
-		return v
-	}
-	return parentOrdinal
+	// Injective string/uuid formats never wrap, so a value generated from an
+	// ordinal the parent never used (parentOrdinal >= parentN) is already unused.
+	return val
+}
+
+// parentUniqueValue reproduces the value generateValue would produce for a unique,
+// non-null column at ordinal ord: the unique branch takes n = ord and returns
+// fakeValue(c, ord, rng), skipping the null and histogram branches (a unique id
+// column hits neither). Reconstructing the same rng keeps it identical even if
+// fakeValue starts consuming it.
+func parentUniqueValue(seed int64, table, column string, c fixture.Column, ord int64) any {
+	return fakeValue(c, ord, cellRNG(seed, table, column, ord))
 }
 
 // maxParentID is the largest id the parent table generated across ordinals

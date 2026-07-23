@@ -343,6 +343,83 @@ func minInt(a, b int) int {
 	return b
 }
 
+// TestForeignKeysMatchNonIntegerParentKeys: a FK to a uuid/text primary key — the
+// modern default (Prisma, Drizzle, Rails-uuid) — must hydrate as the SAME string
+// the parent generated, not an int64 ordinal.
+//
+// parentIDValue used to return int64 unconditionally (it called numericInRange,
+// which returns the bare ordinal when a column has no numeric range — every uuid
+// column). The child cell then carried an int where the column is a uuid, and the
+// binary COPY in target.Load could not encode it: hydration aborted with a tool
+// error for EVERY non-integer-keyed schema that has a foreign key. Generate itself
+// does not COPY, so the type mismatch surfaces here as an int64 cell in a uuid
+// column — which is exactly what would fail to encode.
+func TestForeignKeysMatchNonIntegerParentKeys(t *testing.T) {
+	f := &fixture.Fixture{
+		Tables: map[string]fixture.Table{
+			"public.accounts": {
+				Rows: fixture.Fact[int64]{Value: 50},
+				Columns: map[string]fixture.Column{
+					"id": {Type: "uuid", Nullable: false, Format: "uuid",
+						Unique: &fixture.Fact[bool]{Value: true, Confidence: fixture.Exact, Via: "constraint"}},
+				},
+			},
+			"public.sessions": {
+				Rows: fixture.Fact[int64]{Value: 200},
+				Columns: map[string]fixture.Column{
+					"id": {Type: "uuid", Nullable: false, Format: "uuid",
+						Unique: &fixture.Fact[bool]{Value: true, Confidence: fixture.Exact, Via: "constraint"}},
+					"account_id": {Type: "uuid", Nullable: false, Format: "uuid"},
+				},
+				References: []fixture.Reference{{
+					Column: "account_id", To: "public.accounts.id",
+					OrphanFraction: &fixture.Fact[float64]{Value: 0, Confidence: fixture.Exact},
+				}},
+			},
+		},
+	}
+
+	res, err := Generate(f, Options{Seed: 42, Scale: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	parentIDs := map[string]bool{}
+	var childFKs []any
+	for _, tb := range res.Tables {
+		idx := map[string]int{}
+		for i, c := range tb.Columns {
+			idx[c] = i
+		}
+		for _, row := range tb.Rows {
+			switch tb.Name {
+			case "public.accounts":
+				id, ok := row[idx["id"]].(string)
+				if !ok {
+					t.Fatalf("parent accounts.id is %T, want string (uuid)", row[idx["id"]])
+				}
+				parentIDs[id] = true
+			case "public.sessions":
+				childFKs = append(childFKs, row[idx["account_id"]])
+			}
+		}
+	}
+	if len(parentIDs) == 0 || len(childFKs) == 0 {
+		t.Fatal("nothing generated; this case proves nothing")
+	}
+
+	for i, fk := range childFKs {
+		s, ok := fk.(string)
+		if !ok {
+			t.Fatalf("sessions.account_id[%d] is %T (%v), want string matching a uuid parent id — "+
+				"an int here is what fails to COPY-encode into a uuid column and aborts hydration", i, fk, fk)
+		}
+		if !parentIDs[s] {
+			t.Errorf("sessions.account_id[%d] = %q references no account (orphan_fraction is 0/exact)", i, s)
+		}
+	}
+}
+
 // TestFanoutHeavyTailIsReproduced pins the moat field at PRODUCTION skew.
 //
 // Nothing covered this. The Week-6 gate's fixture is a 40x tail (max 800 / mean

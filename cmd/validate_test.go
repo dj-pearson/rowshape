@@ -51,7 +51,7 @@ tables:
 		ephemeral:   "postgres://admin:secret@" + prodHost + ":5432/postgres",
 		scale:       1.0,
 	}
-	_, stderr := captureOutput(t, func() error { return runValidate(opts) })
+	_, stderr := captureOutput(t, func() error { return runValidate(context.Background(), opts) })
 
 	if !strings.Contains(stderr, "refusing to run against the fixture's source host") {
 		t.Errorf("expected a host-match refusal on stderr, got:\n%s", stderr)
@@ -232,7 +232,7 @@ func TestValidateEndToEnd(t *testing.T) {
 		scale:       1.0,
 		asJSON:      true,
 	}
-	stdout, stderr := captureOutput(t, func() error { return runValidate(opts) })
+	stdout, stderr := captureOutput(t, func() error { return runValidate(context.Background(), opts) })
 
 	if !strings.Contains(stdout, `"verdict"`) || !strings.Contains(stdout, `"rowshape"`) {
 		t.Errorf("expected a JSON verdict on stdout, got:\n%s\nstderr:\n%s", stdout, stderr)

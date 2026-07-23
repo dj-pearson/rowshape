@@ -45,14 +45,18 @@ func (rsIndex) Analyze(f *fixture.Fixture, c *validate.Capture) []verdict.Findin
 			}
 			continue
 		}
-		if name, isTable, concurrent, ok := parseReindex(clean, upper); ok && !concurrent {
-			// Only REINDEX TABLE names a table. REINDEX INDEX names an INDEX, which
-			// findIndex matches against index names rather than fixture table keys,
-			// so resolving it there would be wrong.
-			if isTable {
+		if table, kind, ok := parseAddIndexConstraint(clean, upper); ok {
+			out = append(out, addIndexConstraintFinding(f, c, i, resolveTable(f, table), kind, hasVersion))
+			continue
+		}
+		if name, scope, concurrent, ok := parseReindex(clean, upper); ok && !concurrent {
+			// Only REINDEX TABLE names a table key to resolve. REINDEX INDEX names an
+			// index (matched by index name), and SCHEMA/DATABASE name a schema/db —
+			// none of those are fixture table keys.
+			if scope == reindexTable {
 				name = resolveTable(f, name)
 			}
-			if fnd, ok := reindexFinding(f, name, isTable); ok {
+			if fnd, ok := reindexFinding(f, name, scope); ok {
 				out = append(out, fnd)
 			}
 		}
@@ -75,6 +79,82 @@ func nonConcurrentFinding(f *fixture.Fixture, c *validate.Capture, i int, table 
 	}
 	fnd.Estimate = estimateFor(c, i, estimate.BTreeBuild, table, tbl.Rows.Value, tbl.Rows.Confidence, tableKnown(f, table), hasVersion)
 	return fnd
+}
+
+// addIndexConstraintFinding flags an ALTER TABLE ... ADD PRIMARY KEY / ADD UNIQUE
+// (statement i). Both build a unique index while holding ACCESS EXCLUSIVE — a
+// stronger lock than a plain CREATE INDEX's SHARE (reads block too) — at the same
+// O(n log n) cost, so the duration uses the same B-tree model.
+//
+// Nothing flagged the lock before: rsLock excludes ADD PRIMARY / ADD UNIQUE,
+// rsConstraint files PRIMARY KEY under OTHER, and rsData's RS-DATA-014 speaks to
+// whether an ADD UNIQUE will BUILD (uniqueness of the data), not to the lock it
+// takes while building. The two are distinct hazards on the same statement: a
+// proven-unique ADD UNIQUE still locks the table for the whole build.
+func addIndexConstraintFinding(f *fixture.Fixture, c *validate.Capture, i int, table, kind string, hasVersion bool) verdict.Finding {
+	tbl := f.Tables[table]
+	label := "ADD PRIMARY KEY"
+	scans := "scans the column for NULLs and builds"
+	if kind == "UNIQUE" {
+		label, scans = "ADD UNIQUE constraint", "builds"
+	}
+	fnd := verdict.Finding{
+		Code:        "RS-INDEX-002",
+		Severity:    verdict.SeverityWarn,
+		Title:       fmt.Sprintf("%s on %s builds a unique index under ACCESS EXCLUSIVE, blocking reads and writes", label, shortTable(table)),
+		Detail:      fmt.Sprintf("ALTER TABLE ... %s %s a unique index while holding an ACCESS EXCLUSIVE lock, so neither reads nor writes proceed until it finishes.", label, scans),
+		Evidence:    map[string]any{"lock_mode": "ACCESS EXCLUSIVE", "constraint": kind},
+		DependsOn:   []string{table + ".rows"},
+		Remediation: remediation("RS-INDEX-002"),
+		Explain:     "rowshape explain RS-INDEX-002",
+	}
+	fnd.Estimate = estimateFor(c, i, estimate.BTreeBuild, table, tbl.Rows.Value, tbl.Rows.Confidence, tableKnown(f, table), hasVersion)
+	return fnd
+}
+
+// parseAddIndexConstraint recognizes the TABLE-CONSTRAINT forms
+// `ALTER TABLE <t> ADD [CONSTRAINT <name>] {PRIMARY KEY|UNIQUE} (<cols>)`, which
+// build an index over EXISTING data under ACCESS EXCLUSIVE. It returns the target
+// table and the constraint kind ("PRIMARY KEY" or "UNIQUE").
+//
+// It deliberately does NOT match:
+//   - the COLUMN form `ADD COLUMN c type PRIMARY KEY` (a new column);
+//   - the adopt form `ADD PRIMARY KEY USING INDEX i` / `ADD UNIQUE USING INDEX i`
+//     — a prebuilt index attached cheaply, which is exactly what this finding's
+//     remediation recommends; a check that fired on its own fix would train people
+//     to switch it off. Both are excluded because they carry no `(col)` list.
+func parseAddIndexConstraint(clean, upper string) (table, kind string, ok bool) {
+	if !strings.HasPrefix(upper, "ALTER TABLE") || !strings.Contains(upper, " ADD ") {
+		return "", "", false
+	}
+	if strings.Contains(upper, "ADD COLUMN") {
+		return "", "", false
+	}
+	for _, k := range []string{"PRIMARY KEY", "UNIQUE"} {
+		if keywordBeforeParen(upper, k) {
+			return alterTableTarget(clean), k, true
+		}
+	}
+	return "", "", false
+}
+
+// keywordBeforeParen reports whether kw appears as a standalone constraint keyword
+// — a token boundary on its left and a "(" column list on its right. The left
+// boundary keeps `UNIQUE` inside a constraint NAME (e.g. `users_unique_key`) from
+// matching, and the required "(" keeps the USING INDEX adopt form out.
+func keywordBeforeParen(upper, kw string) bool {
+	for from := 0; ; {
+		i := strings.Index(upper[from:], kw)
+		if i < 0 {
+			return false
+		}
+		i += from
+		leftOK := i == 0 || upper[i-1] == ' '
+		if leftOK && strings.HasPrefix(strings.TrimSpace(upper[i+len(kw):]), "(") {
+			return true
+		}
+		from = i + len(kw)
+	}
 }
 
 // indexUniqueFinding certifies (or refuses) a CREATE UNIQUE INDEX by the column's
@@ -153,56 +233,117 @@ func partialWhere(predicate string) string {
 	return " WHERE " + predicate
 }
 
+// reindexScope is what a REINDEX rebuilds: a single index, or every index of a
+// table, schema, or database. The bucket must reflect the TOTAL work: REINDEX
+// TABLE rebuilds ALL of a table's indexes sequentially, so estimating only the
+// largest one understated the duration; REINDEX SCHEMA / DATABASE rebuild
+// everything and previously produced no finding at all (they fell through the
+// index-name branch, matched nothing, and were silent).
+type reindexScope int
+
+const (
+	reindexIndex reindexScope = iota
+	reindexTable
+	reindexSchema
+	reindexDatabase
+)
+
 // reindexFinding flags a non-concurrent REINDEX and buckets its duration from the
-// index's on-disk bytes/bloat (RFC §6.5).
-func reindexFinding(f *fixture.Fixture, name string, isTable bool) (verdict.Finding, bool) {
-	table, idx, ok := findIndex(f, name, isTable)
+// TOTAL on-disk bytes of every index it rebuilds (RFC §6.5).
+func reindexFinding(f *fixture.Fixture, name string, scope reindexScope) (verdict.Finding, bool) {
+	bytes, count, bloat, ok := reindexTotal(f, name, scope)
 	if !ok {
 		return verdict.Finding{}, false
 	}
-	bytes := idx.Bytes
-	bloat := 0.0
-	if idx.BloatEstimate != nil {
-		bloat = *idx.BloatEstimate
+	label := reindexLabel(scope, name, count)
+	bloatText := ""
+	if scope == reindexIndex {
+		bloatText = fmt.Sprintf(", bloat estimate %.0f%%", bloat*100)
 	}
 	fnd := verdict.Finding{
-		Code:        "RS-INDEX-020",
-		Severity:    verdict.SeverityWarn,
-		Title:       fmt.Sprintf("Non-concurrent REINDEX of %s rebuilds under lock (%s)", name, estimate.BucketFromBytes(bytes)),
-		Detail:      fmt.Sprintf("REINDEX rewrites the whole index (%d bytes, bloat estimate %.0f%%) while holding a lock that blocks writes.", bytes, bloat*100),
-		Evidence:    map[string]any{"index_bytes": bytes, "bloat_estimate": bloat},
-		DependsOn:   []string{table + ".rows"},
-		Estimate:    &verdict.Estimate{Bucket: estimate.BucketFromBytes(bytes), Model: "reindex_bytes"},
+		Code:     "RS-INDEX-020",
+		Severity: verdict.SeverityWarn,
+		Title:    fmt.Sprintf("Non-concurrent REINDEX of %s rebuilds under lock (%s)", label, estimate.BucketFromBytes(bytes)),
+		Detail:   fmt.Sprintf("REINDEX rebuilds %s (%d bytes total%s) while holding a lock that blocks writes.", label, bytes, bloatText),
+		Evidence: map[string]any{"index_bytes": bytes, "index_count": count, "bloat_estimate": bloat},
+		// The duration rests entirely on the indexes' on-disk BYTES — an exact catalog
+		// read (pg_total_relation_size), not the row count. Declaring `<table>.rows`
+		// was false provenance in a signed document: a fact this finding never reads,
+		// whose confidence it borrowed for a claim about bytes (the CR-CONSTRAINT-010
+		// bug class). There is no factConfidence path for index bytes, and they are
+		// exact, so the finding rests on no uncertain fact — an empty depends_on,
+		// which the engine treats as exact (as RS-INDEX-010 already does when it
+		// deliberately declines a fact). The bucket itself is a model over bytes, so
+		// the Estimate carries `estimated`, exactly as the row-based model does.
+		DependsOn:   nil,
+		Estimate:    &verdict.Estimate{Bucket: estimate.BucketFromBytes(bytes), Model: "reindex_bytes", Confidence: string(fixture.Estimated)},
 		Remediation: remediation("RS-INDEX-020"),
 		Explain:     "rowshape explain RS-INDEX-020",
 	}
 	return fnd, true
 }
 
-// findIndex locates an index by name (REINDEX INDEX) or the largest index of a
-// table (REINDEX TABLE), returning the owning table and the index.
-func findIndex(f *fixture.Fixture, name string, isTable bool) (string, fixture.Index, bool) {
-	if isTable {
-		tbl, ok := f.Tables[name]
-		if !ok || len(tbl.Indexes) == 0 {
-			return "", fixture.Index{}, false
+// reindexTotal sums the on-disk bytes of every index a REINDEX rebuilds and
+// returns the total, the index count, and the worst bloat among them. A single
+// index is matched by name; a table/schema/database sums the indexes it owns.
+func reindexTotal(f *fixture.Fixture, name string, scope reindexScope) (bytes int64, count int, maxBloat float64, ok bool) {
+	add := func(ix fixture.Index) {
+		bytes += ix.Bytes
+		count++
+		if ix.BloatEstimate != nil && *ix.BloatEstimate > maxBloat {
+			maxBloat = *ix.BloatEstimate
 		}
-		big := tbl.Indexes[0]
-		for _, ix := range tbl.Indexes[1:] {
-			if ix.Bytes > big.Bytes {
-				big = ix
+	}
+	switch scope {
+	case reindexIndex:
+		for _, tbl := range f.Tables {
+			for _, ix := range tbl.Indexes {
+				if strings.EqualFold(ix.Name, name) {
+					add(ix)
+					return bytes, count, maxBloat, true
+				}
 			}
 		}
-		return name, big, true
-	}
-	for tname, tbl := range f.Tables {
+		return 0, 0, 0, false
+	case reindexTable:
+		tbl, exists := f.Tables[name]
+		if !exists {
+			return 0, 0, 0, false
+		}
 		for _, ix := range tbl.Indexes {
-			if strings.EqualFold(ix.Name, name) {
-				return tname, ix, true
+			add(ix)
+		}
+	case reindexSchema:
+		prefix := name + "."
+		for key, tbl := range f.Tables {
+			if strings.HasPrefix(key, prefix) {
+				for _, ix := range tbl.Indexes {
+					add(ix)
+				}
+			}
+		}
+	case reindexDatabase:
+		for _, tbl := range f.Tables {
+			for _, ix := range tbl.Indexes {
+				add(ix)
 			}
 		}
 	}
-	return "", fixture.Index{}, false
+	return bytes, count, maxBloat, count > 0
+}
+
+// reindexLabel describes what is being rebuilt, for the finding title/detail.
+func reindexLabel(scope reindexScope, name string, count int) string {
+	switch scope {
+	case reindexTable:
+		return fmt.Sprintf("all %d index(es) of %s", count, shortTable(name))
+	case reindexSchema:
+		return fmt.Sprintf("all %d index(es) in schema %s", count, name)
+	case reindexDatabase:
+		return fmt.Sprintf("all %d index(es) in the database", count)
+	default:
+		return name
+	}
 }
 
 // createIndexStmt is a parsed CREATE INDEX. It is a struct rather than a long
@@ -276,17 +417,29 @@ func parseCreateIndex(clean, upper string) (createIndexStmt, bool) {
 	return ix, true
 }
 
-// parseReindex recognizes REINDEX [INDEX|TABLE|...] [CONCURRENTLY] name.
-func parseReindex(clean, upper string) (name string, isTable, concurrent bool, ok bool) {
+// parseReindex recognizes REINDEX [INDEX|TABLE|SCHEMA|DATABASE|SYSTEM]
+// [CONCURRENTLY] name and returns the rebuild scope. SYSTEM (catalog maintenance,
+// not a user-schema outage) falls through to the index branch and matches no user
+// index, so it produces no finding — deliberate.
+func parseReindex(clean, upper string) (name string, scope reindexScope, concurrent, ok bool) {
 	if !strings.HasPrefix(upper, "REINDEX") {
-		return "", false, false, false
+		return "", 0, false, false
 	}
 	fields := strings.Fields(clean)
 	if len(fields) < 2 {
-		return "", false, false, false
+		return "", 0, false, false
 	}
 	concurrent = strings.Contains(upper, "CONCURRENTLY")
-	isTable = strings.Contains(upper, " TABLE ")
+	switch {
+	case strings.Contains(upper, " SCHEMA "):
+		scope = reindexSchema
+	case strings.Contains(upper, " DATABASE "):
+		scope = reindexDatabase
+	case strings.Contains(upper, " TABLE "):
+		scope = reindexTable
+	default:
+		scope = reindexIndex // INDEX (or SYSTEM, which matches no user index)
+	}
 	name = strings.Trim(strings.TrimRight(fields[len(fields)-1], ";"), `"`)
-	return name, isTable, concurrent, true
+	return name, scope, concurrent, true
 }

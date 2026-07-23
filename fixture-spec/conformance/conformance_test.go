@@ -2,8 +2,10 @@ package conformance
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -108,6 +110,51 @@ func TestRowshapeValidatorIsConformant(t *testing.T) {
 	}
 }
 
+// TestSchemaVersionPatternAgreesWithParser: the published schema's version
+// constraint and the Go parser must accept and refuse the SAME versions. They
+// diverged — the parser reduced "1.0"/"1.4" to major "1" and accepted them while
+// the schema's `const: "1"` rejected them, so a fixture rowshape validated failed
+// `check-jsonschema`. Both now implement RFC §12 major-compatibility.
+func TestSchemaVersionPatternAgreesWithParser(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "schema", "rowshape.schema.json"))
+	if err != nil {
+		t.Fatalf("read schema: %v", err)
+	}
+	var doc struct {
+		Properties struct {
+			RowshapeFixture struct {
+				Pattern string `json:"pattern"`
+			} `json:"rowshape_fixture"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("parse schema: %v", err)
+	}
+	rx, err := regexp.Compile(doc.Properties.RowshapeFixture.Pattern)
+	if err != nil {
+		t.Fatalf("schema version pattern %q is not a valid regexp: %v", doc.Properties.RowshapeFixture.Pattern, err)
+	}
+
+	for _, tc := range []struct {
+		version string
+		valid   bool
+	}{
+		{"1", true}, {"1.4", true}, {"1.0", true},
+		{"2", false}, {"99", false}, {"", false},
+	} {
+		schemaOK := rx.MatchString(tc.version)
+
+		doc := "rowshape_fixture: \"" + tc.version + "\"\nmeta:\n  engine: { name: postgres, version: \"16\" }\n  profile: { mode: fast }\ntables: {}\n"
+		_, perr := fixture.Parse([]byte(doc))
+		var ve *fixture.VersionError
+		parserOK := !errors.As(perr, &ve)
+
+		if schemaOK != tc.valid || parserOK != tc.valid {
+			t.Errorf("version %q: schema accepts=%v, parser accepts=%v, want %v (they must agree)", tc.version, schemaOK, parserOK, tc.valid)
+		}
+	}
+}
+
 // TestSchemaIsPublished: the JSON Schema asset exists, is valid JSON, pins the
 // format version, and stays consistent with the fixture format constants so it
 // cannot silently rot (a full JSON-Schema validation of the reference fixtures
@@ -118,7 +165,10 @@ func TestSchemaIsPublished(t *testing.T) {
 		t.Fatalf("read schema: %v", err)
 	}
 	s := string(data)
-	for _, want := range []string{`"$schema"`, `"$id"`, `"rowshape_fixture"`, `"const": "` + fixture.FormatVersion + `"`, string(fixture.Exact), string(fixture.Measured), string(fixture.Estimated), string(fixture.Declared)} {
+	// The version constraint is a pattern anchored on the known major (accepting
+	// "1" and its minors, refusing "2"), matching checkVersion's RFC §12
+	// major-compatibility — not a bare const that would reject a valid "1.4".
+	for _, want := range []string{`"$schema"`, `"$id"`, `"rowshape_fixture"`, `"pattern": "^` + fixture.FormatVersion + `(`, string(fixture.Exact), string(fixture.Measured), string(fixture.Estimated), string(fixture.Declared)} {
 		if !strings.Contains(s, want) {
 			t.Errorf("published schema is missing %q", want)
 		}

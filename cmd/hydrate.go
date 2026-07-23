@@ -41,7 +41,7 @@ func newHydrateCmd() *cobra.Command {
 			if len(args) == 1 {
 				opts.fixturePath = args[0]
 			}
-			return runHydrate(opts)
+			return runHydrate(cmd.Context(), opts)
 		},
 	}
 	f := cmd.Flags()
@@ -54,7 +54,7 @@ func newHydrateCmd() *cobra.Command {
 	return cmd
 }
 
-func runHydrate(opts *hydrateOptions) error {
+func runHydrate(ctx context.Context, opts *hydrateOptions) error {
 	data, err := os.ReadFile(opts.fixturePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "rowshape hydrate: reading %s failed: %v\n", opts.fixturePath, err)
@@ -70,7 +70,7 @@ func runHydrate(opts *hydrateOptions) error {
 
 	// If a live target is requested, load rows into it instead of emitting SQL.
 	if opts.target != "" || opts.ephemeral != "" {
-		return loadIntoTarget(f, genOpts, opts)
+		return loadIntoTarget(ctx, f, genOpts, opts)
 	}
 
 	res, err := hydrate.Generate(f, genOpts)
@@ -146,9 +146,7 @@ func checkHydrateHost(f *fixture.Fixture, opts *hydrateOptions) error {
 // loadIntoTarget hydrates directly into a live database: a user-provided one
 // (--target) or a disposable ephemeral database created and dropped for the run
 // (--ephemeral). Connection strings and credentials are never logged.
-func loadIntoTarget(f *fixture.Fixture, genOpts hydrate.Options, opts *hydrateOptions) error {
-	ctx := context.Background()
-
+func loadIntoTarget(ctx context.Context, f *fixture.Fixture, genOpts hydrate.Options, opts *hydrateOptions) error {
 	// Refuse BEFORE anything is created or connected. This has to precede
 	// target.NewEphemeral, which itself issues a CREATE DATABASE on the admin
 	// server — by the time that returns, the write has already happened.

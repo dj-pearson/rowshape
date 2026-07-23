@@ -12,8 +12,9 @@
   "additionalProperties": true,
   "properties": {
     "rowshape_fixture": {
-      "description": "Major format version. A reader that does not understand this major MUST refuse (RFC §12).",
-      "const": "1"
+      "description": "Format version. A reader understands a whole major: it accepts \"1\" and any minor within it (\"1.4\") and MUST refuse a different major (RFC §12).",
+      "type": "string",
+      "pattern": "^1(\\.[0-9]+)*$"
     },
     "meta": {
       "$ref": "#/$defs/meta"

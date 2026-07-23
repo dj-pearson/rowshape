@@ -2,6 +2,7 @@ package findings
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/rowshape/rowshape/internal/fixture"
@@ -200,11 +201,10 @@ var intRank = map[string]int{
 }
 
 // isNarrowing reports whether changing oldType to newType can lose data: an
-// integer narrowing, an unbounded string to a length-limited one, or a
+// integer narrowing, a string whose length cap shrinks (or gains one), or a
 // numeric/float to an integer.
 func isNarrowing(oldType, newType string) bool {
 	o := strings.ToLower(strings.TrimSpace(baseSQLType(oldType)))
-	nFull := strings.ToLower(strings.TrimSpace(newType))
 	n := strings.ToLower(strings.TrimSpace(baseSQLType(newType)))
 
 	if ro, ok := intRank[o]; ok {
@@ -212,13 +212,63 @@ func isNarrowing(oldType, newType string) bool {
 			return rn < ro
 		}
 	}
-	if (o == "text" || o == "varchar" || o == "character varying" || o == "character" || o == "char") && strings.Contains(nFull, "(") {
-		return true
+	if isBoundedStringBase(o) {
+		// A string change truncates only when the NEW type imposes a cap the old
+		// values could exceed. Comparing lengths — not merely "the new type has a
+		// modifier" — is what separates a truncating shrink from a harmless widen:
+		//
+		//   varchar(100) -> varchar(200)   widen, loses nothing        (not flagged)
+		//   varchar(200) -> varchar(100)   shrink, truncates           (flagged)
+		//   text         -> varchar(255)   gains a cap, can truncate    (flagged)
+		//   varchar(100) -> text           drops the cap, widens        (not flagged)
+		newLen, newBounded := typeLength(newType)
+		if !newBounded {
+			return false // widening to an unbounded type never truncates
+		}
+		oldLen, oldBounded := typeLength(oldType)
+		if !oldBounded {
+			return true // unbounded old (text / unadorned varchar) -> a cap can truncate
+		}
+		return newLen < oldLen // both capped: only a smaller cap truncates
 	}
 	if (o == "numeric" || o == "decimal" || o == "double precision" || o == "real") && (n == "integer" || n == "bigint" || n == "smallint" || n == "int") {
 		return true
 	}
 	return false
+}
+
+// isBoundedStringBase reports whether a base type is a character string type that
+// can carry a length modifier.
+func isBoundedStringBase(base string) bool {
+	switch base {
+	case "text", "varchar", "character varying", "character", "char":
+		return true
+	}
+	return false
+}
+
+// typeLength extracts the length modifier from a character type: typeLength(
+// "varchar(200)") is (200, true); typeLength("text") is (0, false). Only the
+// first modifier is read, so a stray precision list cannot mislead it.
+func typeLength(t string) (int, bool) {
+	i := strings.IndexByte(t, '(')
+	if i < 0 {
+		return 0, false
+	}
+	rest := t[i+1:]
+	j := strings.IndexByte(rest, ')')
+	if j < 0 {
+		return 0, false
+	}
+	inner := rest[:j]
+	if k := strings.IndexByte(inner, ','); k >= 0 {
+		inner = inner[:k]
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(inner))
+	if err != nil {
+		return 0, false
+	}
+	return v, true
 }
 
 // baseSQLType strips a type's length/precision modifier ("varchar(255)" -> "varchar").

@@ -25,6 +25,7 @@ same catalog, so they never drift from what the tool returns.
 ## RS-INDEX — Index builds that fail or block
 
 - [`RS-INDEX-001`](./rs-index-001/) — Non-concurrent CREATE INDEX blocks writes
+- [`RS-INDEX-002`](./rs-index-002/) — ADD PRIMARY KEY or UNIQUE builds an index under ACCESS EXCLUSIVE
 - [`RS-INDEX-010`](./rs-index-010/) — CREATE UNIQUE INDEX without proven uniqueness
 - [`RS-INDEX-020`](./rs-index-020/) — Non-concurrent REINDEX rebuilds under lock
 
