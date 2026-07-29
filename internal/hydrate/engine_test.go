@@ -139,6 +139,182 @@ func TestUniqueHonored(t *testing.T) {
 	}
 }
 
+// TestUniqueNumericOutlivesItsRange: a unique NUMERIC column stays unique even
+// when its declared range is too narrow to hold one value per row.
+//
+// This is not a hypothetical fixture. `pull` derives `range` from pg_stats
+// histogram bounds, which are a SAMPLE — for a 150k-row bigserial primary key it
+// reported {min: 1633, max: 149328} where the true extent is 1..150000. The
+// column therefore declares an EXACT unique constraint (via: constraint) and a
+// range spanning 147,696 values, and 150,000 rows cannot fit in 147,696 slots.
+//
+// numericInRange wrapped with `min + (n % span)`, so ordinals past the span
+// restarted at min and collided. Hydrating a fixture that `pull` had just emitted
+// died with `duplicate key value violates unique constraint "order_items_pkey"`
+// — the round trip that is the tool's core promise, broken on an ordinary table.
+//
+// The precedence is what fixes it: `unique` is an EXACT fact read off a
+// constraint, while `range` is an approximation from a sample. When the two
+// cannot both hold, the exact one wins and the approximate bound is overshot.
+func TestUniqueNumericOutlivesItsRange(t *testing.T) {
+	const rows = 150000
+	f := oneTable("public.order_items", rows, map[string]fixture.Column{
+		"id": {
+			Type:     "bigint",
+			Nullable: false,
+			Unique:   &fixture.Fact[bool]{Value: true, Confidence: fixture.Exact, Via: "constraint"},
+			Distinct: &fixture.Fact[int64]{Value: rows, Confidence: fixture.Exact},
+			// Narrower than the row count — exactly what pull emitted.
+			Range: &fixture.Range{Min: int64(1633), Max: int64(149328)},
+		},
+	})
+	res, err := Generate(f, Options{Seed: 42})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	gt := res.Tables[0]
+	if len(gt.Rows) != rows {
+		t.Fatalf("generated %d rows, want %d", len(gt.Rows), rows)
+	}
+	seen := make(map[int64]bool, rows)
+	for i, row := range gt.Rows {
+		v, ok := row[0].(int64)
+		if !ok {
+			t.Fatalf("row %d: unique bigint cell is %T, want int64", i, row[0])
+		}
+		if seen[v] {
+			t.Fatalf("row %d: duplicate value %d in unique column — the fixture's "+
+				"exact unique constraint was violated to honor an approximate range", i, v)
+		}
+		seen[v] = true
+	}
+}
+
+// TestUniqueNumericStaysInRangeWhenItFits: the fix above must not move any value
+// that was already correct. Whenever the declared span is wide enough for the row
+// count, a unique numeric column is generated exactly as before — min + ordinal,
+// entirely inside [min, max]. This pins that the collision fix is confined to the
+// unsatisfiable case and does not perturb existing fixtures (INV-DETERMINISM).
+func TestUniqueNumericStaysInRangeWhenItFits(t *testing.T) {
+	const rows = 5000
+	const lo, hi = int64(1), int64(20000)
+	f := oneTable("public.users", rows, map[string]fixture.Column{
+		"id": {
+			Type:     "bigint",
+			Nullable: false,
+			Unique:   &fixture.Fact[bool]{Value: true, Confidence: fixture.Exact, Via: "constraint"},
+			Range:    &fixture.Range{Min: lo, Max: hi},
+		},
+	})
+	res, err := Generate(f, Options{Seed: 7})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	for i, row := range res.Tables[0].Rows {
+		v := row[0].(int64)
+		if v != lo+int64(i) {
+			t.Fatalf("row %d: got %d, want %d (min + ordinal)", i, v, lo+int64(i))
+		}
+		if v < lo || v > hi {
+			t.Fatalf("row %d: value %d escaped the declared range [%d, %d] even "+
+				"though the span holds %d rows", i, v, lo, hi, rows)
+		}
+	}
+}
+
+// TestGeneratedStringsFitTheirColumn: no synthesized string exceeds its column's
+// character limit.
+//
+// A format hint renders at its own natural length: `enum_like` with no declared
+// values produces "value_0" (7 chars). `pull` describes a Postgres char(3)
+// currency column exactly that way, and COPYing "value_0" into it aborted
+// hydration with `value too long for type character(3)` — so a plain two-value
+// currency column broke the pull -> hydrate round trip.
+//
+// Every bounded character type is covered here, including bare `char` (which is
+// character(1), the tightest type in Postgres despite having no modifier) and the
+// unbounded types, which must be left alone.
+func TestGeneratedStringsFitTheirColumn(t *testing.T) {
+	cases := []struct {
+		name    string
+		colType string
+		format  string
+		width   int // 0 = unbounded, no clamp expected
+	}{
+		{"char(3) enum_like", "character(3)", "enum_like", 3},
+		{"char(2) enum_like", "character(2)", "enum_like", 2},
+		{"bare char is char(1)", "char", "enum_like", 1},
+		{"varchar(4) free_text", "character varying(4)", "free_text", 4},
+		{"varchar(8) email", "varchar(8)", "email", 8},
+		{"varchar(5) slug", "varchar(5)", "slug", 5},
+		{"varchar(6) url", "varchar(6)", "url", 6},
+		{"text is unbounded", "text", "free_text", 0},
+		{"bare varchar is unbounded", "character varying", "free_text", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := oneTable("public.t", 200, map[string]fixture.Column{
+				"c": {
+					Type:     tc.colType,
+					Nullable: false,
+					Distinct: &fixture.Fact[int64]{Value: 5, Confidence: fixture.Estimated},
+					Format:   tc.format,
+				},
+			})
+			res, err := Generate(f, Options{Seed: 3})
+			if err != nil {
+				t.Fatalf("Generate: %v", err)
+			}
+			for i, row := range res.Tables[0].Rows {
+				s, ok := row[0].(string)
+				if !ok {
+					t.Fatalf("row %d: got %T, want string", i, row[0])
+				}
+				if tc.width > 0 && len(s) > tc.width {
+					t.Fatalf("row %d: %q is %d chars, exceeds %s — Postgres rejects "+
+						"this with `value too long`", i, s, len(s), tc.colType)
+				}
+				if tc.width == 0 && len(s) == 0 {
+					t.Fatalf("row %d: unbounded %s should keep its rendered value, got empty",
+						i, tc.colType)
+				}
+			}
+		})
+	}
+}
+
+// TestNarrowUniqueColumnStaysUnique: clamping to the column width must not be
+// allowed to collapse a unique column into duplicates. Truncating the rendered
+// string would do exactly that ("value_0" and "value_1" both become "val"), which
+// is why the clamp re-encodes the ordinal in base 36 instead — injective while
+// 36^width values remain.
+func TestNarrowUniqueColumnStaysUnique(t *testing.T) {
+	const rows = 1000 // < 36^3, so char(3) can hold them all
+	f := oneTable("public.t", rows, map[string]fixture.Column{
+		"code": {
+			Type:     "character(3)",
+			Nullable: false,
+			Unique:   &fixture.Fact[bool]{Value: true, Confidence: fixture.Exact, Via: "constraint"},
+			Format:   "enum_like",
+		},
+	})
+	res, err := Generate(f, Options{Seed: 11})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	seen := make(map[string]bool, rows)
+	for i, row := range res.Tables[0].Rows {
+		s := row[0].(string)
+		if len(s) > 3 {
+			t.Fatalf("row %d: %q exceeds character(3)", i, s)
+		}
+		if seen[s] {
+			t.Fatalf("row %d: duplicate %q — the width clamp collapsed a unique column", i, s)
+		}
+		seen[s] = true
+	}
+}
+
 // TestObviouslyFake: generated values are obviously synthetic — content realism
 // is explicitly not attempted (RFC §13).
 func TestObviouslyFake(t *testing.T) {

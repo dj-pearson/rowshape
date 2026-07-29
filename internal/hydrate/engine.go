@@ -3,10 +3,12 @@ package hydrate
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/rowshape/rowshape/internal/fixture"
+	"github.com/rowshape/rowshape/internal/sqlkind"
 )
 
 // Options controls a hydration run.
@@ -155,7 +157,7 @@ func generateValue(seed int64, table, column string, c fixture.Column, ord int64
 	} else {
 		n = r.intn(1 << 20)
 	}
-	return fakeValue(c, n, r)
+	return fakeValue(c, n, r, unique)
 }
 
 // sampleHistogram draws an integer from an equi-depth histogram: a uniformly
@@ -210,7 +212,71 @@ func toFloat(v any) (float64, bool) {
 // fakeValue produces an obviously-fake value of the right shape (RFC §13): the
 // hydrator reproduces shape, never content. n selects which value (the ordinal
 // for unique columns, a bucket otherwise).
-func fakeValue(c fixture.Column, n int64, r *rng) any {
+// unique tells the numeric fallback that n is a row ordinal which must map
+// injectively, so it must not wrap into the declared range (see numericInRange).
+// The format-hinted branches above are already injective in n.
+//
+// Every result passes through fitCharWidth, so a value can never be wider than
+// the column it is about to be written into. The clamp lives here rather than in
+// generateValue because parentUniqueValue also calls fakeValue directly to
+// reproduce a parent's key for a foreign key: clamping in only one of the two
+// paths would make a child cell differ from the parent id it references and
+// manufacture an orphan.
+func fakeValue(c fixture.Column, n int64, r *rng, unique bool) any {
+	return fitCharWidth(c, n, rawFakeValue(c, n, r, unique))
+}
+
+// fitCharWidth keeps a synthesized string inside its column's character limit.
+//
+// A format hint renders content of its own natural length, with no reference to
+// how wide the column is: `format: enum_like` with no declared values renders
+// "value_0" (7 characters). `pull` reports a Postgres `char(3)` country/currency
+// column as exactly that — enum_like, three characters wide — and COPYing
+// "value_0" into it aborts hydration with `value too long for type character(3)`.
+// This was reached by an ordinary two-value currency column, so it is the common
+// case for narrow enum-ish keys, not a corner.
+//
+// The over-wide value is replaced by n in base 36 (its low-order digits, so
+// consecutive n differ), not by a truncation of the rendered string. Truncating
+// would collapse cardinality — "value_0" and "value_1" both become "val" — and the
+// distinct count is the shape the fixture is asking for, whereas the specific
+// letters are content the hydrator never promises to reproduce. Base 36 also stays
+// injective in n while 36^width values remain, which is what keeps a unique narrow
+// column unique.
+//
+// Only character types with a real limit are touched: text and unadorned varchar
+// are unbounded, and a non-string type has no character width to violate.
+func fitCharWidth(c fixture.Column, n int64, v any) any {
+	s, isString := v.(string)
+	if !isString {
+		return v
+	}
+	width, bounded := sqlkind.CharMaxLength(c.Type)
+	if !bounded || len(s) <= width {
+		return s
+	}
+	return base36Tail(n, width)
+}
+
+// base36Tail renders n in base 36, keeping at most the last `width` digits — that
+// is, n mod 36^width. It is injective for n < 36^width and always at most `width`
+// characters, so it fits by construction.
+func base36Tail(n int64, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if n < 0 {
+		n = -n
+	}
+	s := strconv.FormatInt(n, 36)
+	if len(s) > width {
+		s = s[len(s)-width:]
+	}
+	return s
+}
+
+// rawFakeValue is fakeValue before the character-width clamp.
+func rawFakeValue(c fixture.Column, n int64, r *rng, unique bool) any {
 	switch c.Format {
 	case "email":
 		return fmt.Sprintf("user_%05d@example.invalid", n)
@@ -240,7 +306,7 @@ func fakeValue(c fixture.Column, n int64, r *rng) any {
 	// No format hint: fall back to the type category.
 	switch categorize(c.Type) {
 	case "numeric":
-		return numericInRange(c, n)
+		return numericInRange(c, n, unique)
 	case "temporal":
 		return temporalInRange(c, n)
 	case "bool":
@@ -280,10 +346,30 @@ func distinctOf(c fixture.Column) int64 {
 
 // numericInRange returns an integer within the column's range (or a plain fake
 // number if no range is known).
-func numericInRange(c fixture.Column, n int64) any {
+//
+// `unique` selects which of two facts wins when they conflict. A non-unique
+// column WRAPS (min + n mod span) so every value lands inside the declared range.
+// A unique column must not wrap: n is the row ordinal, so wrapping restarts at
+// min once the ordinal passes the span and duplicates every value from there on.
+//
+// That conflict is the ordinary case, not a corner: `pull` derives `range` from
+// pg_stats histogram bounds, which are a SAMPLE, so a 150k-row bigserial key came
+// back as {min: 1633, max: 149328} — 147,696 slots for 150,000 rows. Wrapping
+// honored that approximate range by breaking the column's EXACT unique constraint
+// (via: constraint), and hydrating a fixture pull had just written died on
+// `duplicate key value violates unique constraint`.
+//
+// So the exact fact wins and the approximate bound is overshot: min + n stays
+// inside [min, max] whenever the span is wide enough for the row count (where it
+// is byte-identical to the wrapping form, since n < span makes n mod span == n),
+// and runs past max only when no injective assignment could have stayed inside.
+func numericInRange(c fixture.Column, n int64, unique bool) any {
 	lo, hi, ok := numericBounds(c)
 	if !ok {
 		return n
+	}
+	if unique {
+		return lo + n
 	}
 	span := hi - lo + 1
 	if span <= 0 {
@@ -382,9 +468,12 @@ func parentIDValue(seed int64, f *fixture.Fixture, ref fixture.Reference, parent
 	// honour orphan_fraction): it must be an id NO parent has.
 	val := parentUniqueValue(seed, ptable, pcol, col, parentOrdinal)
 	if _, isInt := val.(int64); isInt {
-		// numericInRange wraps (min + ordinal % span), so an unused ordinal is not
-		// enough — the wrap could land on a real parent. Step above the largest id
-		// the parent generated instead.
+		// Step above the largest id the parent generated. Stated this way the orphan
+		// is unused no matter how the unique path assigns ids: it held when
+		// numericInRange wrapped (min + ordinal % span, where an unused ordinal was
+		// NOT enough because the wrap could land on a real parent), and it still
+		// holds now that a unique column does not wrap — min + ordinal is strictly
+		// increasing, so this resolves to exactly that same value.
 		return maxParentID(col, parentN) + 1 + (parentOrdinal - parentN)
 	}
 	// Injective string/uuid formats never wrap, so a value generated from an
@@ -398,27 +487,29 @@ func parentIDValue(seed int64, f *fixture.Fixture, ref fixture.Reference, parent
 // column hits neither). Reconstructing the same rng keeps it identical even if
 // fakeValue starts consuming it.
 func parentUniqueValue(seed int64, table, column string, c fixture.Column, ord int64) any {
-	return fakeValue(c, ord, cellRNG(seed, table, column, ord))
+	return fakeValue(c, ord, cellRNG(seed, table, column, ord), true)
 }
 
 // maxParentID is the largest id the parent table generated across ordinals
 // [0, parentN).
+//
+// A unique numeric id is min + ordinal (numericInRange's unique path), which is
+// strictly increasing, so the largest is simply the value at the last ordinal —
+// no scan, and no cycle to reason about. The previous form walked the ordinals
+// and broke out after "one lap" on the assumption that values repeat with period
+// span; now that a unique column does not wrap, that break would stop at the span
+// boundary and UNDERSTATE the maximum, handing deliberate orphans an id a real
+// parent holds. Computing it directly removes the assumption instead of
+// re-tuning it.
 func maxParentID(col fixture.Column, parentN int64) int64 {
-	var max int64
-	for ord := int64(0); ord < parentN; ord++ {
-		v, ok := numericInRange(col, ord).(int64)
-		if !ok {
-			return parentN // no numeric range: ids are the ordinals themselves
-		}
-		if ord == 0 || v > max {
-			max = v
-		}
-		// The values cycle with period span, so one lap is enough.
-		if lo, hi, ok := numericBounds(col); ok && ord >= hi-lo {
-			break
-		}
+	if parentN <= 0 {
+		return 0
 	}
-	return max
+	v, ok := numericInRange(col, parentN-1, true).(int64)
+	if !ok {
+		return parentN // no numeric range: ids are the ordinals themselves
+	}
+	return v
 }
 
 // parentIDColumn resolves ref.To ("public.users.id") to the referenced column's
