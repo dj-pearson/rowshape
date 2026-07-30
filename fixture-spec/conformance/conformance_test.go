@@ -390,3 +390,44 @@ func TestBuiltInTypesAreNotReportedAsUndefined(t *testing.T) {
 		t.Errorf("built-in types reported as undefined: %v", vs)
 	}
 }
+
+// TestCheckEmitterIndexKeys: an index with neither columns nor keys is unbuildable.
+// The shape catches the specific real mistake — reading only pg_index.indkey, where
+// an expression key is stored as attribute 0 and so vanishes.
+func TestCheckEmitterIndexKeys(t *testing.T) {
+	withIndex := func(ix fixture.Index) *fixture.Fixture {
+		return &fixture.Fixture{
+			RowshapeFixture: fixture.FormatVersion,
+			Meta:            fixture.Meta{Engine: fixture.Engine{Name: "postgres", Version: "16"}},
+			Tables: map[string]fixture.Table{
+				"app.users": {
+					Rows:    fixture.Fact[int64]{Value: 1, Confidence: fixture.Exact},
+					Columns: map[string]fixture.Column{"email": {Type: "text"}},
+					Indexes: []fixture.Index{ix},
+				},
+			},
+		}
+	}
+
+	// The bug: an expression index recorded with no keys at all.
+	vs := CheckEmitter(withIndex(fixture.Index{Name: "users_lower_email_key", Method: "btree", Unique: true}))
+	found := false
+	for _, v := range vs {
+		if strings.Contains(v.Message, "neither columns nor keys") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("an index with no keys was accepted; got %v", vs)
+	}
+
+	// Both well-formed shapes pass.
+	for _, ok := range []fixture.Index{
+		{Name: "i1", Method: "btree", Columns: []string{"email"}},
+		{Name: "i2", Method: "btree", Keys: []string{"lower(email)"}},
+	} {
+		if vs := CheckEmitter(withIndex(ok)); len(vs) != 0 {
+			t.Errorf("well-formed index %q reported violations: %v", ok.Name, vs)
+		}
+	}
+}

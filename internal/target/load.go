@@ -12,6 +12,11 @@ import (
 // LoadReport summarizes what a hydration loaded.
 type LoadReport struct {
 	Tables map[string]int64 // qualified table name -> rows inserted
+	// SkippedIndexes names the secondary indexes that could not be created, with the
+	// reason. It is never silently empty-on-failure: an index that production has and
+	// the disposable database does not is a difference that can change a verdict, so
+	// the caller reports these rather than discarding them.
+	SkippedIndexes []string
 }
 
 // Load orchestrates a full hydration into a target: it connects, creates the
@@ -50,12 +55,47 @@ func Load(ctx context.Context, t Target, f *fixture.Fixture, opts hydrate.Option
 	}
 
 	report := &LoadReport{Tables: map[string]int64{}}
+
 	for _, gt := range res.Tables {
 		n, err := insertRows(ctx, tx, gt)
 		if err != nil {
 			return nil, fmt.Errorf("insert into %s: %w", gt.Name, err)
 		}
 		report.Tables[gt.Name] = n
+	}
+
+	// Secondary indexes are built AFTER the rows, each inside a savepoint.
+	//
+	// Best-effort, because an index key can be an arbitrary expression and the fixture
+	// records only the expression's TEXT — not the immutable functions or operator
+	// classes it may call. Run unguarded, one such index would abort the whole load for
+	// a schema that is otherwise perfectly hydratable. The savepoint keeps the failure
+	// local: without one, the first error poisons the transaction and every later
+	// statement fails with "current transaction is aborted" regardless of merit.
+	//
+	// AFTER, because partial and expression UNIQUE indexes are now emitted. Built
+	// before the COPY, such an index turns any duplicate the synthesis engine produces
+	// into a failed COPY that takes the entire load down — and a partial unique index
+	// is precisely where duplicates are expected, since
+	// `UNIQUE (email) WHERE deleted_at IS NULL` leaves `email` non-unique overall, so
+	// the fixture marks it non-unique and the engine duly generates repeats. Building
+	// afterwards means the index build is what fails, inside its savepoint, and the
+	// index is REPORTED as skipped rather than ending the run.
+	for i, stmt := range SecondaryIndexes(f) {
+		sp := fmt.Sprintf("rowshape_idx_%d", i)
+		if _, err := tx.Exec(ctx, "SAVEPOINT "+sp); err != nil {
+			return nil, fmt.Errorf("savepoint: %w", err)
+		}
+		if _, err := tx.Exec(ctx, stmt); err != nil {
+			if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+sp); rbErr != nil {
+				return nil, fmt.Errorf("rollback to savepoint: %w", rbErr)
+			}
+			report.SkippedIndexes = append(report.SkippedIndexes, fmt.Sprintf("%s: %v", stmt, err))
+			continue
+		}
+		if _, err := tx.Exec(ctx, "RELEASE SAVEPOINT "+sp); err != nil {
+			return nil, fmt.Errorf("release savepoint: %w", err)
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {

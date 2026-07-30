@@ -289,6 +289,14 @@ func (i Index) MarshalYAML() (any, error) {
 			return nil, err
 		}
 	}
+	// Keys must be emitted or an expression index survives the catalog read only to
+	// be lost on the way to disk — this marshaller names every field explicitly, so a
+	// field absent here is silently dropped no matter what the struct tag says.
+	if len(i.Keys) > 0 {
+		if err := appendField(n, "keys", i.Keys); err != nil {
+			return nil, err
+		}
+	}
 	if i.Unique {
 		if err := appendField(n, "unique", i.Unique); err != nil {
 			return nil, err

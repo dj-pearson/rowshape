@@ -112,6 +112,7 @@ func CheckEmitter(f *fixture.Fixture) []Violation {
 	}
 
 	vs = append(vs, checkUserTypes(f)...)
+	vs = append(vs, checkIndexKeys(f)...)
 
 	// The digest MUST be stable across runs against an unchanged fixture (§11).
 	d1, e1 := fixture.Digest(f)
@@ -120,6 +121,28 @@ func CheckEmitter(f *fixture.Fixture) []Violation {
 		vs = append(vs, Violation{"§11 stable digest", "meta.digest", "canonical digest is not stable across repeated computation"})
 	}
 
+	return vs
+}
+
+// checkIndexKeys enforces that every index says what it is ON (§6.5).
+//
+// An index with neither `columns` nor `keys` is not merely under-described, it is
+// unbuildable — and the shape is specific enough to catch the real mistake: an
+// emitter that reads only pg_index.indkey records an EXPRESSION index as having no
+// keys at all, because an expression key is stored as attribute 0. The reference
+// implementation did exactly that, so a unique index on lower(email) was dropped
+// when the disposable database was built and a constraint production enforces went
+// missing — the direction that turns a real FAIL into a PASS.
+func checkIndexKeys(f *fixture.Fixture) []Violation {
+	var vs []Violation
+	for tname := range f.Tables {
+		for _, ix := range f.Tables[tname].Indexes {
+			if len(ix.Columns) == 0 && len(ix.Keys) == 0 {
+				vs = append(vs, Violation{"§6.5 an index declares its keys", tname + "." + ix.Name,
+					"index has neither columns nor keys, so no consumer can rebuild it; an expression index MUST record `keys`"})
+			}
+		}
+	}
 	return vs
 }
 

@@ -234,14 +234,36 @@ expensive question in §7.2 is already answered by the DDL.
         method: btree
         columns: [email]
         unique: true
-        partial: "WHERE deleted_at IS NULL"
+        partial: "deleted_at IS NULL"
         bytes: 48000000
         bloat_estimate: 0.12
+      - name: users_lower_email_key      # an EXPRESSION index
+        method: btree
+        keys: ["lower(email)"]
+        unique: true
 ```
 
 `bytes` and `bloat_estimate` exist because index rebuild time is a first-order
 input to lock duration, and lock duration is the finding people actually care
 about.
+
+`keys` carries the index's key expressions as SQL text, in order, and MUST be
+present when any key is an EXPRESSION rather than a plain column. `columns`
+cannot describe such an index — a unique index on `lower(email)` has no column
+key at all — so an emitter that records only `columns` describes it as having no
+keys, and a consumer rebuilding the schema drops it. That is not a lost
+statistic: a UNIQUE index present in production and absent from the target is a
+constraint no longer enforced, so a migration that violates it can be reported
+as safe. For an all-plain-column index `keys` SHOULD be omitted, since it would
+merely restate `columns`.
+
+`partial` is the predicate alone, without the leading `WHERE`. A consumer MUST
+reproduce a partial index WITH its predicate: the predicate is what gives the
+index its scope, and a partial unique index (`UNIQUE (email) WHERE deleted_at IS
+NULL`, the standard soft-delete pattern) enforces something a plain one does not.
+Where `privacy:strict` has replaced the predicate with `opaque` (§6.4), a
+consumer MUST NOT invent one — a guessed predicate enforces a different rule than
+production — and SHOULD report the index as unreproducible instead.
 
 ### 6.6 References and fan-out
 

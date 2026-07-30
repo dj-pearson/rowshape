@@ -51,22 +51,41 @@ func DDL(f *fixture.Fixture) []string {
 	for _, name := range sortedKeys(f.Tables) {
 		stmts = append(stmts, createTable(name, f.Tables[name]))
 	}
-	// Recreate the fixture's secondary indexes so a migration that reindexes or
-	// depends on them has them present. On hydrated (small) data these are cheap;
-	// their fixture-recorded bytes/bloat drive extrapolation, not the real build.
+	return stmts
+}
+
+// SecondaryIndexes renders the CREATE INDEX statements for a fixture's secondary
+// indexes, separately from DDL because they are BEST-EFFORT.
+//
+// The distinction is about blast radius. A table must exist or nothing works, but
+// an index key can be an arbitrary expression — `lower(email)`, a call to an
+// immutable user-defined function, a custom operator class — and the fixture records
+// the expression's TEXT without any of the functions or operator classes it may
+// depend on. Emitting such an index inside the one big DDL transaction would abort
+// the entire load for a schema that is otherwise perfectly hydratable.
+//
+// So the caller runs each of these in a savepoint and reports the ones that fail,
+// rather than either dropping them silently (which is what used to happen, losing
+// production uniqueness constraints) or letting one exotic expression break
+// hydration outright.
+func SecondaryIndexes(f *fixture.Fixture) []string {
+	var stmts []string
+
+	// Recreating them at all is what lets a migration reindex or build against the
+	// indexes production has. On hydrated (small) data the builds are cheap; the
+	// fixture-recorded bytes/bloat drive extrapolation, not the real build.
 	//
 	// SECONDARY is the operative word. Postgres backs every PRIMARY KEY and UNIQUE
-	// constraint with an implicit index NAMED AFTER THE CONSTRAINT, and a
-	// conformant `pull` records both the constraint (§6.4) and that index (§6.5) —
-	// they are both really there. createTable above already emits the constraint,
-	// which recreates its index, so emitting the index again is a duplicate:
+	// constraint with an implicit index NAMED AFTER THE CONSTRAINT, and a conformant
+	// `pull` records both the constraint (§6.4) and that index (§6.5) — they are both
+	// really there. createTable already emits the constraint, which recreates its
+	// index, so emitting the index again is a duplicate:
 	//
 	//	ERROR: relation "orders_pkey" already exists (SQLSTATE 42P07)
 	//
-	// which fails the whole DDL and takes `validate` with it. Every hand-written
-	// test fixture lists constraints without their backing indexes, so only a
-	// fixture from a real `pull` ever triggers this — that is, every real schema
-	// with a primary key.
+	// Every hand-written test fixture lists constraints without their backing
+	// indexes, so only a fixture from a real `pull` ever triggers this — that is,
+	// every real schema with a primary key.
 	for _, name := range sortedKeys(f.Tables) {
 		backed := constraintBackedIndexes(f.Tables[name])
 		for _, ix := range f.Tables[name].Indexes {
@@ -100,14 +119,29 @@ func constraintBackedIndexes(tbl fixture.Table) map[string]bool {
 	return backed
 }
 
-// createIndex renders a secondary index. Partial and expression indexes are
-// skipped (their predicates/expressions may reference domain logic hydrated data
-// needn't satisfy); a plain column index is enough for a migration to reindex or
-// build against.
+// createIndex renders a secondary index, including the expression and partial
+// forms. Both used to be skipped, which quietly removed uniqueness constraints
+// production enforces — see the Keys and Partial handling below.
 func createIndex(table string, ix fixture.Index) string {
-	if ix.Name == "" || len(ix.Columns) == 0 || ix.Partial != "" {
+	if ix.Name == "" {
 		return ""
 	}
+
+	// Keys first: they are the only description of an EXPRESSION index. An index on
+	// lower(email) has no column key, so keying off `columns` alone rendered it
+	// unbuildable and it was dropped — taking a uniqueness constraint production
+	// enforces with it, which is how a migration that violates that constraint could
+	// PASS. Keys come from pg_get_indexdef and are already valid SQL (including any
+	// DESC or operator class), so they are emitted verbatim, exactly as the recorded
+	// partial predicate and domain CHECK are.
+	keys := ix.Keys
+	if len(keys) == 0 {
+		if len(ix.Columns) == 0 {
+			return ""
+		}
+		keys = quotedCols(ix.Columns)
+	}
+
 	unique := ""
 	if ix.Unique {
 		unique = "UNIQUE "
@@ -116,7 +150,25 @@ func createIndex(table string, ix fixture.Index) string {
 	if ix.Method != "" && !strings.EqualFold(ix.Method, "btree") {
 		using = " USING " + ix.Method
 	}
-	return fmt.Sprintf("CREATE %sINDEX %s ON %s%s (%s)", unique, quoteIdent(ix.Name), quoteTable(table), using, quoteCols(ix.Columns))
+
+	stmt := fmt.Sprintf("CREATE %sINDEX %s ON %s%s (%s)",
+		unique, quoteIdent(ix.Name), quoteTable(table), using, strings.Join(keys, ", "))
+
+	// A PARTIAL index used to be skipped entirely. That is the dangerous one to drop:
+	// a partial UNIQUE index is the standard soft-delete uniqueness pattern
+	// (`UNIQUE (email) WHERE deleted_at IS NULL`), and without it the disposable
+	// database does not enforce what production does.
+	//
+	// "opaque" is the placeholder privacy:strict leaves behind (§6.4). It is not a
+	// predicate, and inventing one would change what the index enforces, so the index
+	// is skipped rather than built with the wrong scope.
+	if ix.Partial != "" {
+		if ix.Partial == "opaque" {
+			return ""
+		}
+		stmt += " WHERE " + ix.Partial
+	}
+	return stmt
 }
 
 // createType renders CREATE TYPE / CREATE DOMAIN for one user-defined type
@@ -187,6 +239,16 @@ func createTable(name string, tbl fixture.Table) string {
 		}
 	}
 	return fmt.Sprintf("CREATE TABLE %s (\n%s\n)", quoteTable(name), strings.Join(lines, ",\n"))
+}
+
+// quotedCols quotes each column separately, for callers that assemble the list
+// themselves (an index whose keys may mix plain columns and expressions).
+func quotedCols(cols []string) []string {
+	out := make([]string, len(cols))
+	for i, c := range cols {
+		out[i] = quoteIdent(c)
+	}
+	return out
 }
 
 // quoteCols quotes a column list for a constraint definition.

@@ -186,5 +186,19 @@ func loadIntoTarget(ctx context.Context, f *fixture.Fixture, genOpts hydrate.Opt
 		total += n
 	}
 	fmt.Fprintf(os.Stderr, "rowshape hydrate: loaded %d rows across %d tables\n", total, len(report.Tables))
+	warnSkippedIndexes("hydrate", report.SkippedIndexes)
 	return nil
+}
+
+// warnSkippedIndexes reports secondary indexes the target could not build.
+//
+// An index production has and the disposable database does not is a difference that
+// can change a verdict — a missing UNIQUE index is a constraint no longer enforced,
+// so a migration that would violate it can come back clean. The exit code is
+// unaffected (the hydration itself succeeded), but the omission is never silent.
+func warnSkippedIndexes(cmd string, skipped []string) {
+	for _, s := range skipped {
+		fmt.Fprintf(os.Stderr, "rowshape %s: could not create an index from the fixture; "+
+			"the disposable database does not enforce what it enforces in production: %s\n", cmd, s)
+	}
 }

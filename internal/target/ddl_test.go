@@ -7,6 +7,14 @@ import (
 	"github.com/rowshape/rowshape/internal/fixture"
 )
 
+// allStatements is every statement the loader runs for a fixture, in order: the
+// required DDL followed by the best-effort secondary indexes. Tests about
+// duplicates or coverage must look at the union, since the split between the two is
+// about failure handling, not about what the target ends up with.
+func allStatements(f *fixture.Fixture) []string {
+	return append(DDL(f), SecondaryIndexes(f)...)
+}
+
 // realPullFixture builds a fixture shaped the way a real `rowshape pull` emits
 // one — which is the whole point of this file.
 //
@@ -52,8 +60,10 @@ func realPullFixture() *fixture.Fixture {
 // which fails the DDL and takes `rowshape validate` down with it, on any real
 // schema.
 func TestDDLDoesNotDuplicateConstraintBackedIndexes(t *testing.T) {
-	stmts := DDL(realPullFixture())
-	all := strings.Join(stmts, ";\n")
+	// Both halves, because together they are what the loader actually executes:
+	// DDL creates the tables (and their constraint-backed indexes), SecondaryIndexes
+	// adds the rest. A duplicate between the two is exactly the bug under test.
+	all := strings.Join(allStatements(realPullFixture()), ";\n")
 
 	for _, name := range []string{"orders_pkey", "orders_email_key"} {
 		if n := strings.Count(all, `INDEX "`+name+`"`); n != 0 {
@@ -91,7 +101,7 @@ func TestDDLKeepsSecondaryIndexWithConstraintLikeName(t *testing.T) {
 			},
 		},
 	}
-	all := strings.Join(DDL(f), ";\n")
+	all := strings.Join(allStatements(f), ";\n")
 	if !strings.Contains(all, `INDEX "t_pkey"`) {
 		t.Errorf("an index with no matching constraint must still be created:\n%s", all)
 	}
@@ -227,5 +237,105 @@ func TestDDLOpaqueDomainCheckIsNotInvented(t *testing.T) {
 	}
 	if strings.Contains(joined, "opaque") {
 		t.Errorf("the opaque placeholder leaked into SQL:\n%s", joined)
+	}
+}
+
+// TestExpressionIndexIsRecreated: an index on `lower(email)` has no COLUMN key at
+// all, so it was recorded with an empty column list and then silently dropped when
+// the disposable database was built. A production UNIQUE index that does not exist
+// in the target is a constraint no longer enforced — a migration that violates it
+// can come back clean, which is the wrong-PASS the whole format exists to prevent.
+func TestExpressionIndexIsRecreated(t *testing.T) {
+	f := &fixture.Fixture{
+		Tables: map[string]fixture.Table{
+			"app.users": {
+				Rows:    fixture.Fact[int64]{Value: 10},
+				Columns: map[string]fixture.Column{"email": {Type: "text"}},
+				Indexes: []fixture.Index{{
+					Name:   "users_email_key",
+					Method: "btree",
+					Unique: true,
+					// No Columns — this is what pull records for an expression index.
+					Keys: []string{"lower(email)"},
+				}},
+			},
+		},
+	}
+	stmts := SecondaryIndexes(f)
+	all := strings.Join(stmts, ";\n")
+	if len(stmts) == 0 {
+		t.Fatal("the expression index was dropped; production uniqueness is not enforced in the target")
+	}
+	want := `CREATE UNIQUE INDEX "users_email_key" ON "app"."users" (lower(email))`
+	if !strings.Contains(all, want) {
+		t.Errorf("wrong statement\nwant: %s\ngot:  %s", want, all)
+	}
+}
+
+// TestPartialIndexIsRecreated: a partial UNIQUE index is the standard soft-delete
+// uniqueness pattern, and skipping it left the target enforcing less than production.
+func TestPartialIndexIsRecreated(t *testing.T) {
+	f := &fixture.Fixture{
+		Tables: map[string]fixture.Table{
+			"app.users": {
+				Rows:    fixture.Fact[int64]{Value: 10},
+				Columns: map[string]fixture.Column{"email": {Type: "text"}, "deleted_at": {Type: "timestamptz", Nullable: true}},
+				Indexes: []fixture.Index{{
+					Name:    "users_live_email_key",
+					Method:  "btree",
+					Unique:  true,
+					Columns: []string{"email"},
+					Partial: "deleted_at IS NULL",
+				}},
+			},
+		},
+	}
+	all := strings.Join(SecondaryIndexes(f), ";\n")
+	want := `CREATE UNIQUE INDEX "users_live_email_key" ON "app"."users" ("email") WHERE deleted_at IS NULL`
+	if !strings.Contains(all, want) {
+		t.Errorf("wrong statement\nwant: %s\ngot:  %s", want, all)
+	}
+}
+
+// TestOpaquePartialPredicateIsNotInvented: privacy:strict leaves "opaque" where the
+// predicate was. Emitting `WHERE opaque` is a syntax error, and guessing a predicate
+// would change the index's SCOPE — a narrower or wider uniqueness rule than
+// production has. The index is skipped instead.
+func TestOpaquePartialPredicateIsNotInvented(t *testing.T) {
+	f := &fixture.Fixture{
+		Tables: map[string]fixture.Table{
+			"app.t": {
+				Rows:    fixture.Fact[int64]{Value: 1},
+				Columns: map[string]fixture.Column{"a": {Type: "integer"}},
+				Indexes: []fixture.Index{{
+					Name: "t_a_idx", Method: "btree", Columns: []string{"a"}, Partial: "opaque",
+				}},
+			},
+		},
+	}
+	if stmts := SecondaryIndexes(f); len(stmts) != 0 {
+		t.Errorf("an opaque predicate produced SQL: %v", stmts)
+	}
+}
+
+// TestKeysCarryMethodAndOrder: keys come from pg_get_indexdef and are already valid
+// SQL, so a DESC or an operator class in a key must survive verbatim rather than be
+// re-quoted into an identifier.
+func TestKeysCarryMethodAndOrder(t *testing.T) {
+	f := &fixture.Fixture{
+		Tables: map[string]fixture.Table{
+			"app.t": {
+				Rows:    fixture.Fact[int64]{Value: 1},
+				Columns: map[string]fixture.Column{"a": {Type: "text"}},
+				Indexes: []fixture.Index{{
+					Name: "t_multi", Method: "btree",
+					Keys: []string{"a DESC", "lower(a) text_pattern_ops"},
+				}},
+			},
+		},
+	}
+	all := strings.Join(SecondaryIndexes(f), ";\n")
+	if !strings.Contains(all, `(a DESC, lower(a) text_pattern_ops)`) {
+		t.Errorf("key modifiers were mangled: %s", all)
 	}
 }
