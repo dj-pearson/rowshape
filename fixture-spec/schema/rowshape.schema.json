@@ -32,6 +32,13 @@
       "additionalProperties": {
         "$ref": "#/$defs/userType"
       }
+    },
+    "extensions": {
+      "type": "object",
+      "description": "Extension name -> what the consumer needs to install it (RFC-0001 \u00a76.8). Only the extensions the read schema actually references, resolved from column types and index operator classes \u2014 never every extension merely installed on the source. Optional: a schema using no extensions omits it.",
+      "additionalProperties": {
+        "$ref": "#/$defs/extension"
+      }
     }
   },
   "$defs": {
@@ -247,6 +254,21 @@
         "generated": {
           "type": "string"
         },
+        "identity": {
+          "enum": [
+            "always",
+            "by_default"
+          ],
+          "description": "Whether an identity column is GENERATED ALWAYS or BY DEFAULT (RFC-0001 \u00a76.1). An ALWAYS column rejects an explicit value in an INSERT unless the statement says OVERRIDING SYSTEM VALUE, so the two are not interchangeable. Absent means by_default, the permissive reading."
+        },
+        "generated_expression": {
+          "type": "string",
+          "description": "A STORED generated column's expression, verbatim (RFC-0001 \u00a76.1). The literal string \"opaque\" under privacy:strict; a consumer MUST NOT invent a replacement, which would compute values production never held."
+        },
+        "default": {
+          "type": "string",
+          "description": "The column's DEFAULT expression, verbatim (RFC-0001 \u00a76.1). It is what makes a NOT NULL column insertable without naming it; a consumer that drops it produces a target that rejects ordinary inserts production accepts. A nextval(...) default obliges the consumer to create that sequence. The literal string \"opaque\" under privacy:strict; a generated or identity column MUST NOT record one."
+        },
         "format": {
           "type": "string"
         },
@@ -331,6 +353,17 @@
         "check": {
           "type": "string",
           "description": "A domain's constraint expression over the keyword VALUE, verbatim. The literal string \"opaque\" under privacy:strict; a consumer MUST NOT invent a replacement predicate."
+        }
+      }
+    },
+    "extension": {
+      "type": "object",
+      "description": "An engine extension the read schema depends on (RFC-0001 \u00a76.8). \u00a76.7 covers a type the database defines; this covers one that arrives with an extension and cannot be reconstructed from the catalog \u2014 a `citext` column names a type a fresh disposable database has never heard of. No version is recorded: the claim is that the schema needs citext, not a particular citext.",
+      "additionalProperties": true,
+      "properties": {
+        "schema": {
+          "type": "string",
+          "description": "Where the extension's objects live. It matters because a type name in a column can be schema-qualified: `ext.citext` and `public.citext` are different strings and only one resolves."
         }
       }
     }

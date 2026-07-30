@@ -106,6 +106,26 @@ func ApplyPrivacy(f *fixture.Fixture, level Privacy, k int) {
 					tbl.Constraints[i].Expression = "opaque"
 				}
 			}
+			// A STORED generated column's expression is the same class of information
+			// as a CHECK — DDL that can name business logic — so it gets the same
+			// treatment. `generated: stored` survives, so a consumer still knows the
+			// column is computed and can report that it cannot reproduce it.
+			for cname, col := range tbl.Columns {
+				changed := false
+				if col.GeneratedExpression != "" {
+					col.GeneratedExpression = "opaque"
+					changed = true
+				}
+				// A DEFAULT is DDL of the same class and can embed a literal from the
+				// business domain, so it gets the same treatment.
+				if col.Default != "" {
+					col.Default = "opaque"
+					changed = true
+				}
+				if changed {
+					tbl.Columns[cname] = col
+				}
+			}
 		}
 		f.Tables[tname] = tbl
 	}

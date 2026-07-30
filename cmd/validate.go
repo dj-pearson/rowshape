@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/rowshape/rowshape/internal/fixture"
@@ -33,6 +34,7 @@ type validateOptions struct {
 	seed        int64
 	scale       float64
 	maxRows     int64
+	stmtTimeout time.Duration
 }
 
 // newValidateCmd applies a proposed migration against a hydrated disposable
@@ -41,7 +43,8 @@ type validateOptions struct {
 // network client. Its blast radius is zero (INV-BLAST-RADIUS-ZERO): there is no
 // `apply`, and it hard-refuses a target whose host matches the fixture's source.
 func newValidateCmd() *cobra.Command {
-	opts := &validateOptions{fixturePath: "rowshape.yaml", migrations: "migrations", scale: 1.0}
+	opts := &validateOptions{fixturePath: "rowshape.yaml", migrations: "migrations", scale: 1.0,
+		stmtTimeout: validate.DefaultStatementTimeout}
 	cmd := &cobra.Command{
 		Use:   "validate [rowshape.yaml]",
 		Short: "Validate a migration against production-shaped data; return a verdict",
@@ -69,6 +72,8 @@ func newValidateCmd() *cobra.Command {
 	f.Int64Var(&opts.seed, "seed", 0, "deterministic hydration seed")
 	f.Float64Var(&opts.scale, "scale", opts.scale, "fraction of declared rows to hydrate")
 	f.Int64Var(&opts.maxRows, "max-rows", 0, "cap hydrated rows per table (0 = no cap)")
+	f.DurationVar(&opts.stmtTimeout, "statement-timeout", opts.stmtTimeout,
+		"cancel a migration statement that runs longer than this (0 = no ceiling); a cancelled statement is reported, never certified")
 	return cmd
 }
 
@@ -165,6 +170,10 @@ func hydrateApplyEphemeral(ctx context.Context, f *fixture.Fixture, opts *valida
 	// database enforces less than production does, which is exactly the direction that
 	// turns a real FAIL into a PASS.
 	warnSkippedIndexes("validate", report.SkippedIndexes)
+	warnSkippedConstraints("validate", report.SkippedConstraints)
+	warnUnreproducibleGenerated("validate", report.UnreproducibleGenerated)
+	warnUnreproducedPartitions("validate", report.UnreproducedPartitionCount)
+	warnUnreproducibleDefaults("validate", report.UnreproducibleDefaults)
 
 	cap, err := applyAndCapture(ctx, eph, opts)
 	if err != nil {
@@ -196,7 +205,7 @@ func applyAndCapture(ctx context.Context, t target.Target, opts *validateOptions
 		if err != nil {
 			return nil, toolerror.New(toolerror.BadUsage, err.Error(), "check the --migrations path")
 		}
-		return applyStatements(ctx, t, stmts)
+		return applyStatements(ctx, t, stmts, opts.stmtTimeout)
 	}
 
 	r, err := detectValidateRunner(opts)
@@ -215,17 +224,17 @@ func applyAndCapture(ctx context.Context, t target.Target, opts *validateOptions
 		}
 		stmts = append(stmts, s...)
 	}
-	return applyStatements(ctx, t, stmts)
+	return applyStatements(ctx, t, stmts, opts.stmtTimeout)
 }
 
 // applyStatements connects to the target and captures each statement.
-func applyStatements(ctx context.Context, t target.Target, stmts []validate.Located) (*validate.Capture, error) {
+func applyStatements(ctx context.Context, t target.Target, stmts []validate.Located, stmtTimeout time.Duration) (*validate.Capture, error) {
 	conn, err := t.Connect(ctx)
 	if err != nil {
 		return nil, toolerror.New(toolerror.ConnectFailed, "could not connect to the target", "check the target is reachable and the credentials are valid")
 	}
 	defer func() { _ = conn.Close(ctx) }()
-	return validate.Apply(ctx, conn, stmts), nil
+	return validate.ApplyWithTimeout(ctx, conn, stmts, stmtTimeout), nil
 }
 
 func detectValidateRunner(opts *validateOptions) (runner.Runner, error) {

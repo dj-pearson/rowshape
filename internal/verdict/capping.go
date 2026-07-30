@@ -117,7 +117,7 @@ func capToCeiling(want, ceiling string) string {
 
 // factConfidence resolves one fixture fact path to its confidence, reading it
 // from the fixture. Supported paths: `<schema>.<table>.rows`,
-// `<schema>.<table>.<column>.{unique,null_fraction,distinct}`. An unresolvable
+// `<schema>.<table>.<column>.{unique,null_fraction,distinct,range}`. An unresolvable
 // path yields absent — the weakest reading — so an unknown dependency can never
 // license PASS.
 func (e *Engine) factConfidence(path string) fixture.Confidence {
@@ -191,6 +191,21 @@ func (e *Engine) factConfidence(path string) fixture.Confidence {
 			return absent
 		}
 		return c.Distinct.Confidence
+	case "range":
+		// `range` used to have no case here, so a finding resting on the profiled
+		// extremes resolved to `absent` — recorded as D-010, on the reasoning that
+		// fixture.Range carried no confidence at all. It does now (§6.1), because a
+		// SAMPLED range understates the extremes and a finding that keys off them
+		// then fails to fire at all.
+		if c.Range == nil {
+			return absent
+		}
+		if c.Range.Confidence == "" {
+			// A fixture written before the field. Absent, not estimated: the weakest
+			// reading is the only safe one for a fact whose provenance is unknown.
+			return absent
+		}
+		return c.Range.Confidence
 	}
 	return absent
 }
