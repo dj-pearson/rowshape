@@ -11,6 +11,10 @@ You can read any of this from the CLI with `rowshape explain <CODE>`, or from an
 agent with the `explain_finding` MCP tool. These pages are generated from that
 same catalog, so they never drift from what the tool returns.
 
+## RS-APPLY
+
+- [`RS-APPLY-001`](./rs-apply-001/) — Migration did not apply
+
 ## RS-CONSTRAINT — Constraints that cannot be added or validated
 
 - [`RS-CONSTRAINT-001`](./rs-constraint-001/) — NOT VALID constraint validated in the same transaction

@@ -36,7 +36,7 @@ go test ./... -count=1
 ```
 
 Without it those tests report nothing, which reads exactly like passing. CI sets
-the DSN and runs the corpus across the PG 10–17 matrix
+the DSN and runs the corpus across the PG 10–18 matrix
 ([`corpus.yml`](.github/workflows/corpus.yml)).
 
 ### A throwaway Postgres, without Docker

@@ -133,3 +133,31 @@ func TestIdentityResetsIgnoreOrdinaryColumns(t *testing.T) {
 		t.Errorf("sequence reset emitted for a table with no identity column: %v", got)
 	}
 }
+
+// TestVirtualGeneratedColumnIsNotReproduced: PostgreSQL 18 added VIRTUAL
+// generated columns. Their syntax exists only on 18+, so emitting it would make a
+// fixture pulled from an 18 source unhydratable on the 10–17 targets rowshape
+// supports — the column becomes ordinary and is REPORTED instead.
+//
+// The branch matters even before 18 is claimed: without it a virtual column fell
+// through to the ordinary-column path and its generation expression was recorded
+// as a plain DEFAULT, which the target then emitted — so an UPDATE production
+// rejects would have succeeded there.
+func TestVirtualGeneratedColumnIsNotReproduced(t *testing.T) {
+	f := generatedFixture()
+	col := f.Tables["app.orders"].Columns["total"]
+	col.Generated = "virtual"
+	col.GeneratedExpression = "(subtotal + tax)"
+	f.Tables["app.orders"].Columns["total"] = col
+
+	if got := generatedClause(col); got != "" {
+		t.Errorf("virtual column rendered a GENERATED clause %q; the syntax does not exist on 10-17", got)
+	}
+	if got := defaultClause(col); got != "" {
+		t.Errorf("virtual column's generation expression leaked out as a DEFAULT: %q", got)
+	}
+	got := UnreproducibleGenerated(f)
+	if len(got) != 1 || got[0] != "app.orders.total" {
+		t.Errorf("virtual column not reported as unreproducible: %v", got)
+	}
+}

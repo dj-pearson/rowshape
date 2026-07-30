@@ -112,3 +112,16 @@ func TestApplyCeilingDoesNotAffectFastStatements(t *testing.T) {
 			cap.TimedOut, cap.Success, len(cap.Statements))
 	}
 }
+
+// TestFindingsMarshalAsEmptyListNotNull: a JSON contract that yields null for
+// "none" makes every reader write the same nil guard, and some of them forget.
+func TestFindingsMarshalAsEmptyListNotNull(t *testing.T) {
+	f := &fixture.Fixture{
+		Meta:   fixture.Meta{ID: "t", Engine: fixture.Engine{Name: "postgres", Version: "16"}},
+		Tables: map[string]fixture.Table{},
+	}
+	got := BuildResult(f, &Capture{Success: true}, Registered(), false)
+	if got.Findings == nil {
+		t.Error("findings is nil; an empty result must marshal as [] so a consumer can iterate it")
+	}
+}

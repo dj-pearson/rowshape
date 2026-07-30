@@ -173,6 +173,7 @@ func hydrateApplyEphemeral(ctx context.Context, f *fixture.Fixture, opts *valida
 	warnSkippedConstraints("validate", report.SkippedConstraints)
 	warnUnreproducibleGenerated("validate", report.UnreproducibleGenerated)
 	warnUnreproducedPartitions("validate", report.UnreproducedPartitionCount)
+	warnUnreproducibleDefaults("validate", report.UnreproducibleDefaults)
 
 	cap, err := applyAndCapture(ctx, eph, opts)
 	if err != nil {

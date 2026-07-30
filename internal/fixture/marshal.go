@@ -72,6 +72,12 @@ func (r Range) MarshalYAML() (any, error) {
 	if err := appendOptFloat(n, "mean", r.Mean); err != nil {
 		return nil, err
 	}
+	// The confidence of the EXTREMES. Dropped here it is silently lost, and a
+	// consumer cannot tell a sampled range from an exact one — which is the whole
+	// difference between a finding that can be trusted and one that cannot fire.
+	if r.Confidence != "" {
+		appendScalar(n, "confidence", string(r.Confidence))
+	}
 	return n, nil
 }
 
@@ -213,6 +219,9 @@ func (c Column) MarshalYAML() (any, error) {
 	}
 	if c.GeneratedExpression != "" {
 		appendScalar(n, "generated_expression", c.GeneratedExpression)
+	}
+	if c.Default != "" {
+		appendScalar(n, "default", c.Default)
 	}
 	if c.Format != "" {
 		appendScalar(n, "format", c.Format)

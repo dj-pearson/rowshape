@@ -35,6 +35,13 @@ type LoadReport struct {
 	// — a DDL statement on a parent locks every partition — so a target standing one
 	// partition in for ninety understates it.
 	UnreproducedPartitionCount []string
+	// UnreproducibleDefaults names NOT NULL columns whose DEFAULT the fixture
+	// withholds (`opaque` under privacy:strict), so the target has a bare NOT NULL.
+	//
+	// The opposite direction to UnreproducibleGenerated: the target now REJECTS
+	// writes production accepts, so an ordinary INSERT that omits the column fails
+	// here and succeeds there.
+	UnreproducibleDefaults []string
 }
 
 // Load orchestrates a full hydration into a target: it connects, creates the
@@ -93,6 +100,7 @@ func Load(ctx context.Context, t Target, f *fixture.Fixture, opts hydrate.Option
 		Tables:                     map[string]int64{},
 		UnreproducibleGenerated:    UnreproducibleGenerated(f),
 		UnreproducedPartitionCount: UnreproducedPartitionCounts(f),
+		UnreproducibleDefaults:     UnreproducibleDefaults(f),
 	}
 
 	for _, gt := range res.Tables {

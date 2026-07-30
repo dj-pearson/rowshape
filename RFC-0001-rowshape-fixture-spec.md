@@ -52,8 +52,17 @@ the feature.
    this claim narrow and true rather than broad and false.
 2. **Every fact carries its confidence.** A fixture that doesn't know something is
    required to say so. §7.
-3. **Small enough to commit.** Under 100KB for a 200-table schema. If it doesn't
-   fit in a git diff, the format has failed.
+3. **Small enough to commit.** Under 320KB for a 200-table schema — about 1.2KB
+   per table. If it doesn't fit in a git diff, the format has failed.
+
+   This said 100KB in earlier drafts, which the emitter never met: a real
+   200-table pull is ~246KB, and the only test guarding the claim built its
+   fixture by hand with deliberately sparse facts. The number was corrected
+   rather than the emitter slimmed, because the weight is spread evenly across
+   `range`, `distinct`, `unique` and their confidences — every one load-bearing,
+   with no fat to cut that would not cost information the format exists to
+   carry. The PRINCIPLE is unchanged and is what the number serves: 320KB of
+   YAML is still a file a reviewer will read in a diff.
 4. **Readable by a human and an agent.** YAML, flat where possible, no
    compression, no binary blobs, no indirection the reader must resolve.
 5. **Deterministic.** Fixture + seed → identical database on any conformant
@@ -163,6 +172,24 @@ Both matter and they are not the same fact: a column that is nullable but 0% nul
 is the single most common source of a migration that passes staging and fails
 prod three weeks later, when the first null arrives.
 
+`default` is the column's DEFAULT expression, verbatim. It is what makes a NOT
+NULL column insertable without naming it, so a consumer that drops it produces a
+target which REJECTS ordinary inserts production accepts. It bears on the
+canonical migration-safety question too: whether `ADD COLUMN ... NOT NULL
+DEFAULT <expr>` rewrites the table turns on the default being non-volatile, and
+without this field nothing can say what defaults a table already has.
+
+A `default` naming a sequence through `nextval(...)` — how `serial` is spelled
+in the catalog — obliges a consumer to create that sequence, since it is a
+separate object the fixture does not otherwise carry. A generated or identity
+column MUST NOT record one: `generated` already says how the value arrives, and
+`DEFAULT` is not legal alongside `GENERATED`.
+
+Like a `CHECK` expression (§6.4), `default` is DDL: verbatim at `standard`, the
+literal `opaque` under `privacy:strict`. A consumer MUST NOT invent a
+replacement, and SHOULD report a withheld default on a NOT NULL column, since the
+target is then stricter than production.
+
 `generated` marks a column the database computes: `identity` or `stored`.
 
 For an identity column, `identity` records `always` or `by_default`. The
@@ -196,11 +223,30 @@ accident, having correctly reasoned that min/max is "just a statistic."
 ### 6.2 Numeric and temporal
 
 ```yaml
-        range: { min: 0, max: 4999, mean: 82.3 }
+        range: { min: 0, max: 4999, mean: 82.3, confidence: exact }
         histogram:                      # optional; privacy: standard+
           buckets: 16
           bounds: [0, 1, 2, 5, 12, ...]
 ```
+
+`range` carries a `confidence` describing how well the EXTREMES are known:
+`exact` when min/max were read over the whole column, `estimated` when they came
+from a sample. Emitters MUST record it, because a sampled range is a LOWER BOUND
+on the real spread, not the spread — a column whose true maximum was 60,000 was
+recorded from a sample as 59,773.
+
+This is the one place where a weak fact does damage that §7.4 capping cannot
+undo. Capping caps findings that EXIST; a sampled range makes a finding fail to
+EXIST — `ADD CONSTRAINT CHECK (customer_id <= 59900)` looked satisfiable against
+the sampled maximum, no conflict was reported, and the verdict was PASS while
+the engine refused the statement outright. A missing finding is a PASS nothing
+downstream can reach.
+
+So a consumer MUST NOT treat the ABSENCE of a range conflict as proof of safety
+when the range is `estimated`. It MUST report the uncertainty and name the
+command that resolves it. There is no threshold below which a bound is "far
+enough" outside a sampled range to be safe: a sample gives no bound on how far
+past its extremes the real data lies.
 
 Histograms exist for one reason: skew. A `tenant_id` where one tenant owns 80% of
 rows behaves completely differently under a partitioning migration than a uniform

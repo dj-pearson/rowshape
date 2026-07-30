@@ -147,6 +147,21 @@ func BuildResult(f *fixture.Fixture, c *Capture, analyzers []Analyzer, groundTru
 	// refined in P2-T17).
 	if !c.Success {
 		overall = verdict.Combine(overall, verdict.VerdictFail)
+		// And SAY WHY. Flooring to FAIL without a finding left the verdict carrying no
+		// code, no location and no remediation, with the engine's message going to
+		// stderr only — so `--json` reported `{"verdict":"FAIL","findings":null}` and a
+		// consumer had nothing at all. That breaks the wedge directly: the MCP tool and
+		// the GitHub Action both render this struct and nothing else, so an agent was
+		// told FAIL and given nothing to act on, which is exactly the hand-waving the
+		// agent-rule harness scores against. INV-VERDICT-STABLE also requires
+		// remediation on every error.
+		//
+		// This is the most common real failure of all — a migration with a typo — and
+		// it was the one case the contract said nothing about. The finding itself is
+		// built by an ANALYZER (internal/findings, RS-APPLY-001): analyzers already
+		// receive the Capture, and building it here would need this package to import
+		// the finding registry, which imports this one.
+		findings = dropGenericApplyFailure(findings)
 	}
 	// A statement cancelled by the apply ceiling is a THIRD outcome, and it floors
 	// to WARN rather than FAIL. Nothing rejected the migration — it simply did not
@@ -158,6 +173,13 @@ func BuildResult(f *fixture.Fixture, c *Capture, analyzers []Analyzer, groundTru
 		overall = verdict.Combine(overall, verdict.VerdictWarn)
 	}
 
+	// [] rather than null, so a consumer can iterate without a nil check. A JSON
+	// contract that sometimes yields null for "none" makes every reader write the
+	// same guard, and some of them forget.
+	if findings == nil {
+		findings = []verdict.Finding{}
+	}
+
 	return verdict.Result{
 		Rowshape:   verdict.Rowshape,
 		Verdict:    overall,
@@ -165,6 +187,47 @@ func BuildResult(f *fixture.Fixture, c *Capture, analyzers []Analyzer, groundTru
 		DurationMs: c.DurationMs,
 		Findings:   findings,
 	}
+}
+
+// applyFailureCode is the generic "the migration did not apply" finding. It is
+// named here rather than imported because internal/findings imports THIS package.
+const applyFailureCode = "RS-APPLY-001"
+
+// dropGenericApplyFailure removes the generic apply-failure finding when a
+// specific analyzer has already explained the same failure.
+//
+// RS-APPLY-001 is a FLOOR, not an addition. When a migration is rejected because
+// the data does not permit it, RS-DATA-001 already says so in the column's own
+// terms and its remediation tells you what to do about the NULLs — the generic
+// finding then adds a second entry for one event and dilutes the actionable
+// advice with "read the SQLSTATE". Five corpus cases regressed exactly this way
+// the moment the generic finding existed.
+//
+// An analyzer cannot make this call: they run independently and none of them can
+// see what the others produced. Here is where the whole set is known.
+//
+// Only ERROR findings suppress it. A warning about the migration is not an
+// explanation of why it was rejected, so a capture that failed with nothing but
+// warnings still gets the generic account of the failure.
+func dropGenericApplyFailure(findings []verdict.Finding) []verdict.Finding {
+	explained := false
+	for _, f := range findings {
+		if f.Code != applyFailureCode && f.Severity == verdict.SeverityError {
+			explained = true
+			break
+		}
+	}
+	if !explained {
+		return findings
+	}
+	out := findings[:0]
+	for _, f := range findings {
+		if f.Code == applyFailureCode {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 // wantFor maps a finding's severity to the verdict it argues for: an error is a

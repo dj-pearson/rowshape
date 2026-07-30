@@ -11,13 +11,41 @@ package profile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/rowshape/rowshape/internal/fixture"
+)
+
+// Session limits `pull` puts on the database it reads.
+//
+// They exist because the entire premise is that `pull` runs against PRODUCTION,
+// and `--exact` is documented as taking "minutes to hours". Without them a single
+// profiling query against a large table runs unbounded; a long-lived read
+// transaction holds back vacuum on every table it has touched; and an ACCESS SHARE
+// lock queued behind a waiting ALTER TABLE stalls every later query on that table.
+// None of that is hypothetical for the customer this is aimed at — it is the
+// standard reason a DBA refuses to let a new tool near a primary.
+const (
+	// DefaultStatementTimeout caps one profiling query. Generous enough for an
+	// aggregate over a large table, short enough that a pathological plan degrades a
+	// fact instead of occupying the server.
+	DefaultStatementTimeout = 5 * time.Minute
+	// DefaultLockTimeout caps how long a read waits for its ACCESS SHARE lock. Short
+	// on purpose: waiting is precisely the state in which `pull` blocks the queue
+	// behind a pending ALTER TABLE, and a lock that is not free in a few seconds is
+	// one worth backing off from.
+	DefaultLockTimeout = 5 * time.Second
+	// DefaultIdleInTransactionTimeout bounds the read transaction when the CLIENT
+	// stalls — a suspended process, a dead network path — which is the case where a
+	// transaction otherwise sits open indefinitely, holding back vacuum.
+	DefaultIdleInTransactionTimeout = 10 * time.Minute
 )
 
 // Options controls a structure read.
@@ -36,6 +64,14 @@ type Options struct {
 	// exact null counts and measured (HLL) distinct over the whole table, and
 	// uniqueness is probed exactly. Minutes to hours; opt-in via `pull --exact`.
 	Exact bool
+	// StatementTimeout, LockTimeout and IdleInTransactionTimeout are the session
+	// limits the read runs under. Zero uses the Default* above; a NEGATIVE value
+	// disables that limit, which has to be asked for explicitly because an unlimited
+	// statement against production is the thing these exist to prevent.
+	StatementTimeout         time.Duration
+	LockTimeout              time.Duration
+	IdleInTransactionTimeout time.Duration
+
 	// Warn, if set, receives operational warnings — notably a column whose
 	// uniqueness escalation was skipped because the table exceeds the cap. pull
 	// wires this to stderr; silent truncation is forbidden.
@@ -66,6 +102,13 @@ func read(ctx context.Context, conn *pgx.Conn, opts Options, profile bool) (*fix
 	// A read-only transaction makes no changes; rolling back is the correct,
 	// cheap close whether or not an error occurred.
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	// SET LOCAL, so the limits last exactly as long as this transaction and nothing
+	// is left behind on a pooled connection. Applied before the first read, because a
+	// limit set after the query it was meant to bound protects nothing.
+	if err := applySessionLimits(ctx, tx, opts); err != nil {
+		return nil, err
+	}
 
 	r := &reader{
 		tx:                tx,
@@ -141,6 +184,50 @@ func read(ctx context.Context, conn *pgx.Conn, opts Options, profile bool) (*fix
 	return f, nil
 }
 
+// applySessionLimits puts the read transaction under a statement timeout, a lock
+// timeout and an idle-in-transaction timeout (PRD §11).
+//
+// SET LOCAL rather than SET: the limits belong to this transaction, and leaving
+// them on a connection a pooler may hand to someone else would be rowshape
+// changing the behaviour of code it knows nothing about.
+//
+// A server that refuses one of these is not a reason to abandon the read — but it
+// IS a reason not to pretend a limit is in force, so the failure is surfaced as a
+// warning rather than swallowed.
+func applySessionLimits(ctx context.Context, tx querier, opts Options) error {
+	limits := []struct {
+		setting string
+		value   time.Duration
+		def     time.Duration
+	}{
+		{"statement_timeout", opts.StatementTimeout, DefaultStatementTimeout},
+		{"lock_timeout", opts.LockTimeout, DefaultLockTimeout},
+		{"idle_in_transaction_session_timeout", opts.IdleInTransactionTimeout, DefaultIdleInTransactionTimeout},
+	}
+	for _, l := range limits {
+		d := l.value
+		if d == 0 {
+			d = l.def
+		}
+		if d < 0 {
+			continue // explicitly disabled by the caller
+		}
+		// Through Query rather than Exec because `querier` is the read-only subset
+		// deliberately shared with the test double; the rows are empty and closed
+		// immediately, which is what makes a SET safe to run this way.
+		q := fmt.Sprintf("SET LOCAL %s = %d", l.setting, d.Milliseconds())
+		rows, err := tx.Query(ctx, q)
+		if err != nil {
+			return fmt.Errorf("set %s: %w", l.setting, err)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("set %s: %w", l.setting, err)
+		}
+	}
+	return nil
+}
+
 // reader holds a read transaction and a per-relation attribute-name cache so
 // column numbers in constraints and indexes resolve to names cheaply.
 type reader struct {
@@ -183,6 +270,79 @@ func (r *reader) profileType(typ string) string {
 		name = base
 	}
 	return name
+}
+
+// degrade turns a statement-timeout error into a DROPPED FACT plus a warning, and
+// leaves every other error fatal.
+//
+// The timeouts exist so `pull` cannot hurt the production database it reads, but a
+// ceiling that ABORTS the run makes the tool unusable on exactly the large tables
+// it is for — the operator lowers the limit to be safe and gets no fixture at all.
+// Degrading is the honest middle: the expensive fact is simply absent, which the
+// confidence model already handles (an absent fact cannot license a PASS, RFC
+// §7.4), and the warning names the column and the flag that raises the ceiling.
+//
+// Silent truncation is forbidden, which is why this never drops a fact without
+// saying so. Structural reads do NOT route through here: a catalog read that times
+// out leaves nothing to describe, and pretending otherwise would emit a fixture
+// that claims a table has no columns.
+// guarded runs a degradable profiling read inside a savepoint, so a statement the
+// server cancels does not poison the whole read transaction.
+//
+// Without it the first timeout leaves every later statement failing with
+// `current transaction is aborted, commands ignored until end of transaction
+// block` — so degrading one fact silently destroyed the rest of the pull. The
+// savepoint is per READ rather than per table: a timeout on one column's range
+// must not cost the next column's.
+//
+// Establishing and releasing a savepoint costs two round trips per profiling
+// query. That is the price of a limit that degrades instead of aborting, and it is
+// only paid on the profiling reads — the structural catalog scan runs unguarded.
+func (r *reader) guarded(ctx context.Context, name string, fn func() error) error {
+	sp := "rowshape_" + name
+	if err := r.exec(ctx, "SAVEPOINT "+sp); err != nil {
+		return err
+	}
+	if err := fn(); err != nil {
+		if rbErr := r.exec(ctx, "ROLLBACK TO SAVEPOINT "+sp); rbErr != nil {
+			return rbErr
+		}
+		return err
+	}
+	return r.exec(ctx, "RELEASE SAVEPOINT "+sp)
+}
+
+// exec runs a statement that returns no rows through the read-only querier.
+func (r *reader) exec(ctx context.Context, sql string) error {
+	rows, err := r.tx.Query(ctx, sql)
+	if err != nil {
+		return err
+	}
+	rows.Close()
+	return rows.Err()
+}
+
+func (r *reader) degrade(table, column, fact string, err error) (bool, error) {
+	if err == nil {
+		return false, nil
+	}
+	if !isStatementTimeout(err) {
+		return false, err
+	}
+	r.warnf("%s.%s: %s omitted — the profiling query hit the statement timeout; "+
+		"raise it with --statement-timeout, or use --exact off-peak, to record this fact",
+		table, column, fact)
+	return true, nil
+}
+
+// isStatementTimeout reports whether an error is Postgres cancelling a statement
+// that ran past statement_timeout (SQLSTATE 57014).
+func isStatementTimeout(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "57014"
+	}
+	return false
 }
 
 // warnf emits an operational warning if a sink is configured.
@@ -406,11 +566,30 @@ ORDER BY a.attnum`
 			} else {
 				col.Identity = "by_default"
 			}
+		case generated == "v":
+			// PostgreSQL 18 added VIRTUAL generated columns, computed on read and never
+			// stored. They are recorded, and deliberately NOT reproduced: a consumer
+			// meeting `generated: virtual` creates an ordinary column and reports it,
+			// exactly as it does for a stored column whose expression is withheld.
+			//
+			// The branch has to exist even before rowshape claims 18, because without
+			// it a virtual column fell through to the DEFAULT case and its generation
+			// expression was recorded as a plain DEFAULT — which the target then emits
+			// on an ordinary column, so an UPDATE production rejects would succeed
+			// there. A wrong verdict from a catalog value this code did not know about.
+			col.Generated = "virtual"
+			col.GeneratedExpression = genExprText
 		case generated == "s":
 			col.Generated = "stored"
 			// pg_attrdef holds the expression for a generated column exactly as it
 			// does for a DEFAULT; only a STORED column's is a generation expression.
 			col.GeneratedExpression = genExprText
+		default:
+			// An ordinary column's pg_attrdef entry IS its DEFAULT. Only reached in the
+			// default branch, so an identity column's implicit nextval(...) — which
+			// `generated` already records — never leaks in as one, and would name a
+			// sequence the target does not have.
+			col.Default = genExprText
 		}
 		cols[name] = col
 		order = append(order, name)

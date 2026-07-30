@@ -190,6 +190,7 @@ func loadIntoTarget(ctx context.Context, f *fixture.Fixture, genOpts hydrate.Opt
 	warnSkippedConstraints("hydrate", report.SkippedConstraints)
 	warnUnreproducibleGenerated("hydrate", report.UnreproducibleGenerated)
 	warnUnreproducedPartitions("hydrate", report.UnreproducedPartitionCount)
+	warnUnreproducibleDefaults("hydrate", report.UnreproducibleDefaults)
 	return nil
 }
 
@@ -236,6 +237,14 @@ func warnSkippedConstraints(cmd string, skipped []string) {
 // The direction matters: the target is now more PERMISSIVE than production. An
 // UPDATE of a generated column fails in production with `column "total" can only
 // be updated to DEFAULT` and succeeds here, so the omission has to be visible.
+func warnUnreproducibleDefaults(cmd string, cols []string) {
+	for _, c := range cols {
+		fmt.Fprintf(os.Stderr, "rowshape %s: %s is NOT NULL with a DEFAULT the fixture withholds "+
+			"(privacy:strict), so the target has a bare NOT NULL; it will REJECT inserts that omit "+
+			"the column, which production accepts\n", cmd, c)
+	}
+}
+
 func warnUnreproducedPartitions(cmd string, notes []string) {
 	for _, n := range notes {
 		fmt.Fprintf(os.Stderr, "rowshape %s: %s\n", cmd, n)

@@ -62,6 +62,16 @@ func DDL(f *fixture.Fixture) []string {
 		stmts = append(stmts, createExtension(name, f.Extensions[name]))
 	}
 
+	// Then the sequences a column DEFAULT names. A `serial`/`bigserial` column is an
+	// ordinary column whose default is `nextval('t_id_seq'::regclass)` plus an owned
+	// sequence — and the sequence is a separate object the fixture does not otherwise
+	// carry, so the CREATE TABLE failed with `relation "app.events_id_seq" does not
+	// exist`. Creating it keeps the column's real DDL rather than translating serial
+	// into an identity column, which would report the column as something it is not.
+	for _, name := range sequencesNamedByDefaults(f) {
+		stmts = append(stmts, "CREATE SEQUENCE IF NOT EXISTS "+name)
+	}
+
 	// Then the user-defined types, before any table that carries one as a column
 	// type (RFC §6.7). A column typed `z.mood` names something a fresh disposable
 	// database has never heard of, so without these the whole DDL failed with
@@ -453,7 +463,7 @@ func createTable(name string, tbl fixture.Table) string {
 		if !c.Nullable {
 			line += " NOT NULL"
 		}
-		line += generatedClause(c)
+		line += defaultClause(c) + generatedClause(c)
 		lines = append(lines, line)
 	}
 	for _, con := range tbl.Constraints {
@@ -477,6 +487,90 @@ func createTable(name string, tbl fixture.Table) string {
 	}
 	return fmt.Sprintf("CREATE TABLE %s (\n%s\n)%s", quoteTable(name), strings.Join(lines, ",\n"),
 		partitionClause(tbl.Partitions))
+}
+
+// sequencesNamedByDefaults returns, sorted and deduplicated, the sequences that
+// column DEFAULTs reference through nextval().
+//
+// The name is taken verbatim from the recorded expression — already quoted and
+// schema-qualified exactly as the source rendered it — so CREATE SEQUENCE and the
+// DEFAULT that uses it cannot disagree about which object they mean.
+func sequencesNamedByDefaults(f *fixture.Fixture) []string {
+	seen := map[string]bool{}
+	for _, tname := range sortedKeys(f.Tables) {
+		tbl := f.Tables[tname]
+		for _, cname := range sortedKeys(tbl.Columns) {
+			if name, ok := nextvalSequence(defaultClause(tbl.Columns[cname])); ok {
+				seen[name] = true
+			}
+		}
+	}
+	return sortedStrings(seen)
+}
+
+// nextvalSequence extracts the sequence name from a `nextval('x'::regclass)`
+// default, returning false for anything else. Anything it does not recognize with
+// certainty yields nothing, so an unusual default is left to fail loudly on its
+// own terms rather than having a sequence invented for it.
+func nextvalSequence(clause string) (string, bool) {
+	i := strings.Index(clause, "nextval(")
+	if i < 0 {
+		return "", false
+	}
+	rest := clause[i+len("nextval("):]
+	open := strings.Index(rest, "'")
+	if open < 0 {
+		return "", false
+	}
+	closeAt := strings.Index(rest[open+1:], "'")
+	if closeAt < 0 {
+		return "", false
+	}
+	name := strings.TrimSpace(rest[open+1 : open+1+closeAt])
+	if name == "" {
+		return "", false
+	}
+	return name, true
+}
+
+// defaultClause renders the DEFAULT part of a column definition, or "" when the
+// column has none this can reproduce (RFC §6.1).
+//
+// Without it, every migration that inserts or backfills without naming every NOT
+// NULL column failed in the target and succeeded in production — the target had a
+// bare `NOT NULL` where production has `NOT NULL DEFAULT '{}'::jsonb`. That is a
+// wrong FAIL on the most ordinary statement there is.
+//
+// A generated column never gets one: `generated` already carries how its value
+// arrives, and DEFAULT is not legal alongside GENERATED. "opaque" is the
+// privacy:strict placeholder, not an expression, and inventing one would give the
+// target a default production does not have.
+func defaultClause(c fixture.Column) string {
+	if c.Generated != "" || c.Default == "" || c.Default == "opaque" {
+		return ""
+	}
+	return " DEFAULT " + c.Default
+}
+
+// UnreproducibleDefaults names the columns a fixture says carry a DEFAULT that
+// this cannot reproduce, so the caller can report that the target REJECTS writes
+// production accepts.
+//
+// The opposite direction to UnreproducibleGenerated, and worth reporting for the
+// same reason: a difference between target and production that changes a verdict
+// must never be silent, whichever way it leans.
+func UnreproducibleDefaults(f *fixture.Fixture) []string {
+	var out []string
+	for _, tname := range sortedKeys(f.Tables) {
+		tbl := f.Tables[tname]
+		for _, cname := range sortedKeys(tbl.Columns) {
+			c := tbl.Columns[cname]
+			if c.Default == "opaque" && !c.Nullable && c.Generated == "" {
+				out = append(out, tname+"."+cname)
+			}
+		}
+	}
+	return out
 }
 
 // generatedClause renders the GENERATED part of a column definition, or "" for an
@@ -510,6 +604,14 @@ func generatedClause(c fixture.Column) string {
 			return ""
 		}
 		return " GENERATED ALWAYS AS (" + c.GeneratedExpression + ") STORED"
+	case "virtual":
+		// PostgreSQL 18's VIRTUAL generated columns. Not reproduced: the syntax does
+		// not exist on any earlier major, so emitting it would make a fixture from an
+		// 18 source unhydratable on the 10-17 targets rowshape supports. The column
+		// becomes ordinary and is REPORTED, which is the same honest degradation a
+		// stored column with a withheld expression gets — the target then accepts
+		// writes production rejects, and the operator is told so.
+		return ""
 	}
 	return ""
 }
@@ -565,7 +667,9 @@ func Partitions(f *fixture.Fixture) []string {
 		if partitionClause(p) == "" {
 			continue
 		}
-		base := partitionName(tname)
+		// The parent's qualified name is the stem, so a synthesized partition lands in
+		// the parent's schema rather than in whatever the search_path happens to be.
+		base := tname
 		switch p.Strategy {
 		case "hash":
 			n := p.Count
@@ -615,10 +719,6 @@ func UnreproducedPartitionCounts(f *fixture.Fixture) []string {
 	return out
 }
 
-// partitionName is the local (unqualified-safe) stem for a synthesized partition:
-// the parent's qualified name, so the partition lands in the parent's schema.
-func partitionName(table string) string { return table }
-
 // identityResets renders the statements that move each identity column's sequence
 // past the rows just loaded.
 //
@@ -648,16 +748,20 @@ func identityResets(f *fixture.Fixture) []string {
 	return stmts
 }
 
-// UnreproducibleGenerated names the columns a fixture says are STORED generated
-// but does not describe well enough to recreate, so the caller can report that the
-// target permits writes production rejects.
+// UnreproducibleGenerated names the columns a fixture says are generated but which
+// the target could not declare as such, so the caller can report that the target
+// permits writes production rejects.
+//
+// Two ways in: a STORED column whose expression the fixture withholds, and any
+// VIRTUAL column (PostgreSQL 18), whose syntax does not exist on the earlier
+// majors rowshape supports as targets.
 func UnreproducibleGenerated(f *fixture.Fixture) []string {
 	var out []string
 	for _, tname := range sortedKeys(f.Tables) {
 		tbl := f.Tables[tname]
 		for _, cname := range sortedKeys(tbl.Columns) {
 			c := tbl.Columns[cname]
-			if c.Generated == "stored" && generatedClause(c) == "" {
+			if (c.Generated == "stored" || c.Generated == "virtual") && generatedClause(c) == "" {
 				out = append(out, tname+"."+cname)
 			}
 		}

@@ -59,6 +59,18 @@ var catalog = map[string]Explanation{
 		Remediation: "Repair or exclude the rows that violate the predicate before adding the CHECK (or widen the predicate). Add the constraint NOT VALID, fix the data, then VALIDATE.",
 		References:  []string{"RFC §6.1", "RFC §6.4", "PRD §10"},
 	},
+	// RS-APPLY is a SEVENTH namespace beyond the six INV-VERDICT-STABLE names, and
+	// it is deliberately not one of them. The other six classify HAZARDS found in a
+	// migration that ran; this one says the migration did not run. Folding it into
+	// RS-DATA would claim the data rejected a statement that may never have parsed.
+	// Recorded as a contract extension in docs/DECISIONS.md D-023.
+	"RS-APPLY-001": {
+		Code:        "RS-APPLY-001",
+		Title:       "Migration did not apply",
+		Summary:     "A statement in the migration was rejected by the database, so nothing downstream was evaluated. The verdict carries the engine's own SQLSTATE and message, and the file and line the statement came from.",
+		Remediation: "Read the SQLSTATE and message in the finding's evidence: they are the database's own words about what it refused. Fix the statement at the reported file and line, then re-run validate. A class-23 code (23505 unique_violation, 23502 not_null_violation, 23514 check_violation) means production-shaped DATA rejected it — the migration is syntactically fine and the data does not permit it. A class-42 code (42P01 undefined_table, 42703 undefined_column, 42601 syntax_error) means the statement does not match the schema it was written against.",
+		References:  []string{"PRD §10", "RFC §13"},
+	},
 	"RS-INDEX-001": {
 		Code:        "RS-INDEX-001",
 		Title:       "Non-concurrent CREATE INDEX blocks writes",

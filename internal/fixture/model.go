@@ -322,7 +322,25 @@ type Column struct {
 	// CHECK expression (§6.4), and gets the same privacy treatment: verbatim at
 	// standard, the literal "opaque" under strict.
 	GeneratedExpression string `yaml:"generated_expression,omitempty"`
-	Format              string `yaml:"format,omitempty"` // a §6.3 format class
+	// Default is the column's DEFAULT expression, verbatim.
+	//
+	// It is what makes a NOT NULL column insertable without naming it, and without
+	// it every migration that inserts or backfills without listing every NOT NULL
+	// column failed in the target and succeeded in production — a wrong FAIL, on the
+	// most ordinary statement there is.
+	//
+	// It runs the other way too. `ADD COLUMN ... NOT NULL DEFAULT <expr>` is THE
+	// canonical migration-safety question, and whether it rewrites the table turns on
+	// the default being non-volatile. The finding rules reason about the default in
+	// the MIGRATION; without this field nothing knows what defaults the table already
+	// has, so a fixture cannot answer "does this column already have one".
+	//
+	// DDL, like a CHECK (§6.4) and like GeneratedExpression: verbatim at standard,
+	// the literal "opaque" under strict. An identity or generated column's implicit
+	// default is NOT recorded here — `generated` already carries it, and emitting
+	// `nextval(...)` would name a sequence the target does not have.
+	Default string `yaml:"default,omitempty"`
+	Format  string `yaml:"format,omitempty"` // a §6.3 format class
 
 	Length      *Length    `yaml:"length,omitempty"`
 	Values      []string   `yaml:"values,omitempty"`      // privacy: permissive only (§8.2)
@@ -366,6 +384,21 @@ type Range struct {
 	Min  any      `yaml:"min,omitempty"`
 	Max  any      `yaml:"max,omitempty"`
 	Mean *float64 `yaml:"mean,omitempty"`
+	// Confidence is how well the EXTREMES are known: `exact` when min/max were read
+	// over the whole column, `estimated` when they came from a sample.
+	//
+	// It exists because a sampled range UNDERSTATES the extremes, and a finding that
+	// keys off them then fails to fire at all. `ALTER TABLE ADD CONSTRAINT CHECK
+	// (customer_id <= 59900)` against a true max of 60,000 is refused by the source
+	// database; the fixture recorded max 59,773 from a TABLESAMPLE, the conflict
+	// detector found nothing, and the verdict was PASS.
+	//
+	// That failure runs the OPPOSITE way to the one confidence usually guards. Capping
+	// caps findings that EXIST; here the weak fact makes the finding not exist, and a
+	// missing finding is a PASS no cap can reach. So the confidence has to be
+	// available to the ANALYZER, which can say "the sampled extremes cannot confirm
+	// or deny this" and emit a WARN, not just to the capping engine.
+	Confidence Confidence `yaml:"confidence,omitempty"`
 }
 
 // Histogram captures skew — the thing no summary statistic captures (RFC §6.2).
