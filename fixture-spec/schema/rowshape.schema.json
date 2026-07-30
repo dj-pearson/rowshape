@@ -254,6 +254,17 @@
         "generated": {
           "type": "string"
         },
+        "identity": {
+          "enum": [
+            "always",
+            "by_default"
+          ],
+          "description": "Whether an identity column is GENERATED ALWAYS or BY DEFAULT (RFC-0001 \u00a76.1). An ALWAYS column rejects an explicit value in an INSERT unless the statement says OVERRIDING SYSTEM VALUE, so the two are not interchangeable. Absent means by_default, the permissive reading."
+        },
+        "generated_expression": {
+          "type": "string",
+          "description": "A STORED generated column's expression, verbatim (RFC-0001 \u00a76.1). The literal string \"opaque\" under privacy:strict; a consumer MUST NOT invent a replacement, which would compute values production never held."
+        },
         "format": {
           "type": "string"
         },

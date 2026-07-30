@@ -11,6 +11,9 @@ environment and return a machine-readable verdict.
 
 ## Build
 
+Requires **Go 1.25.0 or newer** — the floor declared in `go.mod`, and the floor on
+`go install github.com/rowshape/rowshape@latest`.
+
 ```sh
 go build ./...        # builds the single `rowshape` binary
 go vet ./...

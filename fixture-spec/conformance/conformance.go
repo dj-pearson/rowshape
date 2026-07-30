@@ -113,6 +113,8 @@ func CheckEmitter(f *fixture.Fixture) []Violation {
 
 	vs = append(vs, checkUserTypes(f)...)
 	vs = append(vs, checkIndexKeys(f)...)
+	vs = append(vs, checkIndexInclude(f)...)
+	vs = append(vs, checkExtensionTypes(f)...)
 
 	// The digest MUST be stable across runs against an unchanged fixture (§11).
 	d1, e1 := fixture.Digest(f)
@@ -140,6 +142,79 @@ func checkIndexKeys(f *fixture.Fixture) []Violation {
 			if len(ix.Columns) == 0 && len(ix.Keys) == 0 {
 				vs = append(vs, Violation{"§6.5 an index declares its keys", tname + "." + ix.Name,
 					"index has neither columns nor keys, so no consumer can rebuild it; an expression index MUST record `keys`"})
+			}
+		}
+	}
+	return vs
+}
+
+// checkIndexInclude enforces that a covering index's INCLUDE payload stays out of
+// its key (§6.5).
+//
+// The key is what a UNIQUE index ENFORCES, so folding the payload in describes a
+// strictly WEAKER constraint than the one production has: recording
+// `UNIQUE (customer_id, created_at) INCLUDE (total)` as unique on all three let a
+// migration violating the real two-column uniqueness reach PASS. A column that
+// appears in both lists is that mistake, made visible.
+func checkIndexInclude(f *fixture.Fixture) []Violation {
+	var vs []Violation
+	for tname := range f.Tables {
+		for _, ix := range f.Tables[tname].Indexes {
+			if len(ix.Include) == 0 {
+				continue
+			}
+			key := make(map[string]bool, len(ix.Columns))
+			for _, c := range ix.Columns {
+				key[c] = true
+			}
+			for _, c := range ix.Include {
+				if key[c] {
+					vs = append(vs, Violation{"§6.5 INCLUDE payload is not part of the key",
+						tname + "." + ix.Name + "." + c,
+						"column appears in both `columns` and `include`; the key is what a UNIQUE index enforces, so counting the payload as key describes a weaker constraint than production has"})
+				}
+			}
+		}
+	}
+	return vs
+}
+
+// checkExtensionTypes enforces the §6.8 emitter MUST that a schema depending on an
+// extension says so.
+//
+// A `citext` column names a type a freshly created disposable database has never
+// heard of, so the DDL failed with `type "citext" does not exist` and validation
+// could not run on the schema AT ALL. The check is deliberately narrow — it fires
+// only on type names that unambiguously come from a well-known extension — because
+// a general "is this type built in?" test would need the engine's catalog, which a
+// conformance suite reading a file does not have.
+func checkExtensionTypes(f *fixture.Fixture) []Violation {
+	// Types that exist only once an extension is installed, mapped to the extension
+	// that provides them. Extending this list makes the check stricter, never wrong.
+	provider := map[string]string{
+		"citext":    "citext",
+		"hstore":    "hstore",
+		"ltree":     "ltree",
+		"geometry":  "postgis",
+		"geography": "postgis",
+		"vector":    "vector",
+	}
+	var vs []Violation
+	for tname := range f.Tables {
+		for cname, col := range f.Tables[tname].Columns {
+			base := strings.TrimSuffix(strings.TrimSpace(col.Type), "[]")
+			if i := strings.LastIndex(base, "."); i >= 0 {
+				base = base[i+1:]
+			}
+			ext, needs := provider[strings.ToLower(base)]
+			if !needs {
+				continue
+			}
+			if _, declared := f.Extensions[ext]; !declared {
+				vs = append(vs, Violation{"§6.8 a schema depending on an extension declares it",
+					tname + "." + cname,
+					"column is typed `" + col.Type + "`, which requires the `" + ext +
+						"` extension, but the fixture declares no such extension; a consumer cannot create the type"})
 			}
 		}
 	}

@@ -153,13 +153,122 @@ func SecondaryIndexes(f *fixture.Fixture) []string {
 func DeferredConstraints(f *fixture.Fixture) []string {
 	var stmts []string
 	for _, name := range sortedKeys(f.Tables) {
-		for _, con := range f.Tables[name].Constraints {
+		tbl := f.Tables[name]
+		for _, con := range tbl.Constraints {
 			if stmt := addConstraint(name, con); stmt != "" {
 				stmts = append(stmts, stmt)
 			}
 		}
+		stmts = append(stmts, addForeignKeys(name, tbl.References)...)
 	}
 	return stmts
+}
+
+// addForeignKeys renders one ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY per
+// recorded reference constraint (RFC §6.6).
+//
+// Foreign keys used to be dropped for a reason ddl.go stated as "a foreign key
+// needs dependency-ordered loading". It does not, if the constraint is ADDED AFTER
+// the rows rather than declared in CREATE TABLE — which is also what pg_dump does,
+// and it makes table load order irrelevant, self-references work, and cycles
+// between two tables work. The cost of dropping them was a demonstrated wrong
+// PASS: an INSERT of a row whose parent does not exist returned PASS with exit 0
+// while the source database refused it.
+//
+// A composite key arrives as one Reference per column pair sharing a constraint
+// name, so entries are grouped by name and the column order within each group is
+// preserved — `FOREIGN KEY (a, b) REFERENCES t (x, y)` is not two single-column
+// keys, and rebuilding it as two would constrain something production does not.
+func addForeignKeys(table string, refs []fixture.Reference) []string {
+	type group struct {
+		cols, refCols      []string
+		refTable           string
+		onDelete, onUpdate string
+		validated          *bool
+	}
+	var order []string
+	groups := map[string]*group{}
+
+	for _, ref := range refs {
+		refTable, refCol, ok := splitReference(ref.To)
+		if !ok || ref.Column == "" {
+			continue
+		}
+		// A reference with no recorded name predates the field (or came from a
+		// hand-authored fixture). Key it uniquely so it still becomes a constraint
+		// rather than being merged with an unrelated one — the server names it.
+		key := ref.Name
+		if key == "" {
+			key = "\x00" + ref.Column + "\x00" + ref.To
+		}
+		g, seen := groups[key]
+		if !seen {
+			g = &group{refTable: refTable, onDelete: ref.OnDelete, onUpdate: ref.OnUpdate, validated: ref.Validated}
+			groups[key] = g
+			order = append(order, key)
+		}
+		g.cols = append(g.cols, ref.Column)
+		g.refCols = append(g.refCols, refCol)
+	}
+
+	var stmts []string
+	for _, key := range order {
+		g := groups[key]
+		if len(g.cols) != len(g.refCols) {
+			continue
+		}
+		name := key
+		if strings.HasPrefix(key, "\x00") {
+			// Synthesized from the column pair; let Postgres pick the conventional name.
+			name = table[strings.LastIndex(table, ".")+1:] + "_" + g.cols[0] + "_fkey"
+		}
+		stmt := fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s (%s)",
+			quoteTable(table), quoteIdent(name), quoteCols(g.cols), quoteTable(g.refTable), quoteCols(g.refCols))
+		// no_action is the default and adding it changes nothing, so it is omitted to
+		// keep the statement close to what the source database would render.
+		if act := referentialAction(g.onDelete); act != "" {
+			stmt += " ON DELETE " + act
+		}
+		if act := referentialAction(g.onUpdate); act != "" {
+			stmt += " ON UPDATE " + act
+		}
+		// NOT VALID must be preserved: such a key is not enforced against existing
+		// rows, so validating it here would make the target reject data production
+		// holds — and would leave a migration's own VALIDATE CONSTRAINT nothing to do.
+		if g.validated != nil && !*g.validated {
+			stmt += " NOT VALID"
+		}
+		stmts = append(stmts, stmt)
+	}
+	return stmts
+}
+
+// splitReference splits a `schema.table.column` reference into `schema.table` and
+// `column`. Anything without both separators is not a reference this can rebuild.
+func splitReference(to string) (string, string, bool) {
+	last := strings.LastIndex(to, ".")
+	if last <= 0 || strings.Index(to, ".") == last {
+		return "", "", false
+	}
+	return to[:last], to[last+1:], true
+}
+
+// referentialAction maps the fixture's snake_case action to SQL, returning "" for
+// the default (no_action) and for anything unrecognized — a guessed action would
+// change what a parent-row delete does, which is the question being asked.
+func referentialAction(a string) string {
+	switch a {
+	case "cascade":
+		return "CASCADE"
+	case "restrict":
+		return "RESTRICT"
+	case "set_null":
+		return "SET NULL"
+	case "set_default":
+		return "SET DEFAULT"
+	default:
+		return ""
+	}
 }
 
 // addConstraint renders one ALTER TABLE ... ADD CONSTRAINT, or "" for a kind that
@@ -344,6 +453,7 @@ func createTable(name string, tbl fixture.Table) string {
 		if !c.Nullable {
 			line += " NOT NULL"
 		}
+		line += generatedClause(c)
 		lines = append(lines, line)
 	}
 	for _, con := range tbl.Constraints {
@@ -355,6 +465,87 @@ func createTable(name string, tbl fixture.Table) string {
 		}
 	}
 	return fmt.Sprintf("CREATE TABLE %s (\n%s\n)", quoteTable(name), strings.Join(lines, ",\n"))
+}
+
+// generatedClause renders the GENERATED part of a column definition, or "" for an
+// ordinary column (RFC §6.1).
+//
+// Dropping it was a wrong PASS in two directions at once. A STORED generated
+// column rebuilt as an ordinary one ACCEPTS an UPDATE that production rejects with
+// `column "total" can only be updated to DEFAULT`; an identity column rebuilt as
+// an ordinary NOT NULL one REJECTS an INSERT that omits it, which production
+// accepts. Both were reproduced.
+//
+// A stored column with no usable expression falls back to an ordinary column
+// rather than a guessed one — an invented expression would compute values
+// production never held. The caller reports that, so the operator knows the target
+// permits writes production does not.
+func generatedClause(c fixture.Column) string {
+	switch c.Generated {
+	case "identity":
+		// ALWAYS is the stricter reading and is what the catalog said; BY DEFAULT is
+		// the default spelling for a fixture that predates the `identity` field, where
+		// the permissive form is the safer guess: it accepts explicit values, so a
+		// hydrated INSERT that supplies one still works.
+		if c.Identity == "always" {
+			return " GENERATED ALWAYS AS IDENTITY"
+		}
+		return " GENERATED BY DEFAULT AS IDENTITY"
+	case "stored":
+		// "opaque" is the placeholder privacy:strict leaves behind. It is not an
+		// expression, and inventing one would compute values production never had.
+		if c.GeneratedExpression == "" || c.GeneratedExpression == "opaque" {
+			return ""
+		}
+		return " GENERATED ALWAYS AS (" + c.GeneratedExpression + ") STORED"
+	}
+	return ""
+}
+
+// identityResets renders the statements that move each identity column's sequence
+// past the rows just loaded.
+//
+// Needed because hydration supplies explicit ids — a child table's foreign keys
+// must point at the ids its parent was actually loaded with — and an identity
+// sequence does not observe explicit inserts. Left alone it still reads 1 while
+// the table holds 1..N, so the first INSERT that omits the column (the ordinary
+// way to insert into an identity table) collides with the primary key and the
+// migration is reported as broken when it is not.
+//
+// setval over a subquery rather than a computed constant, so the statement is
+// correct whatever `--scale` or `--max-rows` actually loaded. COALESCE handles the
+// empty table, where the sequence must simply stay where it started.
+func identityResets(f *fixture.Fixture) []string {
+	var stmts []string
+	for _, tname := range sortedKeys(f.Tables) {
+		tbl := f.Tables[tname]
+		for _, cname := range sortedKeys(tbl.Columns) {
+			if tbl.Columns[cname].Generated != "identity" {
+				continue
+			}
+			stmts = append(stmts, fmt.Sprintf(
+				"SELECT setval(pg_get_serial_sequence(%s, %s), (SELECT COALESCE(MAX(%s), 1) FROM %s), true)",
+				quoteLiteral(quoteTable(tname)), quoteLiteral(cname), quoteIdent(cname), quoteTable(tname)))
+		}
+	}
+	return stmts
+}
+
+// UnreproducibleGenerated names the columns a fixture says are STORED generated
+// but does not describe well enough to recreate, so the caller can report that the
+// target permits writes production rejects.
+func UnreproducibleGenerated(f *fixture.Fixture) []string {
+	var out []string
+	for _, tname := range sortedKeys(f.Tables) {
+		tbl := f.Tables[tname]
+		for _, cname := range sortedKeys(tbl.Columns) {
+			c := tbl.Columns[cname]
+			if c.Generated == "stored" && generatedClause(c) == "" {
+				out = append(out, tname+"."+cname)
+			}
+		}
+	}
+	return out
 }
 
 // quotedCols quotes each column separately, for callers that assemble the list

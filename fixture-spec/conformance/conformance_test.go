@@ -69,6 +69,8 @@ func TestNonConformantFixturesAreRejected(t *testing.T) {
 	}{
 		{"fixtures/invalid/range-on-text.yaml", "§6.1 no range on text"},
 		{"fixtures/invalid/unique-from-sample.yaml", "§7.2 uniqueness never from a sample"},
+		{"fixtures/invalid/include-in-key.yaml", "§6.5 INCLUDE payload is not part of the key"},
+		{"fixtures/invalid/extension-type-undeclared.yaml", "§6.8 a schema depending on an extension declares it"},
 	}
 	for _, c := range cases {
 		t.Run(filepath.Base(c.file), func(t *testing.T) {

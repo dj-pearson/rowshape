@@ -200,6 +200,15 @@ func (c Column) MarshalYAML() (any, error) {
 	if c.Generated != "" {
 		appendScalar(n, "generated", c.Generated)
 	}
+	// Both must be emitted or the target rebuilds a generated column as an ordinary
+	// one and accepts writes production rejects — this marshaller names every field
+	// explicitly, so a field absent here is silently dropped.
+	if c.Identity != "" {
+		appendScalar(n, "identity", c.Identity)
+	}
+	if c.GeneratedExpression != "" {
+		appendScalar(n, "generated_expression", c.GeneratedExpression)
+	}
 	if c.Format != "" {
 		appendScalar(n, "format", c.Format)
 	}
@@ -334,8 +343,23 @@ func (r Reference) MarshalYAML() (any, error) {
 	n := &yaml.Node{Kind: yaml.MappingNode, Style: yaml.FlowStyle}
 	appendScalar(n, "column", r.Column)
 	appendScalar(n, "to", r.To)
+	// Name groups the per-column entries of a composite foreign key back into one
+	// constraint. Dropped here, a consumer rebuilds two independent single-column
+	// keys instead — this marshaller names every field explicitly, so a field absent
+	// here is silently lost no matter what the struct tag says.
+	if r.Name != "" {
+		appendScalar(n, "name", r.Name)
+	}
 	if r.OnDelete != "" {
 		appendScalar(n, "on_delete", r.OnDelete)
+	}
+	if r.OnUpdate != "" {
+		appendScalar(n, "on_update", r.OnUpdate)
+	}
+	if r.Validated != nil {
+		if err := appendField(n, "validated", *r.Validated); err != nil {
+			return nil, err
+		}
 	}
 	if r.Fanout != nil {
 		fn, err := r.Fanout.MarshalYAML()

@@ -3160,13 +3160,50 @@
           "verified": "Verified end to end against PostgreSQL 16.13. The reproduced wrong PASS is closed: `UPDATE app.orders SET status = 'archived' WHERE status = 'shipped'` against a table carrying `CHECK (status IN ('pending','paid','shipped'))` now returns FAIL with exit 1, matching the source database's `ERROR: new row for relation \"orders\" violates check constraint \"orders_status_chk\"`. Before this it returned PASS with exit 0. A migration that respects the constraint (`SET status = 'paid'`) still returns PASS, so the fix did not simply make everything fail. `pg_constraint` for the hydrated target now matches the source on every CHECK.\n\nTwo halves, and only together do they close it. (1) target.DeferredConstraints renders ALTER TABLE ... ADD CONSTRAINT ... CHECK, applied after the rows, each inside its own savepoint via a new shared execGuarded helper (SecondaryIndexes now uses it too). Failures land in LoadReport.SkippedConstraints and both `hydrate` and `validate` print them: a constraint the target does not enforce is never silent again. NOT VALID is preserved — recreating such a constraint as validated would make the target reject data production holds, and would leave a migration's own VALIDATE CONSTRAINT nothing to validate. `opaque` (privacy:strict) is skipped rather than invented, matching what createType already does for an opaque domain CHECK.\n\n(2) The savepoint alone would have left the wrong PASS open, because the synthesis engine could not satisfy the constraint — the first run reported `check constraint \"orders_status_chk\" is violated by some row` and skipped it. The original objection recorded in ddl.go (\"a CHECK can carry domain logic that obviously-fake values needn't satisfy\") was real; the remedy was wrong. internal/hydrate/checkdomain.go now reads a table's CHECKs the same way the engine already reads an enum's labels: a column under `CHECK (status IN (...))` is an enum in all but name. It extracts a literal value set (`= ANY (ARRAY[...])`, which is how Postgres renders IN) or inclusive numeric bounds, intersecting multiple CHECKs and splitting top-level AND. Values replace; bounds clamp, so a column keeps the recorded distribution wherever it already satisfies the bound. NULLs are never touched (a CHECK is satisfied by NULL, and the null fraction is a recorded fact) — pinned by a test. Synthesized statuses now come back as the real pending/paid/shipped vocabulary, which is drawn from the CHECK expression the fixture already publishes verbatim at `standard` (§6.4), so no new information leaves the source.\n\nIt is deliberately NOT a SQL evaluator. Multi-column comparisons, function calls, disjunctions, single-value equality (which would collapse the recorded cardinality), and NOT VALID constraints (obeying one would make the target STRICTER than production) all yield no domain — generation is unchanged and the constraint is reported as skipped. Six negative cases pin that, and they are the load-bearing ones: a guess here would constrain hydrated data in a way production does not.\n\nTests: four in internal/target/check_ddl_test.go (CHECKs emitted; inline kinds not re-added; opaque not reconstructed; NOT VALID preserved and not applied to validated constraints) and seven in internal/hydrate/checkdomain_test.go (three membership spellings incl. the `(status)::text` cast form; bounds with strict comparisons nudged inside; conjunction splitting; the six-case negative table; NOT VALID ignored; end-to-end generation satisfying both a set and bounds without collapsing cardinality; null fraction preserved). Full `go test ./...` green with ROWSHAPE_TEST_PG_DSN set, including the 28-case corpus and the demo regression; gofmt and go vet clean."
         },
         {
+          "id": "PR-T15",
+          "priority": 2.5,
+          "found_by_deep_dive": "Found while landing PR-T3, by the suite going from 190s to a 10-minute hard timeout. With real foreign keys in the target, the `cascade_delete_fanout` corpus case stopped being a paper hazard and became one: `DELETE FROM public.users WHERE last_seen_at < now() - interval '2 years'` matches 244,223 parent rows, each cascading to `public.orders` — 10,000,000 rows with NO index on `user_id`, because the fixture records none. Postgres therefore seq-scans 10M rows per deleted parent. The target was faithfully reproducing the exact outage the case exists to describe, and `validate` had no way to stop.",
+          "title": "`validate` can hang forever applying a migration that is an outage",
+          "description": "internal/validate/capture.go executes each migration statement with no statement_timeout, so a statement that would be an outage in production is an outage in the disposable database — `validate` blocks until the statement finishes, the context is cancelled, or someone kills it. That was survivable only while the target under-enforced: with foreign keys dropped (PR-T3) the cascade never happened, so the run was fast for the wrong reason.\n\nThe fix is not to stop reproducing the hazard — reproducing it is the product. It is that `validate` must not have to SURVIVE an outage to REPORT one. Cap the apply with a `SET statement_timeout`, exposed as a flag with a documented default, and treat a cancellation (SQLSTATE 57014) as EVIDENCE rather than as a failure: the statement did not complete within the ceiling, so its duration is `>= ceiling`, which is precisely what the `outage` bucket in INV-DURATIONS-BUCKETS means. It is emphatically NOT a tool error (the tool worked) and NOT a clean apply failure (nothing was rejected) — and it can never license a PASS, because a statement that did not finish has not been shown to be safe.",
+          "depends_on": [],
+          "spec_refs": [
+            "PRD §10",
+            "RFC-0001 §9.1",
+            "INV-DURATIONS-BUCKETS",
+            "INV-CONFIDENCE-CAPPING"
+          ],
+          "acceptance_criteria": [
+            "A migration statement that exceeds the ceiling is cancelled, and `validate` returns rather than blocking.",
+            "A cancelled statement can never produce PASS; the verdict is at least WARN.",
+            "A cancellation is distinguished from a rejected statement (a real FAIL) and from a tool error (exit 3).",
+            "The ceiling is a flag with a documented default, and disabling it requires an explicit opt-in.",
+            "The `cascade_delete_fanout` corpus case still reports WARN — the timeout adds evidence and does not overturn the expected verdict.",
+            "The full suite completes well inside the Go test timeout with foreign keys enforced."
+          ],
+          "verification": [
+            "go test ./internal/validate/ ./corpus/harness/ -count=1",
+            "go test ./test/action/ ./test/demo/ -count=1 against PostgreSQL 16",
+            "End-to-end: the cascade_delete_fanout case returns WARN without hanging"
+          ],
+          "artifacts": [
+            "internal/validate/capture.go",
+            "internal/validate/validate.go",
+            "cmd/validate.go"
+          ],
+          "type": "fix",
+          "passes": true,
+          "status": "done",
+          "verified": "Verified end to end against PostgreSQL 16.13. The `cascade_delete_fanout` corpus case — which had turned a 190-second suite into a 10-minute hard timeout the moment PR-T3 made the target enforce real foreign keys — now returns WARN with RS-PERF-001 in 98 seconds. The expected verdict was PRESERVED, not relaxed: the timeout adds evidence and does not overturn the analyzer's conclusion. The three slow suites (test/action, test/demo, corpus/harness) complete in 4m00s together.\n\nThe hazard was never the bug. Reproducing it is the product: that DELETE matches 244,223 parent rows, each cascading into a 10,000,000-row child table with no index on the referencing column, because the fixture records none — production has none. Postgres seq-scans 10M rows per deleted parent. The bug was that `validate` had to SURVIVE the outage in order to REPORT it.\n\n`ApplyWithTimeout` sets a session `statement_timeout` (default 60s, `--statement-timeout`, `0` disables it as a deliberate opt-in). Session-level rather than per-statement so it also covers CREATE INDEX CONCURRENTLY, which runs outside a transaction, and so a migration's own explicit SET can still override it. A server that refuses the SET does not stop the run; it stops rowshape claiming a ceiling is in force.\n\nThe load-bearing decision is that a cancellation is a THIRD outcome, not a flavour of failure (recorded as D-019). A rejected statement is a real FAIL — the data or the schema said no. A cancelled one said nothing at all: it did not finish, which is evidence its duration is at least the ceiling — precisely what the `outage` bucket means (INV-DURATIONS-BUCKETS). So `Capture.TimedOut` is kept separate from `Capture.Success`, and the statement's SQLSTATE 57014 is CLEARED rather than carried, because leaving it would report an outage as though a constraint had been violated. The verdict floors to WARN: FAIL would assert a defect nobody observed, PASS would certify a statement that never completed — the same rule INV-CONFIDENCE-CAPPING states for weak facts, applied to an absent observation.\n\nSixty seconds is chosen against what the number is used for, not against how long a real migration takes: hydrated data is a fraction of production and `validate` runs inside an agent's turn, so a statement still running after a minute there is already decisively in the slow/outage buckets.\n\nTests: six in internal/validate/timeout_test.go — a timed-out capture cannot PASS and floors to WARN; a clean capture still PASSes (the floor must not fire spuriously); a REJECTED statement still FAILs (collapsing the two would downgrade every real failure); a live pg_sleep(30) is cancelled inside 10s with TimedOut set, no SQLSTATE, and Success intact; with the ceiling disabled no timeout is claimed; and fast statements are untouched by the ceiling. Docs: `--statement-timeout` documented in docs/action.md with the WARN floor explained; D-019 records the decision and the table of the three outcomes."
+        },
+        {
           "id": "PR-T3",
           "priority": 3,
           "found_by_deep_dive": "`INSERT INTO app.categories (id, parent_id, name) VALUES (99999, 88888, 'orphan')` against a self-referencing FK with ON DELETE CASCADE. The source database: `ERROR: insert or update on table \"categories\" violates foreign key constraint \"categories_parent_id_fkey\"`. rowshape: PASS, exit 0. `pg_constraint` on the hydrated target has no `f` row at all. The fixture records the reference — column, target, on_delete, fanout, orphan_fraction — and none of it becomes a constraint.",
           "title": "Foreign keys never reach the disposable database — reproduced wrong PASS",
           "description": "Same root cause and same fix shape as PR-T2, but the stated blocker was different: ddl.go says a foreign key \"needs dependency-ordered loading\". It does not, if the constraint is added after loading rather than declared in CREATE TABLE — which is also how pg_dump does it, and it makes table load order irrelevant. The synthesis engine already assigns FK-consistent values (assignForeignKeys, hydrate/fanout.go), so the constraints should validate; where they do not, the per-constraint savepoint reports it rather than dropping it. ON DELETE and ON UPDATE actions must be carried through, because a migration that deletes parent rows behaves materially differently under CASCADE than under RESTRICT, and the fixture already records on_delete. Self-referencing FKs must work (the reproduced case) and so must cycles between two tables — both fall out of adding constraints after load.",
           "depends_on": [
-            "PR-T2"
+            "PR-T2",
+            "PR-T15"
           ],
           "spec_refs": [
             "RFC-0001 §6.6",
@@ -3190,8 +3227,9 @@
             "internal/target/ddl_test.go"
           ],
           "type": "fix",
-          "passes": false,
-          "status": "todo"
+          "passes": true,
+          "status": "done",
+          "verified": "Verified end to end against PostgreSQL 16.13. The reproduced wrong PASS is closed: `INSERT INTO app.categories (id, parent_id, name) VALUES (99999, 88888, 'orphan')` now returns FAIL with exit 1, matching the source database's `ERROR: insert or update on table \"categories\" violates foreign key constraint \"categories_parent_id_fkey\"`. Before this it returned PASS with exit 0. A valid insert (parent_id NULL) still PASSes, and a cascading DELETE still PASSes, so the fix did not simply make everything fail. `pg_get_constraintdef` for every constraint in the schema — primary keys, uniques, CHECKs and the self-referencing FK with ON DELETE CASCADE — is now IDENTICAL between source and hydrated target.\n\nddl.go's stated blocker was that \"a foreign key needs dependency-ordered loading\". It does not, if the constraint is ADDED AFTER the rows rather than declared in CREATE TABLE — which is also what pg_dump does. That makes table load order irrelevant, and it is what makes self-references and cycles work; a test asserts no FOREIGN KEY appears in DDL (which runs before any row exists) and that a two-table cycle yields two constraints.\n\nThe fixture gained three fields on Reference: `name`, `on_update`, and `validated`. `name` is the one that matters most and is not cosmetic — a COMPOSITE key is recorded as one entry per column pair so `fanout` stays per-column, and without the shared name a consumer cannot tell `FOREIGN KEY (a, b) REFERENCES t (x, y)` from two independent single-column keys, which constrain different things. addForeignKeys groups by name and preserves column order within each group. A reference with no name (a fixture written before the field, or a hand-authored one) still becomes a constraint rather than being merged with an unrelated one. `on_update` is recorded for the same reason `on_delete` is: a migration rewriting parent keys behaves differently under CASCADE than under RESTRICT. NOT VALID is preserved, since validating such a key here would make the target reject data production holds and would leave a migration's own VALIDATE CONSTRAINT nothing to do. An unrecognized referential action renders nothing rather than a guess, and a `to` that is not schema.table.column is skipped rather than pointed somewhere production does not.\n\nForeign keys go through the same per-constraint savepoint as CHECKs (PR-T2's execGuarded), so one the synthesized data cannot satisfy is REPORTED by `hydrate` and `validate` rather than dropped silently or taking the load down.\n\nTHIS TASK UNCOVERED PR-T15 and could not land without it. With real foreign keys the `cascade_delete_fanout` corpus case stopped being a paper hazard: its DELETE cascades through 10M rows with no index on the referencing column, and the suite went from 190 seconds to a 10-minute hard timeout. The target was faithfully reproducing the exact outage the case exists to describe, and `validate` had no way to stop — closed by PR-T15's apply ceiling.\n\nTests: eight in internal/target/fk_ddl_test.go (statement shape; all five referential actions with no_action correctly omitted; composite grouping by name; separate constraints staying separate; unnamed references staying separate with no internal key leaking into SQL; NOT VALID preserved; unusable `to` skipped; no FK in CREATE TABLE plus a two-table cycle) and two DB-backed in internal/profile/reference_test.go (composite key records the shared name and both actions; a NOT VALID key is recorded as such while a validated one carries no field). RFC §6.6 documents `name`, `on_update`, `validated`, and the MUST that a consumer recreate references and add them after rows. Full suite green with ROWSHAPE_TEST_PG_DSN set."
         },
         {
           "id": "PR-T4",
@@ -3223,8 +3261,9 @@
             "RFC-0001-rowshape-fixture-spec.md"
           ],
           "type": "fix",
-          "passes": false,
-          "status": "todo"
+          "passes": true,
+          "status": "done",
+          "verified": "Closed by the same catalog and DDL work as PR-T1 (the index-fidelity half), and verified separately here against PostgreSQL 16.13.\n\nThe reproduced wrong PASS is closed: inserting a row that duplicates an existing (customer_id, created_at) with a DIFFERENT total now returns FAIL, matching the source database's `ERROR: duplicate key value violates unique constraint \"orders_cust_created\"`. Before this the target held `UNIQUE (customer_id, created_at, total)` — strictly weaker than production's `UNIQUE (customer_id, created_at) INCLUDE (total)` — and returned PASS with exit 0.\n\nCriterion 1: the catalog read splits indkey at indnkeyatts, so key columns and INCLUDE payload are recorded separately, and createIndex renders `INCLUDE (...)` outside the key list. `diff` of `indexdef` for every index in the schema between source and hydrated target is empty, so the target's uniqueness matches the source's exactly. Criterion 3: a non-unique covering index round-trips through the same path; splitKeyAtts clamps an out-of-range nkeyatts to \"all of it is key\", the reading that over-constrains rather than under-constrains.\n\nCriterion 4: RFC §6.5 documents `include` with the reason it must not be folded into the key, the published JSON Schema carries it, and the conformance suite now has `checkIndexInclude` — a MUST that fires when a column appears in both `columns` and `include`, with fixtures/invalid/include-in-key.yaml as the reference violation. That check is what makes the rule enforceable for a third-party emitter rather than only for rowshape's own.\n\nTests: TestPullSplitsIncludeFromIndexKey (DB-backed, asserts key and payload and that uniqueness survives), TestSecondaryIndexKeepsIncludeOutOfKey (asserts `total` is absent from the key list, present in INCLUDE, and the index is still UNIQUE), and the conformance case. The explicit Index marshaller also had to be taught the field — exactly the trap its own comment warns about, and the reason the first end-to-end run still showed no `include` in the emitted YAML."
         },
         {
           "id": "PR-T5",
@@ -3257,8 +3296,9 @@
             "RFC-0001-rowshape-fixture-spec.md"
           ],
           "type": "fix",
-          "passes": false,
-          "status": "todo"
+          "passes": true,
+          "status": "done",
+          "verified": "Verified end to end against PostgreSQL 16.13. Both reproduced wrong verdicts are closed, and `attidentity`/`attgenerated` for every column of the schema are now IDENTICAL between source and hydrated target.\n\n`UPDATE app.orders SET total = 0` against a `GENERATED ALWAYS AS (subtotal + tax) STORED` column now returns FAIL, matching the source database's `ERROR: column \"total\" can only be updated to DEFAULT`. Before this it returned PASS with exit 0. The target computes the column for real: `SELECT count(*) FROM app.orders WHERE total <> subtotal + tax` is 0.\n\n`INSERT` omitting the identity column now succeeds in the target, matching production. That took TWO fixes, and the second was only visible end to end. Rendering `GENERATED BY DEFAULT AS IDENTITY` is not enough: hydration supplies explicit ids (a child table's foreign keys have to point at the ids its parent was actually loaded with), and an identity sequence does not observe explicit inserts — so it still read 1 while the table held 1..200, and the first INSERT that omitted the column collided with the primary key. `identityResets` now issues a setval past the loaded rows, over a subquery so it is correct whatever --scale or --max-rows actually loaded, and COALESCE handles the empty table. pg_dump does the same thing for the same reason.\n\nSpec additions, both privacy-treated as DDL like a CHECK (§6.4): `identity: always|by_default` — an ALWAYS column REJECTS an explicit value in an INSERT unless the statement says OVERRIDING SYSTEM VALUE, so they are not interchangeable, and a fixture with no `identity` field renders BY DEFAULT because that is the permissive reading hydration can still write to. And `generated_expression`, verbatim at standard and `opaque` under strict, because `generated: stored` alone says a column is computed but not FROM WHAT. Where the expression is opaque or absent the column is created ordinary AND REPORTED (LoadReport.UnreproducibleGenerated, surfaced by both hydrate and validate), because the target is then more permissive than production — the direction that turns a real FAIL into a PASS. An identity column's implicit `nextval(...)` default is deliberately not captured as a generation expression: it would name a sequence the target does not have.\n\nhydrate stops supplying values for STORED generated columns entirely — Postgres rejects them in an INSERT column list, and the value the database computes IS the production shape, more faithfully than synthesis could invent. Identity columns are deliberately NOT dropped, for the foreign-key reason above. generatedByDatabase is the single predicate both the DDL and the insert-list decisions read, so they cannot disagree; the unsupported-type refusal skips those columns too, since a column the database computes needs no synthesis rule.\n\nTHIS TASK UNCOVERED PR-T16: the same end-to-end INSERT also revealed that column DEFAULTs are not recorded at all, so an INSERT omitting a NOT NULL column that production defaults fails in the target and succeeds in production. Recorded as its own task rather than folded in.\n\nTests: seven in internal/target/generated_ddl_test.go (both clauses rendered; ALWAYS vs BY DEFAULT; missing kind defaults permissive; opaque and empty expressions not invented AND reported; a reproducible column not reported as a limitation; setval shape; no reset for a table without an identity column) and two DB-backed in internal/profile/generated_test.go (both identity kinds and the expression recorded, with an identity column carrying no generation expression and a merely-defaulted column not reported as generated; strict privacy makes the expression opaque while `generated: stored` survives). Full suite green with ROWSHAPE_TEST_PG_DSN set."
         },
         {
           "id": "PR-T6",
@@ -3330,6 +3370,43 @@
           "status": "todo"
         },
         {
+          "id": "PR-T16",
+          "priority": 8.5,
+          "found_by_deep_dive": "Found while verifying PR-T5. `INSERT INTO app.orders (customer_id, subtotal, tax, status, created_at) VALUES (...)` — omitting `payload`, which production declares `NOT NULL DEFAULT '{}'::jsonb` — succeeds against the source database and fails against the hydrated target with `null value in column \"payload\" violates not-null constraint`. The fixture records `nullable: false` and nothing else: column DEFAULTs are not read at all.",
+          "title": "Column DEFAULTs are not recorded, so an ordinary INSERT fails in the target",
+          "description": "`pull` reads pg_attribute but never pg_attrdef for an ordinary column, so a DEFAULT — the thing that makes a NOT NULL column insertable without naming it — is absent from the fixture, and target.createTable emits the column as bare NOT NULL. Every migration that inserts or backfills without naming every NOT NULL column therefore fails in the disposable database and succeeds in production: a WRONG FAIL, and on the most ordinary statement there is.\n\nIt also runs the other way. `ADD COLUMN ... NOT NULL DEFAULT <expr>` is THE canonical migration-safety question — whether it rewrites the table depends on the default being non-volatile, which is version-conditional (D-006/D-007) and already drives the finding rules. Those rules reason about the default in the MIGRATION; nothing knows what defaults the table already has, so a fixture cannot answer 'does this column already have one'.\n\nThe expression is DDL, like a CHECK (§6.4) and like a generated column's expression (PR-T5), and takes the same privacy treatment: verbatim at standard, `opaque` under strict, never invented. An identity column's implicit sequence default must NOT be recorded as an expression — it is already carried by `generated: identity`, and emitting `nextval(...)` would name a sequence the target does not have.",
+          "depends_on": [
+            "PR-T5"
+          ],
+          "spec_refs": [
+            "RFC-0001 §6.1",
+            "RFC-0001 §6.4",
+            "PRD §10",
+            "D-006",
+            "D-007"
+          ],
+          "acceptance_criteria": [
+            "The fixture records a column's DEFAULT expression, and `pull --privacy strict` records it as `opaque`.",
+            "target.createTable emits the recorded DEFAULT, and an INSERT that omits a NOT NULL column carrying one succeeds — matching the source database.",
+            "An identity column does not emit a `nextval(...)` default; `generated: identity` remains the only record of it.",
+            "An `opaque` or absent default creates the column without one, and that is reported, since the target then rejects writes production accepts.",
+            "RFC §6.1 documents the field and the published JSON Schema carries it."
+          ],
+          "verification": [
+            "go test ./internal/profile/ ./internal/target/ -count=1",
+            "End-to-end against PostgreSQL 16: an INSERT omitting a defaulted NOT NULL column succeeds against source and target alike"
+          ],
+          "artifacts": [
+            "internal/fixture/model.go",
+            "internal/profile/catalog.go",
+            "internal/target/ddl.go",
+            "RFC-0001-rowshape-fixture-spec.md"
+          ],
+          "type": "fix",
+          "passes": false,
+          "status": "todo"
+        },
+        {
           "id": "PR-T8",
           "priority": 8,
           "found_by_deep_dive": "`app.audit_scratch` has `rows: 0` in the fixture and one synthesized row in the SQL hydrate emits: `INSERT INTO \"app\".\"audit_scratch\" (\"id\", \"note\") VALUES (0, 'val_491776')`. So `ALTER TABLE app.audit_scratch ADD COLUMN required_note text NOT NULL` — which the source database performs without complaint, because there are no rows to fail — returns FAIL from rowshape.",
@@ -3357,8 +3434,9 @@
             "internal/hydrate/engine_test.go"
           ],
           "type": "fix",
-          "passes": false,
-          "status": "todo"
+          "passes": true,
+          "status": "done",
+          "verified": "Verified end to end against PostgreSQL 16.13. `ALTER TABLE app.audit_scratch ADD COLUMN required_note text NOT NULL` against a table the fixture declares `rows: 0` now returns PASS, matching the source database, which performs it without complaint precisely because there are no rows to fail. Before this it returned FAIL.\n\nhydratedRowCount floored every table at 1, commented \"so every table gets exercised\". That intent is right for `--scale 0.001` against a populated table and wrong for a table production says is empty: emptiness is a FACT the fixture recorded, and overriding it invents a row that does not exist. The consequence was a false alarm on the most common safe migration there is — adding a NOT NULL column to a new or archival table — which is worse than noise, because an agent trained by the rule to trust FAIL will rewrite a migration that was already correct.\n\nThe floor now applies only when the declared count is greater than zero, so the original intent is preserved exactly: a non-empty table scaled below one row still gets one.\n\nTests: three in internal/hydrate/emptytable_test.go — an empty table hydrates zero rows with and without --max-rows (and a negative declared count is not a row count either); a non-empty table scaled to zero still floors at 1 and a single-row table stays at 1; and end to end through Generate, the empty table produces no rows AND PlanRows reports 0, so the plan does not claim rows it will not create."
         },
         {
           "id": "PR-T9",
@@ -3456,8 +3534,9 @@
             "internal/profile/columns_test.go"
           ],
           "type": "fix",
-          "passes": false,
-          "status": "todo"
+          "passes": true,
+          "status": "done",
+          "verified": "Verified against PostgreSQL 16.13: a real `pull` of the test schema now reports zero columns with `distinct` greater than `rows`. Before this, `app.events.id` came back as 41,305 distinct over 40,000 rows and `app.orders.customer_id` as 60,706 over 60,000.\n\nHyperLogLog errs in BOTH directions (~1.6% at precision 14), so on a high-cardinality column its estimate routinely lands above the number of values there are. That is not merely imprecise, it is impossible: a consumer computing selectivity as distinct/rows gets a ratio above 1, which can flip an index-usefulness or fan-out judgement, and it makes the fixture fail its own §3 readability goal.\n\nThe clamp is against the number of values THE SKETCH ACTUALLY SAW, counted in the same loop that feeds it, rather than against the table's row count. That is the tighter bound (the query streams non-NULL values only) and it is correct for a mostly-null column, where the row count would be far too loose a ceiling. It costs one increment.\n\nDeliberately NOT changed: `error` is kept and the confidence stays `measured`. The clamp removes an impossible reading; it does not turn an estimate into an exact count, and claiming otherwise would license a PASS this fact cannot support (§7.4). And `value == seen` does not imply uniqueness — INV-UNIQUENESS forbids inferring `unique` from anything but an exact probe, and nothing on this path writes it.\n\nTests: internal/profile/hll_clamp_test.go is DB-backed and seeds the case that provokes the overshoot — a fully distinct 40,000-row column, where the true cardinality sits exactly at the bound the estimate must not cross — plus a half-NULL column, which fails if the clamp uses the row count instead of the observed count. It also asserts the confidence and the error survive."
         },
         {
           "id": "PR-T12",
@@ -3521,8 +3600,9 @@
             "README.md"
           ],
           "type": "ops",
-          "passes": false,
-          "status": "todo"
+          "passes": true,
+          "status": "done",
+          "verified": "Verified locally: `golangci-lint run` now reports `0 issues` where it previously refused to start at all with `can't load config: the Go language version (go1.25) used to build golangci-lint is lower than the targeted Go version (1.26.5)`. That was a lint job that never ran a single check, on a repo whose one-command verification is meant to be the thing you trust — `scripts/verify-all.sh` reported `FAIL golangci-lint` and exited non-zero for a toolchain reason, not a code reason.\n\nThe true floor was MEASURED, not guessed. Building with the `go` directive set to each candidate in turn: 1.22, 1.23 and 1.24 all fail on `modelcontextprotocol/go-sdk@v1.6.1 requires go >= 1.25.0`; 1.25.0 builds cleanly. So go.mod now declares 1.25.0 and not 1.26.5.\n\nThat matters beyond the lint job. The directive is a FLOOR on everyone who runs `go install github.com/rowshape/rowshape@latest` — one of the five advertised distribution channels — and 1.26.5 locked out anyone even one patch release behind, for nothing. The patch component that remains is forced by the dependency rather than chosen: a bare `go 1.25` sorts BELOW `1.25.0` in the module graph and does not satisfy the requirement, which is recorded in go.mod next to the directive so the next person does not \"fix\" it back.\n\nThe pinned golangci-lint version is kept explicit (not `latest`) for the reason ci.yml already gives, with a comment added that a pin must also be able to READ go.mod — the compatibility that broke here — so the two are moved together in future.\n\nREADME now states the minimum Go version in the Build section, which it did not before.\n\nRemaining verify-all skips are environmental, not defects: `goreleaser check` skips because goreleaser is not installed in this container, and TestContainerLifecycle skips because there is no Docker daemon. Both are documented as such in the README."
         },
         {
           "id": "PR-T14",

@@ -22,6 +22,14 @@ type LoadReport struct {
 	// reason: a CHECK production enforces and the target does not is a constraint a
 	// migration can violate and still be certified for.
 	SkippedConstraints []string
+	// UnreproducibleGenerated names the STORED generated columns the fixture does
+	// not describe well enough to recreate (no expression, or `opaque` under
+	// privacy:strict), so they were created as ordinary columns.
+	//
+	// Reported rather than passed over because the target then ACCEPTS writes
+	// production rejects: an UPDATE of a generated column fails in production with
+	// `column "total" can only be updated to DEFAULT` and succeeds here.
+	UnreproducibleGenerated []string
 }
 
 // Load orchestrates a full hydration into a target: it connects, creates the
@@ -67,7 +75,7 @@ func Load(ctx context.Context, t Target, f *fixture.Fixture, opts hydrate.Option
 		}
 	}
 
-	report := &LoadReport{Tables: map[string]int64{}}
+	report := &LoadReport{Tables: map[string]int64{}, UnreproducibleGenerated: UnreproducibleGenerated(f)}
 
 	for _, gt := range res.Tables {
 		n, err := insertRows(ctx, tx, gt)
@@ -110,6 +118,19 @@ func Load(ctx context.Context, t Target, f *fixture.Fixture, opts hydrate.Option
 		return nil, err
 	}
 	report.SkippedConstraints = skipped
+
+	// Advance each identity column's sequence past the values just loaded.
+	//
+	// Hydration supplies explicit ids (a child table's foreign keys have to point at
+	// the ids its parent was actually loaded with), and an identity sequence does not
+	// notice. It therefore still sits at 1 while the table holds 1..200, so the first
+	// INSERT that OMITS the column — the ordinary way to insert into an identity
+	// table, and the thing production does all day — collides with the primary key.
+	// That is a wrong FAIL: the migration is fine and the target's bookkeeping is not.
+	// pg_dump does the same thing for the same reason.
+	if _, err := execGuarded(ctx, tx, "rowshape_seq", identityResets(f)); err != nil {
+		return nil, err
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit: %w", err)

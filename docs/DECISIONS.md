@@ -616,3 +616,48 @@ deliberately, or implement the leaning and pay the retrofit.
 
 That is the only question in the file where the default that shipped contradicts
 the recorded intent.
+
+## D-019 — `validate` caps a migration statement at 60s, and a cancellation is evidence (PR-T15)
+
+Reproducing a hazard faithfully means reproducing how long it takes. Once
+PR-T3 made the disposable database enforce the foreign keys production has,
+the corpus's own `cascade_delete_fanout` case stopped being a paper hazard and
+became one: its `DELETE` matches 244,223 parent rows, each cascading to a
+10,000,000-row child table with **no index on the referencing column** (the
+fixture records none, because production has none). Postgres seq-scans 10M rows
+per deleted parent. The 190-second suite became a ten-minute hard timeout, and
+`validate` had no way to stop.
+
+The hazard is not the bug — reproducing it is the product. The bug is that
+**`validate` had to SURVIVE an outage in order to REPORT one.**
+
+**Decision.** `Apply` sets a session `statement_timeout`, default **60 seconds**,
+exposed as `--statement-timeout` (`0` disables it, deliberately opt-in).
+
+Sixty seconds is chosen against what the number is *used for*, not against how
+long a real migration takes. Hydrated data is a fraction of production and
+`validate` runs inside an agent's turn or a CI job; a statement still running
+after a minute on that data is already decisively in the slow/outage buckets,
+and running it to completion buys no information the ceiling has not given.
+
+**A cancellation is a third outcome, not a flavour of failure.** This is the
+load-bearing part:
+
+| outcome | what happened | verdict floor |
+| --- | --- | --- |
+| completed | nothing objected | whatever the analyzers say |
+| **rejected** | the data or the schema said no (SQLSTATE) | FAIL |
+| **cancelled** | nothing said anything; it did not finish | WARN |
+
+`Capture.TimedOut` is therefore kept separate from `Capture.Success`, and the
+cancelled statement's SQLSTATE is cleared rather than carried — leaving 57014 on
+it would report an outage as though a constraint had been violated.
+
+WARN, not FAIL, because FAIL asserts a defect nobody observed. WARN, not PASS,
+because a statement that never completed has not been shown to be safe — the
+same rule INV-CONFIDENCE-CAPPING states for weak facts, applied to an absent
+observation. A duration of "at least the ceiling" is precisely what the `outage`
+bucket means (INV-DURATIONS-BUCKETS).
+
+`cascade_delete_fanout` consequently still reports **WARN / RS-PERF-001**, in 98
+seconds instead of never: the expected verdict was preserved, not relaxed.

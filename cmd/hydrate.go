@@ -188,6 +188,7 @@ func loadIntoTarget(ctx context.Context, f *fixture.Fixture, genOpts hydrate.Opt
 	fmt.Fprintf(os.Stderr, "rowshape hydrate: loaded %d rows across %d tables\n", total, len(report.Tables))
 	warnSkippedIndexes("hydrate", report.SkippedIndexes)
 	warnSkippedConstraints("hydrate", report.SkippedConstraints)
+	warnUnreproducibleGenerated("hydrate", report.UnreproducibleGenerated)
 	return nil
 }
 
@@ -217,5 +218,19 @@ func warnSkippedConstraints(cmd string, skipped []string) {
 	for _, s := range skipped {
 		fmt.Fprintf(os.Stderr, "rowshape %s: could not apply a constraint from the fixture; "+
 			"the disposable database does not enforce what it enforces in production: %s\n", cmd, s)
+	}
+}
+
+// warnUnreproducibleGenerated reports STORED generated columns the fixture does
+// not describe well enough to recreate, so they became ordinary columns.
+//
+// The direction matters: the target is now more PERMISSIVE than production. An
+// UPDATE of a generated column fails in production with `column "total" can only
+// be updated to DEFAULT` and succeeds here, so the omission has to be visible.
+func warnUnreproducibleGenerated(cmd string, cols []string) {
+	for _, c := range cols {
+		fmt.Fprintf(os.Stderr, "rowshape %s: %s is a generated column but the fixture does not carry its "+
+			"expression, so it was created as an ordinary column; the disposable database will accept writes "+
+			"production rejects\n", cmd, c)
 	}
 }

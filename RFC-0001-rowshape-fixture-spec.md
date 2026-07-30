@@ -125,6 +125,7 @@ table is added; lists do not.
         distinct: { value: 1200000, confidence: exact, via: unique_index }
         unique: { value: true, confidence: exact, via: constraint }
         generated: identity
+        identity: by_default          # by_default | always
 
       email:
         type: text
@@ -161,6 +162,31 @@ must do so deliberately. Readers MAY accept a bare scalar as shorthand for
 Both matter and they are not the same fact: a column that is nullable but 0% null
 is the single most common source of a migration that passes staging and fails
 prod three weeks later, when the first null arrives.
+
+`generated` marks a column the database computes: `identity` or `stored`.
+
+For an identity column, `identity` records `always` or `by_default`. The
+difference is not cosmetic: an `ALWAYS` column REJECTS an explicit value in an
+INSERT unless the statement says `OVERRIDING SYSTEM VALUE`, so a migration that
+supplies one behaves differently on each. A consumer meeting `generated:
+identity` with no `identity` field SHOULD assume `by_default`, the permissive
+reading.
+
+For a `stored` column, `generated_expression` carries the generation expression
+verbatim. Without it the fixture says a column is computed but not from what, so
+a consumer rebuilds it as an ordinary column and the target then ACCEPTS an
+UPDATE production rejects with `column "total" can only be updated to DEFAULT`.
+It is DDL — the same class of information as a `CHECK` expression (§6.4) — and
+takes the same privacy treatment: verbatim at `standard`, the literal `opaque`
+under `privacy:strict`. A consumer MUST NOT invent a replacement expression: an
+invented one computes values production never held. Where the expression is
+`opaque` or absent, a consumer SHOULD create an ordinary column and REPORT that
+it did, since the target is then more permissive than production.
+
+A consumer that loads rows into an identity column with explicit values MUST
+advance that column's sequence past them. An identity sequence does not observe
+explicit inserts, so left alone it collides with the loaded rows on the first
+INSERT that omits the column — the ordinary way to insert into such a table.
 
 **Text columns MUST NOT emit `range`.** The min of a text column is a real value,
 verbatim. Only `length` statistics are permitted. The same applies to `bytea`.
@@ -295,7 +321,9 @@ production — and SHOULD report the index as unreproducible instead.
     references:
       - column: user_id
         to: public.users.id
+        name: orders_user_id_fkey
         on_delete: cascade
+        on_update: no_action
         fanout: { mean: 8.4, p50: 3, p95: 41, max: 12902, confidence: measured }
         orphan_fraction: { value: 0.0, confidence: exact, via: scan }
 ```
@@ -309,6 +337,28 @@ distribution, not merely the mean.
 constraint — common where constraints were added `NOT VALID`, or dropped and
 never restored. If nonzero, a migration adding `FOREIGN KEY ... VALIDATE` will
 fail, and the fixture is the only thing that knows.
+
+`name` is the constraint's own name. A COMPOSITE foreign key is recorded as one
+entry per column pair — so `fanout` stays per-column — and the shared `name` is
+what lets a consumer group them back into the single constraint they came from.
+Without it, `FOREIGN KEY (a, b) REFERENCES t (x, y)` is indistinguishable from
+two independent single-column keys, which constrain something else entirely. A
+migration naming the constraint (`DROP CONSTRAINT orders_user_id_fkey`) also has
+something to match against.
+
+`on_update` is recorded for the same reason `on_delete` is: a migration that
+rewrites parent keys behaves differently under `CASCADE` than under `RESTRICT`.
+`validated: false` marks a `NOT VALID` key.
+
+A consumer MUST recreate the recorded references as real foreign keys, with
+their referential actions, and MUST NOT validate one recorded `validated:
+false` — such a key is not enforced against existing rows, so validating it
+makes the target reject data production holds. A reference the target does not
+enforce is a rule a migration can break and be certified for: an insert of a row
+whose parent does not exist was reported as safe while the source database
+refused it. Constraints SHOULD be added AFTER rows are loaded, which removes any
+dependency on table load order and is what makes self-referencing keys and
+cycles between tables work.
 
 ### 6.7 User-defined types
 

@@ -335,12 +335,22 @@ func (r *reader) columns(ctx context.Context, oid uint32) (map[string]fixture.Co
 	// a domain over integer got no range and no histogram, so `pull` silently lost
 	// the shape of every domain-typed column, and hydrate then had nothing to
 	// generate from. Every atttypid has a pg_type row, so the join drops nothing.
+	// A STORED generated column's expression lives in pg_attrdef, the same place a
+	// DEFAULT does. Without it `generated: stored` says the column is computed but
+	// not from what, so a consumer rebuilt it as an ordinary column and the target
+	// accepted an UPDATE production rejects.
+	genExpr := `''`
+	if r.serverMajor >= 12 {
+		genExpr = `COALESCE(pg_get_expr(ad.adbin, ad.adrelid), '')`
+	}
 	q := `
 SELECT a.attnum, a.attname, format_type(a.atttypid, a.atttypmod),
        a.attnotnull, a.attidentity::text, ` + generated + `, a.atttypid,
-       CASE WHEN t.typtype = 'd' THEN format_type(t.typbasetype, t.typtypmod) ELSE '' END
+       CASE WHEN t.typtype = 'd' THEN format_type(t.typbasetype, t.typtypmod) ELSE '' END,
+       ` + genExpr + `
 FROM pg_attribute a
 JOIN pg_type t ON t.oid = a.atttypid
+LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
 WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped
 ORDER BY a.attnum`
 
@@ -361,8 +371,10 @@ ORDER BY a.attnum`
 			identity, generated string
 			typoid              uint32
 			domainBase          string
+			genExprText         string
 		)
-		if err := rows.Scan(&attnum, &name, &typ, &notnull, &identity, &generated, &typoid, &domainBase); err != nil {
+		if err := rows.Scan(&attnum, &name, &typ, &notnull, &identity, &generated, &typoid,
+			&domainBase, &genExprText); err != nil {
 			return nil, nil, err
 		}
 		if domainBase != "" {
@@ -386,8 +398,19 @@ ORDER BY a.attnum`
 		switch {
 		case identity == "a" || identity == "d":
 			col.Generated = "identity"
+			// ALWAYS vs BY DEFAULT is the difference between rejecting an explicit
+			// INSERT value and accepting it, so a migration that supplies one behaves
+			// differently on each.
+			if identity == "a" {
+				col.Identity = "always"
+			} else {
+				col.Identity = "by_default"
+			}
 		case generated == "s":
 			col.Generated = "stored"
+			// pg_attrdef holds the expression for a generated column exactly as it
+			// does for a DEFAULT; only a STORED column's is a generation expression.
+			col.GeneratedExpression = genExprText
 		}
 		cols[name] = col
 		order = append(order, name)
@@ -633,12 +656,18 @@ func parseOIDs(s string) []uint32 {
 	return out
 }
 
-// references reads foreign keys and their on_delete action. Fan-out and
-// orphan_fraction (the measured §6.6 fields) are added by P1-T11.
+// references reads foreign keys, their name, their referential actions and
+// whether they are validated. Fan-out and orphan_fraction (the measured §6.6
+// fields) are added by P1-T11.
+//
+// A COMPOSITE key becomes one entry per column pair, which is what fan-out wants
+// — but the entries carry the shared constraint NAME so a consumer can group them
+// back into the one constraint they came from. Without it, rebuilding produced two
+// independent single-column keys, which constrain something else entirely.
 func (r *reader) references(ctx context.Context, oid uint32) ([]fixture.Reference, error) {
 	const q = `
 SELECT con.conkey, con.confkey, con.confrelid, con.confdeltype::text,
-       refcl.relname, refns.nspname
+       refcl.relname, refns.nspname, con.conname, con.confupdtype::text, con.convalidated
 FROM pg_constraint con
 JOIN pg_class refcl ON refcl.oid = con.confrelid
 JOIN pg_namespace refns ON refns.oid = refcl.relnamespace
@@ -656,11 +685,15 @@ ORDER BY con.conname`
 		confrelid           uint32
 		delType             string
 		refTable, refSchema string
+		name                string
+		updType             string
+		validated           bool
 	}
 	var fks []fkRow
 	for rows.Next() {
 		var fk fkRow
-		if err := rows.Scan(&fk.conkey, &fk.confkey, &fk.confrelid, &fk.delType, &fk.refTable, &fk.refSchema); err != nil {
+		if err := rows.Scan(&fk.conkey, &fk.confkey, &fk.confrelid, &fk.delType, &fk.refTable,
+			&fk.refSchema, &fk.name, &fk.updType, &fk.validated); err != nil {
 			return nil, err
 		}
 		fks = append(fks, fk)
@@ -681,11 +714,21 @@ ORDER BY con.conname`
 			if i < len(refCols) {
 				refCol = refCols[i]
 			}
-			out = append(out, fixture.Reference{
+			ref := fixture.Reference{
 				Column:   localCols[i],
 				To:       fk.refSchema + "." + fk.refTable + "." + refCol,
+				Name:     fk.name,
 				OnDelete: onDeleteAction(fk.delType),
-			})
+				OnUpdate: onDeleteAction(fk.updType),
+			}
+			// Only recorded when false: an absent field means validated, which is the
+			// overwhelming majority, and writing `validated: true` on every reference
+			// would be noise in a format meant to be read (§3).
+			if !fk.validated {
+				v := false
+				ref.Validated = &v
+			}
+			out = append(out, ref)
 		}
 	}
 	return out, nil

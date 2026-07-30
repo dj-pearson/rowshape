@@ -148,6 +148,15 @@ func BuildResult(f *fixture.Fixture, c *Capture, analyzers []Analyzer, groundTru
 	if !c.Success {
 		overall = verdict.Combine(overall, verdict.VerdictFail)
 	}
+	// A statement cancelled by the apply ceiling is a THIRD outcome, and it floors
+	// to WARN rather than FAIL. Nothing rejected the migration — it simply did not
+	// finish inside the ceiling, which is evidence its duration is at least that
+	// (the `outage` bucket, INV-DURATIONS-BUCKETS), not evidence that it is broken.
+	// FAIL would assert a defect nobody observed; PASS would certify a statement
+	// that never completed as safe. WARN is the only honest floor.
+	if c.TimedOut {
+		overall = verdict.Combine(overall, verdict.VerdictWarn)
+	}
 
 	return verdict.Result{
 		Rowshape:   verdict.Rowshape,
