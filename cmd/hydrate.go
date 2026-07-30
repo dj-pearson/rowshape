@@ -187,6 +187,7 @@ func loadIntoTarget(ctx context.Context, f *fixture.Fixture, genOpts hydrate.Opt
 	}
 	fmt.Fprintf(os.Stderr, "rowshape hydrate: loaded %d rows across %d tables\n", total, len(report.Tables))
 	warnSkippedIndexes("hydrate", report.SkippedIndexes)
+	warnSkippedConstraints("hydrate", report.SkippedConstraints)
 	return nil
 }
 
@@ -199,6 +200,22 @@ func loadIntoTarget(ctx context.Context, f *fixture.Fixture, genOpts hydrate.Opt
 func warnSkippedIndexes(cmd string, skipped []string) {
 	for _, s := range skipped {
 		fmt.Fprintf(os.Stderr, "rowshape %s: could not create an index from the fixture; "+
+			"the disposable database does not enforce what it enforces in production: %s\n", cmd, s)
+	}
+}
+
+// warnSkippedConstraints reports deferred constraints (CHECKs) the target could
+// not apply, usually because the synthesized rows do not satisfy the domain logic
+// the constraint encodes.
+//
+// Reported for the same reason and more sharply than a skipped index: a CHECK
+// production enforces and the target does not is a rule a migration can break and
+// still be certified for, which is exactly the wrong PASS that made emitting these
+// necessary. An unenforced constraint the operator was told about is a known
+// limit; one nobody was told about is a bug in the verdict.
+func warnSkippedConstraints(cmd string, skipped []string) {
+	for _, s := range skipped {
+		fmt.Fprintf(os.Stderr, "rowshape %s: could not apply a constraint from the fixture; "+
 			"the disposable database does not enforce what it enforces in production: %s\n", cmd, s)
 	}
 }

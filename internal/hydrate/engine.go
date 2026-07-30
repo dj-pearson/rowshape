@@ -129,9 +129,16 @@ func generateTable(f *fixture.Fixture, name string, tbl fixture.Table, seed int6
 		fkRefs[ref.Column] = ref
 	}
 
+	// What the table's CHECK constraints say about each column's legal values. The
+	// disposable database now enforces those constraints (target.DeferredConstraints),
+	// so synthesis has to satisfy them or they get skipped — and a CHECK the target
+	// does not enforce is one a migration can violate and still be certified for.
+	domains := checkDomains(tbl)
+
 	for ci, col := range colNames {
 		c := tbl.Columns[col]
 		fk, isFK := fkAssign[col]
+		dom, constrained := domains[col]
 		for ord := int64(0); ord < n; ord++ {
 			var v any
 			switch {
@@ -141,11 +148,61 @@ func generateTable(f *fixture.Fixture, name string, tbl fixture.Table, seed int6
 				v = parentIDValue(seed, f, fkRefs[col], fk[ord], rowCounts[parentTable(fkRefs[col].To)])
 			default:
 				v = generateValue(f, seed, name, col, c, ord)
+				if constrained {
+					v = applyCheckDomain(v, dom, cellRNG(seed, name, col, ord))
+				}
 			}
 			gt.Rows[ord][ci] = v
 		}
 	}
 	return gt, nil
+}
+
+// applyCheckDomain brings a generated value inside what the column's CHECK
+// constraints allow, leaving it alone when they say nothing about it.
+//
+// A NULL is never touched: a CHECK is satisfied by NULL (it evaluates to unknown,
+// which does not fail the constraint), and the null fraction is a recorded fact
+// this must not disturb.
+func applyCheckDomain(v any, dom checkDomain, r *rng) any {
+	if v == nil {
+		return nil
+	}
+	// A literal set replaces the value outright, the same way an enum's labels do:
+	// the constraint says these are the only legal values, so nothing else will do.
+	if len(dom.Values) > 0 {
+		return dom.Values[r.intn(int64(len(dom.Values)))]
+	}
+	// Numeric bounds CLAMP rather than replace, so the column keeps the distribution
+	// the fixture recorded wherever that distribution already satisfies the bound.
+	return clampNumeric(v, dom.Min, dom.Max)
+}
+
+// clampNumeric brings a numeric value within inclusive bounds, preserving its Go
+// type so COPY still encodes it for the column. A non-numeric value is returned
+// unchanged — bounds cannot apply to it, and converting would be a guess.
+func clampNumeric(v any, min, max *float64) any {
+	switch n := v.(type) {
+	case int64:
+		f := clampFloat(float64(n), min, max)
+		return int64(f)
+	case int:
+		return int(clampFloat(float64(n), min, max))
+	case float64:
+		return clampFloat(n, min, max)
+	default:
+		return v
+	}
+}
+
+func clampFloat(f float64, min, max *float64) float64 {
+	if min != nil && f < *min {
+		f = *min
+	}
+	if max != nil && f > *max {
+		f = *max
+	}
+	return f
 }
 
 // generateValue synthesizes one cell. Nulls are placed by a deterministic

@@ -17,6 +17,11 @@ type LoadReport struct {
 	// the disposable database does not is a difference that can change a verdict, so
 	// the caller reports these rather than discarding them.
 	SkippedIndexes []string
+	// SkippedConstraints names the deferred constraints (today: CHECKs) that could
+	// not be applied, with the reason. Same rule as SkippedIndexes and for a sharper
+	// reason: a CHECK production enforces and the target does not is a constraint a
+	// migration can violate and still be certified for.
+	SkippedConstraints []string
 }
 
 // Load orchestrates a full hydration into a target: it connects, creates the
@@ -89,8 +94,44 @@ func Load(ctx context.Context, t Target, f *fixture.Fixture, opts hydrate.Option
 	// the fixture marks it non-unique and the engine duly generates repeats. Building
 	// afterwards means the index build is what fails, inside its savepoint, and the
 	// index is REPORTED as skipped rather than ending the run.
-	for i, stmt := range SecondaryIndexes(f) {
-		sp := fmt.Sprintf("rowshape_idx_%d", i)
+	skipped, err := execGuarded(ctx, tx, "rowshape_idx", SecondaryIndexes(f))
+	if err != nil {
+		return nil, err
+	}
+	report.SkippedIndexes = skipped
+
+	// Deferred constraints (CHECKs) run the same way, and after the rows for the
+	// same reason: a CHECK the synthesis engine cannot satisfy should fail as its
+	// own ADD CONSTRAINT inside a savepoint and be REPORTED, not take the load down
+	// and not — as it used to — be dropped silently, which let a migration violating
+	// a production CHECK come back PASS.
+	skipped, err = execGuarded(ctx, tx, "rowshape_con", DeferredConstraints(f))
+	if err != nil {
+		return nil, err
+	}
+	report.SkippedConstraints = skipped
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+	committed = true
+	return report, nil
+}
+
+// execGuarded runs each statement inside its own savepoint and returns the ones
+// that failed, with the reason, instead of aborting.
+//
+// The savepoint is not defensive style, it is what makes best-effort possible at
+// all: without one, the first error poisons the transaction and every later
+// statement fails with "current transaction is aborted" regardless of merit — so
+// one exotic index expression or one unsatisfiable CHECK would cost the whole
+// load. A returned entry is a difference between the target and production that
+// the caller MUST surface; silently discarding it is how a constraint production
+// enforces goes missing without anyone knowing.
+func execGuarded(ctx context.Context, tx pgx.Tx, prefix string, stmts []string) ([]string, error) {
+	var skipped []string
+	for i, stmt := range stmts {
+		sp := fmt.Sprintf("%s_%d", prefix, i)
 		if _, err := tx.Exec(ctx, "SAVEPOINT "+sp); err != nil {
 			return nil, fmt.Errorf("savepoint: %w", err)
 		}
@@ -98,19 +139,14 @@ func Load(ctx context.Context, t Target, f *fixture.Fixture, opts hydrate.Option
 			if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+sp); rbErr != nil {
 				return nil, fmt.Errorf("rollback to savepoint: %w", rbErr)
 			}
-			report.SkippedIndexes = append(report.SkippedIndexes, fmt.Sprintf("%s: %v", stmt, err))
+			skipped = append(skipped, fmt.Sprintf("%s: %v", stmt, err))
 			continue
 		}
 		if _, err := tx.Exec(ctx, "RELEASE SAVEPOINT "+sp); err != nil {
 			return nil, fmt.Errorf("release savepoint: %w", err)
 		}
 	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit: %w", err)
-	}
-	committed = true
-	return report, nil
+	return skipped, nil
 }
 
 // insertRows bulk-loads one table's generated rows using the binary COPY

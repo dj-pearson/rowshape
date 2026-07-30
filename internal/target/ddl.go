@@ -13,11 +13,17 @@ import (
 // nullability plus primary-key and unique constraints — the constraints the
 // synthesis engine reliably satisfies (RFC §13).
 //
-// CHECK expressions and foreign keys are intentionally NOT emitted here: a CHECK
-// can carry domain logic that obviously-fake values needn't satisfy, and a
-// foreign key needs dependency-ordered loading. Reintroducing and validating
-// those against hydrated data is the job of `validate` (phase 2), not of getting
-// shape onto disk.
+// CHECK expressions are NOT emitted here either, but they are no longer dropped:
+// they are rendered by DeferredConstraints and applied after the rows, each in
+// its own savepoint. This file used to say CHECKs were "intentionally NOT
+// emitted" because one "can carry domain logic that obviously-fake values needn't
+// satisfy", deferring them to `validate`. `validate` never picked them up, so the
+// deferral became a permanent hole in the ordinary case — nearly every production
+// table has a CHECK — and it was demonstrated to produce a WRONG PASS: an UPDATE
+// setting `status` to a value outside `CHECK (status IN (...))` returned PASS with
+// exit 0 while the source database refused it outright. See DeferredConstraints
+// for why the savepoint, not the omission, is the right answer to the original
+// worry.
 func DDL(f *fixture.Fixture) []string {
 	var stmts []string
 
@@ -117,6 +123,74 @@ func SecondaryIndexes(f *fixture.Fixture) []string {
 		}
 	}
 	return stmts
+}
+
+// DeferredConstraints renders the ALTER TABLE ... ADD CONSTRAINT statements for
+// the constraints that cannot go in CREATE TABLE, separately from DDL because
+// they are BEST-EFFORT in the same sense SecondaryIndexes is.
+//
+// Today that is CHECK constraints. They used to be dropped entirely, on the
+// reasoning that a CHECK "can carry domain logic that obviously-fake values
+// needn't satisfy" — true, but the wrong remedy, and the cost was a demonstrated
+// wrong PASS: an UPDATE writing a status outside `CHECK (status IN
+// ('pending','paid','shipped'))` returned PASS with exit 0 while the source
+// database refused it. A constraint the disposable database does not enforce is a
+// constraint a migration can violate and be certified for.
+//
+// The savepoint is what makes emitting them safe. There are three possible
+// behaviours and only one of them is honest:
+//
+//   - drop the constraint (what happened before) — silent, and the target
+//     certifies migrations production rejects;
+//   - emit it inside the main DDL transaction — one CHECK the synthesis engine
+//     cannot satisfy takes down the whole load for an otherwise fine schema;
+//   - emit it in a savepoint and REPORT the ones that fail — the operator learns
+//     exactly which constraints the target is not enforcing.
+//
+// The caller runs these the same way it runs SecondaryIndexes, and after the rows
+// for the same reason: a CHECK the hydrated data violates should fail as an ADD
+// CONSTRAINT inside its savepoint, not as a failed COPY that ends the run.
+func DeferredConstraints(f *fixture.Fixture) []string {
+	var stmts []string
+	for _, name := range sortedKeys(f.Tables) {
+		for _, con := range f.Tables[name].Constraints {
+			if stmt := addConstraint(name, con); stmt != "" {
+				stmts = append(stmts, stmt)
+			}
+		}
+	}
+	return stmts
+}
+
+// addConstraint renders one ALTER TABLE ... ADD CONSTRAINT, or "" for a kind that
+// CREATE TABLE already handled or that this version does not reconstruct.
+func addConstraint(table string, con fixture.Constraint) string {
+	if con.Name == "" {
+		return ""
+	}
+	switch con.Kind {
+	case "check":
+		// "opaque" is the placeholder privacy:strict leaves behind (§6.4). It is not a
+		// predicate, and inventing one would constrain hydrated data in a way production
+		// may not — the same call createType already makes for an opaque domain CHECK.
+		if con.Expression == "" || con.Expression == "opaque" {
+			return ""
+		}
+		stmt := fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s CHECK (%s)",
+			quoteTable(table), quoteIdent(con.Name), con.Expression)
+		// NOT VALID must be preserved. A NOT VALID constraint is not enforced against
+		// existing rows, so recreating it as validated would make the target reject data
+		// production holds — and a migration's own VALIDATE CONSTRAINT, which is the
+		// interesting statement, would then have nothing to validate.
+		if con.Validated != nil && !*con.Validated {
+			stmt += " NOT VALID"
+		}
+		return stmt
+	}
+	// primary_key and unique are emitted inline by createTable; exclusion and
+	// foreign_key are not reconstructed here. An unrecognized kind renders nothing
+	// rather than a guess.
+	return ""
 }
 
 // constraintBackedIndexes returns the index names that a PRIMARY KEY or UNIQUE

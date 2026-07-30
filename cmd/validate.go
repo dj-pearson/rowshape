@@ -165,6 +165,7 @@ func hydrateApplyEphemeral(ctx context.Context, f *fixture.Fixture, opts *valida
 	// database enforces less than production does, which is exactly the direction that
 	// turns a real FAIL into a PASS.
 	warnSkippedIndexes("validate", report.SkippedIndexes)
+	warnSkippedConstraints("validate", report.SkippedConstraints)
 
 	cap, err := applyAndCapture(ctx, eph, opts)
 	if err != nil {
