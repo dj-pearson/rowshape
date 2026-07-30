@@ -6,7 +6,7 @@
     "RFC-0001-rowshape-fixture-spec.md (Draft v0.3)"
   ],
   "build_status": {
-    "note": "Full A-to-Z build-out complete: every phase (0 through 5) carries tasks and milestones are finalized. Phase-5 remains deferred:true (recorded-now / built-later, cloud gated on traction per PRD §14). All stories are derived from PRD-rowshape-v1.md and RFC-0001 — EXCEPT phase-cr, whose 29 stories are derived from the full-codebase review rather than the PRD/RFC, and which is inserted at order 5 (ahead of the phase-4 launch surfaces, which moved to order 6; phase-5 to order 7). See phase-cr.scope_note for why it precedes the launch. PHASE-DD ADDED (order 6, pushing phase-4 to 7 and phase-5 to 8): seven defects found by driving the built binary against a REAL PostgreSQL 16 rather than hand-written fixtures — four of them made hydration impossible for ordinary schemas, two produced wrong verdicts, one aborted pull. Derived from that deep dive, not from the PRD/RFC; it also ADDS to the spec (RFC §6.7 user-defined types, §6.5 index `keys`).",
+    "note": "Full A-to-Z build-out complete: every phase (0 through 5) carries tasks and milestones are finalized. Phase-5 remains deferred:true (recorded-now / built-later, cloud gated on traction per PRD §14). All stories are derived from PRD-rowshape-v1.md and RFC-0001 — EXCEPT phase-cr, whose 29 stories are derived from the full-codebase review rather than the PRD/RFC, and which is inserted at order 5 (ahead of the phase-4 launch surfaces, which moved to order 6; phase-5 to order 7). See phase-cr.scope_note for why it precedes the launch. PHASE-DD ADDED (order 6, pushing phase-4 to 7 and phase-5 to 8): seven defects found by driving the built binary against a REAL PostgreSQL 16 rather than hand-written fixtures — four of them made hydration impossible for ordinary schemas, two produced wrong verdicts, one aborted pull. Derived from that deep dive, not from the PRD/RFC; it also ADDS to the spec (RFC §6.7 user-defined types, §6.5 index `keys`). PHASE-PR ADDED (order 7, pushing phase-4 to 8 and phase-5 to 9): fourteen gaps between the built binary and production, found by driving pull -> hydrate -> validate against a live PostgreSQL 16 schema built from what production schemas contain and the corpus does not. SEVEN ARE REPRODUCED WRONG VERDICTS — six of them wrong PASSES, each confirmed by running the same statement against the source database and watching Postgres reject what rowshape certified. One more stops `validate` running at all on any schema using an extension type. Derived from that dive, not from the PRD/RFC; it also ADDS to the spec (extensions, index `include`, generated expressions, partition key, `range` confidence). The pattern phase-dd named holds one level deeper: phase-dd caught the fixtures pull could not hydrate; this caught the ones that hydrate into a database that is NOT equivalent to production, which is the more dangerous failure because it is silent.",
     "sections_complete": [
       "meta",
       "project",
@@ -21,6 +21,7 @@
       "phase-3",
       "phase-cr",
       "phase-dd",
+      "phase-pr",
       "phase-4",
       "phase-5",
       "milestones"
@@ -3080,8 +3081,486 @@
       ]
     },
     {
-      "id": "phase-4",
+      "id": "phase-pr",
       "order": 7,
+      "name": "Production readiness — wrong-verdict closure and operational hardening",
+      "weeks": "11d (after phase-dd, still ahead of the phase-4 launch surfaces)",
+      "ships": "Fourteen gaps between the built binary and production, seven of them REPRODUCED WRONG VERDICTS on a live PostgreSQL 16 — a migration that Postgres rejects outright returning PASS with exit 0. Plus one that stops `validate` running at all on any schema using an extension type (citext, hstore, pgvector, postgis), an empty-table false FAIL, a verdict contract that reports FAIL with no finding and no remediation, a fixture-size budget guarded only by a synthetic input, a `pull` with no timeouts to point at production, and a lint job that cannot start.",
+      "source": "Deep-dive session: a local PostgreSQL 16.13 cluster (Docker-free initdb recipe), driven end to end through pull -> hydrate -> validate against a schema built from what production schemas actually contain and the corpus does not — identity and STORED generated columns, a range-partitioned parent with two partitions, a covering UNIQUE index with INCLUDE, an extension type (citext) and a trigram opclass index, CHECK constraints, a self-referencing FK with ON DELETE CASCADE, mixed-case quoted identifiers, an unlogged zero-row table, a materialized view, RLS, triggers — plus a 300-table schema for the size budget. Each defect was confirmed by running the SAME statement against the source database and comparing what Postgres did to what rowshape said.",
+      "scope_note": "Placed after phase-dd and still BEFORE the phase-4 launch, for the same reason phase-cr and phase-dd are: these are defects in the code the launch demos. THE PATTERN IS THE SAME ONE PHASE-DD NAMED, one level deeper. phase-dd drove real Postgres and caught the fixtures pull could not hydrate. This dive asked the next question — when hydration SUCCEEDS, is the disposable database actually equivalent to production? It is not. Seven facts production enforces (CHECK, FK, INCLUDE-key separation, generated columns, partitioning, exact extremes, empty tables) never reach the target, and every one of them was demonstrated to produce a verdict that disagrees with what the source database does. Six of the seven are WRONG PASSES, which INV-CONFIDENCE-CAPPING calls the one thing that must never be wrong: an agent gets PASS, opens the PR, and the migration fails in production. The unit tests and the 28-case corpus are all blind to this because they assert the verdict a fixture implies, never the verdict the SOURCE DATABASE would give.",
+      "definition_of_done": "For every gap below, the same statement run against the source database and against rowshape agrees. A schema using extension types hydrates. A migration that Postgres rejects never returns PASS. A migration that fails to apply returns a finding with remediation, not an empty findings list. `pull` is safe to point at a production primary. Full suite green with ROWSHAPE_TEST_PG_DSN set, and scripts/verify-all.sh reports no failures.",
+      "tasks": [
+        {
+          "id": "PR-T1",
+          "priority": 1,
+          "found_by_deep_dive": "A `citext` email column — the single most common reason a real Postgres schema depends on an extension. `pull` recorded the column as `type: citext` and nothing recorded that citext comes from an extension, so hydrate aborted the whole DDL transaction: `ddl failed: ERROR: type \"citext\" does not exist (SQLSTATE 42704)`, exit 3. Same failure shape for hstore, ltree, postgis geometry, and pgvector's `vector` — which is now in a large share of new schemas. On any such schema rowshape delivers nothing at all. The related half showed up one layer down: with citext swapped for text the load succeeded but `CREATE INDEX \"orders_email_trgm\" ON \"app\".\"orders\" USING gin (\"email\")` failed with `data type text has no default operator class for access method \"gin\"`, because the recorded index lost its `gin_trgm_ops` opclass. `orders_paid_idx` lost `DESC NULLS LAST` the same way.",
+          "title": "An extension type stops `validate` running at all",
+          "description": "The fixture records nothing about extensions, so a fresh disposable database — which has none installed beyond plpgsql — cannot be told to install them. Add an `extensions` block to the fixture (spec-additive, alongside §6.7 user-defined types) listing the extensions the read schema actually depends on: read pg_extension joined to what the in-scope columns, index opclasses, and type namespaces reference, so an unused extension is not carried. `target.DDL` emits `CREATE EXTENSION IF NOT EXISTS <name>` — with an explicit schema where the source has one — before CREATE TYPE and CREATE TABLE. An extension the disposable server does not have available must fail LOUDLY and name it (the operator can install it or use a different image); it must not silently degrade the type to text, because a citext column is case-insensitive and a text one is not, which is itself a wrong-verdict source. Separately, index keys must keep their opclass and ordering: `pull` already emits `keys` verbatim from pg_get_indexdef for EXPRESSION indexes (DD phase), but a plain-column index goes through `columns` and loses both. Record the per-key opclass/collation/ordering, or emit `keys` for any index whose definition is not reconstructible from bare column names.",
+          "depends_on": [],
+          "spec_refs": [
+            "RFC-0001 §6.5",
+            "RFC-0001 §6.7",
+            "RFC-0001 §13",
+            "INV-BLAST-RADIUS-ZERO"
+          ],
+          "acceptance_criteria": [
+            "A schema with a citext column and a `gin (col gin_trgm_ops)` index pulls, hydrates, and builds that index — no best-effort skip.",
+            "The fixture names the extensions it needs and only those; an extension present on the source but unused by the read schema is not recorded.",
+            "A disposable server missing a required extension fails with a message naming the extension, not a type-does-not-exist error, and never degrades the type.",
+            "An index recorded with `DESC NULLS LAST` or a non-default opclass is recreated with them.",
+            "`inspect --leaks` does not report the extensions block (an extension name is schema, not data)."
+          ],
+          "verification": [
+            "go test ./internal/profile/ ./internal/target/ ./internal/fixture/ -count=1",
+            "End-to-end against PostgreSQL 16: create a citext + pg_trgm schema, pull, hydrate --ephemeral, then diff pg_indexes between source and target"
+          ],
+          "artifacts": [
+            "internal/fixture/model.go",
+            "internal/profile/catalog.go",
+            "internal/target/ddl.go",
+            "RFC-0001-rowshape-fixture-spec.md"
+          ],
+          "type": "fix",
+          "passes": false,
+          "status": "todo"
+        },
+        {
+          "id": "PR-T2",
+          "priority": 2,
+          "found_by_deep_dive": "`UPDATE app.orders SET status = 'archived' WHERE status = 'shipped'` against a table carrying `CHECK (status IN ('pending','paid','shipped'))`. The source database: `ERROR: new row for relation \"orders\" violates check constraint \"orders_status_chk\"`. rowshape: `\"verdict\": \"PASS\"`, exit 0. The fixture records the constraint correctly (`kind: check, expression: ...`); target.DDL never emits it.",
+          "title": "CHECK constraints never reach the disposable database — reproduced wrong PASS",
+          "description": "internal/target/ddl.go's header says CHECK expressions are \"intentionally NOT emitted here\" because \"a CHECK can carry domain logic that obviously-fake values needn't satisfy\", and defers reintroducing them to \"`validate` (phase 2)\". Phase 2 shipped and nothing in internal/validate reintroduces them — grep for ADD CONSTRAINT across the package returns nothing. So the deferral became a permanent hole, and it is the ordinary case, not an exotic one: nearly every production table has a CHECK. The stated worry is real but has the wrong remedy. Emit recorded CHECKs, but AFTER the rows are loaded and as a separate, individually-reported step in the same shape SecondaryIndexes already uses: a savepoint per constraint, so a CHECK that synthesized data cannot satisfy is REPORTED as a constraint the disposable database is not enforcing, rather than silently dropped (today's behavior) or aborting the load (the feared behavior). That distinction is the whole point — an unenforced constraint the operator was told about is a known limit; one nobody was told about is a wrong PASS. A `privacy: strict` `opaque` expression is skipped, exactly as createType already skips an opaque domain CHECK.",
+          "depends_on": [],
+          "spec_refs": [
+            "RFC-0001 §6.4",
+            "RFC-0001 §13",
+            "PRD §10",
+            "INV-CONFIDENCE-CAPPING"
+          ],
+          "acceptance_criteria": [
+            "A migration whose statement violates a recorded CHECK returns FAIL, not PASS, and its exit code is non-zero.",
+            "A CHECK that hydrated data cannot satisfy is reported on stderr naming the constraint, and the run continues — it is neither silently dropped nor fatal.",
+            "An `opaque` (privacy:strict) CHECK expression is skipped without an error.",
+            "A NOT VALID recorded CHECK is recreated NOT VALID, so a migration's VALIDATE CONSTRAINT sees what production sees."
+          ],
+          "verification": [
+            "go test ./internal/target/ -run TestDDLCheck -count=1",
+            "go test ./internal/validate/ -count=1",
+            "End-to-end: validate the archived-status migration against PostgreSQL 16 and assert FAIL"
+          ],
+          "artifacts": [
+            "internal/target/ddl.go",
+            "internal/target/load.go",
+            "internal/target/ddl_test.go"
+          ],
+          "type": "fix",
+          "passes": false,
+          "status": "todo"
+        },
+        {
+          "id": "PR-T3",
+          "priority": 3,
+          "found_by_deep_dive": "`INSERT INTO app.categories (id, parent_id, name) VALUES (99999, 88888, 'orphan')` against a self-referencing FK with ON DELETE CASCADE. The source database: `ERROR: insert or update on table \"categories\" violates foreign key constraint \"categories_parent_id_fkey\"`. rowshape: PASS, exit 0. `pg_constraint` on the hydrated target has no `f` row at all. The fixture records the reference — column, target, on_delete, fanout, orphan_fraction — and none of it becomes a constraint.",
+          "title": "Foreign keys never reach the disposable database — reproduced wrong PASS",
+          "description": "Same root cause and same fix shape as PR-T2, but the stated blocker was different: ddl.go says a foreign key \"needs dependency-ordered loading\". It does not, if the constraint is added after loading rather than declared in CREATE TABLE — which is also how pg_dump does it, and it makes table load order irrelevant. The synthesis engine already assigns FK-consistent values (assignForeignKeys, hydrate/fanout.go), so the constraints should validate; where they do not, the per-constraint savepoint reports it rather than dropping it. ON DELETE and ON UPDATE actions must be carried through, because a migration that deletes parent rows behaves materially differently under CASCADE than under RESTRICT, and the fixture already records on_delete. Self-referencing FKs must work (the reproduced case) and so must cycles between two tables — both fall out of adding constraints after load.",
+          "depends_on": [
+            "PR-T2"
+          ],
+          "spec_refs": [
+            "RFC-0001 §6.6",
+            "RFC-0001 §13",
+            "PRD §10",
+            "INV-CONFIDENCE-CAPPING"
+          ],
+          "acceptance_criteria": [
+            "A migration that inserts an orphan row returns FAIL, not PASS.",
+            "A recorded ON DELETE CASCADE is recreated, and a migration deleting parent rows sees the cascade the source database would do.",
+            "A self-referencing FK and a two-table cycle both hydrate without a load-order error.",
+            "An FK that hydrated data cannot satisfy is reported naming the constraint; the run continues."
+          ],
+          "verification": [
+            "go test ./internal/target/ -run TestDDLForeignKey -count=1",
+            "End-to-end against PostgreSQL 16: pull the self-referencing schema, hydrate --ephemeral, and diff pg_constraint contype='f' between source and target"
+          ],
+          "artifacts": [
+            "internal/target/ddl.go",
+            "internal/target/load.go",
+            "internal/target/ddl_test.go"
+          ],
+          "type": "fix",
+          "passes": false,
+          "status": "todo"
+        },
+        {
+          "id": "PR-T4",
+          "priority": 4,
+          "found_by_deep_dive": "Source: `CREATE UNIQUE INDEX orders_cust_created ON app.orders USING btree (customer_id, created_at) INCLUDE (total)`. Hydrated: `CREATE UNIQUE INDEX orders_cust_created ON app.orders USING btree (customer_id, created_at, total)`. The disposable database enforces STRICTLY WEAKER uniqueness than production. Inserting a row duplicating an existing (customer_id, created_at) with a different total: source `ERROR: duplicate key value violates unique constraint \"orders_cust_created\"`; rowshape PASS, exit 0.",
+          "title": "A covering index's INCLUDE columns are flattened into its key — reproduced wrong PASS",
+          "description": "`pull` reads index columns from the catalog without distinguishing key columns (the first indnkeyatts) from INCLUDE payload columns, so a covering index's payload is emitted as if it were part of the key. On a non-unique index this only misstates the index's shape; on a UNIQUE one it silently widens the key, which is exactly the class of error that lets a migration violating a production constraint reach PASS. Add `include` to §6.5 alongside the `keys` field the DD phase added, have the catalog read split at indnkeyatts, and render `INCLUDE (...)` in createIndex. The same split applies to a UNIQUE CONSTRAINT backed by a covering index. Covering indexes are common precisely on the big hot tables rowshape is for, so this is not a corner case.",
+          "depends_on": [],
+          "spec_refs": [
+            "RFC-0001 §6.5",
+            "INV-UNIQUENESS",
+            "INV-CONFIDENCE-CAPPING"
+          ],
+          "acceptance_criteria": [
+            "A UNIQUE index with INCLUDE columns is recreated with the same key columns and the same payload, and its uniqueness in the target matches the source's.",
+            "A migration that violates the key-column uniqueness returns FAIL.",
+            "A non-unique covering index round-trips unchanged.",
+            "The RFC documents `include` in §6.5 and the conformance suite covers it."
+          ],
+          "verification": [
+            "go test ./internal/profile/ ./internal/target/ -count=1",
+            "go test ./fixture-spec/conformance/ -count=1",
+            "End-to-end against PostgreSQL 16: diff pg_indexes indexdef for the covering index between source and target"
+          ],
+          "artifacts": [
+            "internal/fixture/model.go",
+            "internal/profile/catalog.go",
+            "internal/target/ddl.go",
+            "RFC-0001-rowshape-fixture-spec.md"
+          ],
+          "type": "fix",
+          "passes": false,
+          "status": "todo"
+        },
+        {
+          "id": "PR-T5",
+          "priority": 5,
+          "found_by_deep_dive": "`UPDATE app.orders SET total = 0` where total is `GENERATED ALWAYS AS (subtotal + tax) STORED`. The source database: `ERROR: column \"total\" can only be updated to DEFAULT`. rowshape: PASS, exit 0. pg_attribute on the target shows attidentity and attgenerated empty for every column, while the source has `d` on id (GENERATED BY DEFAULT AS IDENTITY) and `s` on total. The fixture DOES record `generated: identity` and `generated: stored` on those columns; target.DDL ignores the field entirely.",
+          "title": "Identity and generated columns are dropped in the target — reproduced wrong PASS",
+          "description": "createTable renders only name, type, and NOT NULL. Three consequences, each producing a wrong verdict: a migration UPDATEing a generated column succeeds in the target and fails in production (reproduced); a migration INSERTing without the identity column fails in the target and succeeds in production; and ALTER rules differ for generated columns (a plain SET DEFAULT on one is an error). The fixture records THAT a column is generated but not the generation EXPRESSION, so `stored` needs a spec addition — the expression, subject to the same privacy treatment as a CHECK (§6.4), with `opaque` under strict. Where the expression is opaque or absent, the column must be created as a plain column AND that must be reported, since the target then permits writes production rejects. Identity needs no expression: render `GENERATED BY DEFAULT`/`ALWAYS AS IDENTITY` from the recorded value. hydrate must stop emitting values for STORED generated columns (Postgres rejects them in an INSERT column list), and for GENERATED ALWAYS AS IDENTITY must either omit the column or use OVERRIDING SYSTEM VALUE.",
+          "depends_on": [],
+          "spec_refs": [
+            "RFC-0001 §6.1",
+            "RFC-0001 §13",
+            "INV-CONFIDENCE-CAPPING"
+          ],
+          "acceptance_criteria": [
+            "A migration that updates a STORED generated column returns FAIL, matching the source database.",
+            "A migration that inserts a row without supplying the identity column succeeds in the target, matching the source database.",
+            "hydrate does not attempt to insert into a STORED generated column.",
+            "An `opaque`/absent generation expression creates a plain column and is reported, never silently accepted.",
+            "attidentity and attgenerated match between source and target for the reproduced schema."
+          ],
+          "verification": [
+            "go test ./internal/target/ ./internal/hydrate/ -count=1",
+            "End-to-end against PostgreSQL 16: diff attidentity/attgenerated between source and target, then validate the generated-column UPDATE and assert FAIL"
+          ],
+          "artifacts": [
+            "internal/fixture/model.go",
+            "internal/profile/catalog.go",
+            "internal/target/ddl.go",
+            "internal/hydrate/engine.go",
+            "RFC-0001-rowshape-fixture-spec.md"
+          ],
+          "type": "fix",
+          "passes": false,
+          "status": "todo"
+        },
+        {
+          "id": "PR-T6",
+          "priority": 6,
+          "found_by_deep_dive": "`app.events` is `PARTITION BY RANGE (occurred_at)` with two partitions. On the hydrated target `pg_class.relkind` is `r`, not `p`, and there are no partitions. `CREATE INDEX CONCURRENTLY events_kind_idx ON app.events (kind)`: the source database refuses outright — `ERROR: cannot create index on partitioned table \"events\" concurrently` — while rowshape returns PASS with zero findings. Separately, the parent's `bytes` is ABSENT from the fixture (the parent relation holds no data; the partitions do), so every size-driven duration bucket for a partitioned table extrapolates from nothing.",
+          "title": "A partitioned table hydrates as a plain table — reproduced wrong PASS",
+          "description": "OQ-PARTITIONS was resolved parent-only for the FIXTURE (§14.2: `partitions: {count, strategy, skew}`, no per-partition entries), and that decision is fine — but nothing consumes it. The parent is created as an ordinary table, so the target's lock and DDL semantics are those of an ordinary table, and partitioned tables are the norm on exactly the large tables rowshape exists for. The recorded block is also not sufficient to rebuild: the partition KEY is not recorded. Add the key expression to §14.2's partitions block, have DDL emit `PARTITION BY <strategy> (<key>)` plus `count` synthetic partitions covering the hydrated key range, and route hydrated rows through the parent. Bounds need not match production — the count, the strategy, and the fact that it IS partitioned are what change behavior. Fix `bytes` in the same task: the parent must report the total across its partitions (pg_partition_tree / pg_total_relation_size), because a 400GB partitioned table currently extrapolates as if it were empty, which understates every duration bucket that matters most.",
+          "depends_on": [],
+          "spec_refs": [
+            "RFC-0001 §14.2",
+            "OQ-PARTITIONS",
+            "INV-DURATIONS-BUCKETS"
+          ],
+          "acceptance_criteria": [
+            "A range-partitioned table is recreated as a partitioned table with the recorded number of partitions, and relkind matches the source.",
+            "`CREATE INDEX CONCURRENTLY` on a partitioned parent no longer returns PASS — it reports what the source database does.",
+            "The parent's `bytes` is the total across its partitions, and a duration bucket for a partitioned table is extrapolated from that total.",
+            "Hash- and list-partitioned tables round-trip too, or are explicitly refused with a message naming the unsupported strategy."
+          ],
+          "verification": [
+            "go test ./internal/profile/ ./internal/target/ ./internal/estimate/ -count=1",
+            "End-to-end against PostgreSQL 16: pull the partitioned schema, hydrate --ephemeral, and compare relkind plus partition count between source and target"
+          ],
+          "artifacts": [
+            "internal/fixture/model.go",
+            "internal/profile/partitions.go",
+            "internal/target/ddl.go",
+            "RFC-0001-rowshape-fixture-spec.md"
+          ],
+          "type": "fix",
+          "passes": false,
+          "status": "todo"
+        },
+        {
+          "id": "PR-T7",
+          "priority": 7,
+          "found_by_deep_dive": "`ALTER TABLE app.orders ADD CONSTRAINT orders_cust_max CHECK (customer_id <= 59900)`. True max is 60000, so the source database refuses: `ERROR: check constraint \"orders_cust_max\" of relation \"orders\" is violated by some row`. The fixture recorded `range: {min: 1, max: 59773}` — from a TABLESAMPLE — so RS-CONSTRAINT-010's comparison found no conflict, emitted no finding, and the verdict was PASS with exit 0. orders.id was recorded as 95..59867 against a true 95..60094.",
+          "title": "A sampled `range` understates the extremes and misses a real conflict — reproduced wrong PASS",
+          "description": "This is D-010 — `fixture.Range` carries no confidence — but the reproduced failure runs the OPPOSITE way to the one D-010 anticipated, which is why capping does not save it. Capping caps findings that EXIST; here the sampled range makes the finding not exist at all, and a missing finding is a PASS no cap can touch. Two halves, both needed. First, `range` must carry confidence: `exact` when read from a full pass or a small table read whole, `estimated` when derived from a TABLESAMPLE, and verdict.factConfidence must recognize `<table>.<col>.range` instead of resolving it to `absent`. Second, RS-CONSTRAINT-010 (and any finding whose ABSENCE rests on an extreme) must, when the range is `estimated` and the constraint bound falls inside or near the recorded interval, emit a WARN that says the sampled range cannot confirm or deny the conflict and names `pull --exact` as the resolution — the RFC §7.4 shape of \"estimated facts cannot license a PASS\", applied to a conclusion drawn from absence. Consider making min/max exact by default: on an indexed column `SELECT min/max` is an index scan, and correctness at the extremes is worth it.",
+          "depends_on": [],
+          "spec_refs": [
+            "RFC-0001 §6.1",
+            "RFC-0001 §7.4",
+            "D-010",
+            "INV-CONFIDENCE-CAPPING"
+          ],
+          "acceptance_criteria": [
+            "`range` carries a confidence and `pull` sets it to estimated whenever the values came from a sample.",
+            "verdict.factConfidence resolves a `.range` dependency to the recorded confidence, not to `absent`.",
+            "The reproduced ADD CONSTRAINT case no longer returns PASS: it is WARN or FAIL, and the message names `pull --exact`.",
+            "A range read exactly still licenses a PASS, so an exact fixture is not penalized.",
+            "No finding downgrades a dependency's confidence to reach a stronger verdict (INV-CONFIDENCE-CAPPING)."
+          ],
+          "verification": [
+            "go test ./internal/findings/ ./internal/verdict/ ./internal/profile/ -count=1",
+            "End-to-end against PostgreSQL 16: the CHECK (customer_id <= 59900) case must not return PASS",
+            "corpus: full 28-case run stays green"
+          ],
+          "artifacts": [
+            "internal/fixture/model.go",
+            "internal/profile/columns.go",
+            "internal/verdict/capping.go",
+            "internal/findings/rsconstraint.go",
+            "RFC-0001-rowshape-fixture-spec.md",
+            "docs/DECISIONS.md"
+          ],
+          "type": "fix",
+          "passes": false,
+          "status": "todo"
+        },
+        {
+          "id": "PR-T8",
+          "priority": 8,
+          "found_by_deep_dive": "`app.audit_scratch` has `rows: 0` in the fixture and one synthesized row in the SQL hydrate emits: `INSERT INTO \"app\".\"audit_scratch\" (\"id\", \"note\") VALUES (0, 'val_491776')`. So `ALTER TABLE app.audit_scratch ADD COLUMN required_note text NOT NULL` — which the source database performs without complaint, because there are no rows to fail — returns FAIL from rowshape.",
+          "title": "An empty table hydrates with one row — reproduced wrong FAIL",
+          "description": "hydratedRowCount (internal/hydrate/engine.go) floors every table at 1 row, commented \"so every table gets exercised\". That intent is right for `--scale 0.001` against a populated table and wrong for a table production says is empty: emptiness is a FACT the fixture recorded, and overriding it invents rows that do not exist. The consequence is a false alarm on the most common safe migration there is — adding a NOT NULL column to a new or archival table — which is worse than noise, because an agent trained by the rule to trust FAIL will rewrite a migration that was already correct. Floor at 1 only when the declared count is greater than zero.",
+          "depends_on": [],
+          "spec_refs": [
+            "RFC-0001 §9",
+            "RFC-0001 §10",
+            "INV-DETERMINISM"
+          ],
+          "acceptance_criteria": [
+            "A table declared `rows: 0` hydrates with zero rows and emits no INSERT.",
+            "`ALTER TABLE <empty> ADD COLUMN ... NOT NULL` returns PASS, matching the source database.",
+            "A non-empty table at a scale that would round to zero still gets at least one row (the original intent is preserved).",
+            "PlanRows reports 0 for an empty table so the plan does not claim rows it will not create."
+          ],
+          "verification": [
+            "go test ./internal/hydrate/ -run 'TestHydratedRowCount|TestPlanRows' -count=1",
+            "End-to-end against PostgreSQL 16: validate the empty-table ADD COLUMN NOT NULL migration and assert PASS"
+          ],
+          "artifacts": [
+            "internal/hydrate/engine.go",
+            "internal/hydrate/scale.go",
+            "internal/hydrate/engine_test.go"
+          ],
+          "type": "fix",
+          "passes": false,
+          "status": "todo"
+        },
+        {
+          "id": "PR-T9",
+          "priority": 9,
+          "found_by_deep_dive": "A migration referencing a table the fixture does not carry: human output `[FAIL] FAIL (fixture fixture@2026-07-30)` followed by `no findings`, and `--json` returns `{\"verdict\": \"FAIL\", \"findings\": null}`. The actual cause — `relation \"app.orders\" does not exist (42P01)` — is printed to stderr and appears NOWHERE in the machine-readable verdict.",
+          "title": "A migration that fails to apply returns FAIL with no finding and no remediation",
+          "description": "internal/validate/validate.go floors a failed apply to FAIL (correctly) but produces no finding for it, so the verdict carries no code, no location, and no remediation. INV-VERDICT-STABLE says `remediation` is mandatory on every error, and this is the most common real failure of all: a migration with a typo. It also breaks the wedge directly — the MCP `validate_migration` tool and the GitHub Action both render the Verdict struct and nothing else, so an agent is told FAIL and given nothing to act on, which is precisely the hand-waving the P4-T8 harness scores against. Emit a finding for a failed apply carrying the SQLSTATE, the message, and the file/line location the capture already knows, with remediation, under a permanent namespaced code. Distinguish it from a tool error: a statement Postgres rejected is a real FAIL (exit 1); a target that never came up is exit 3, which internal/toolerror already models. And `findings` must marshal as `[]` rather than `null`, so a consumer can iterate it without a nil check.",
+          "depends_on": [],
+          "spec_refs": [
+            "PRD §10",
+            "INV-VERDICT-SHAPE",
+            "INV-VERDICT-STABLE"
+          ],
+          "acceptance_criteria": [
+            "A migration that fails to apply yields at least one finding with a permanent code, the SQLSTATE, the statement location, and non-empty remediation.",
+            "`--json` never emits `\"findings\": null`; an empty result is `[]`.",
+            "A rejected statement is exit 1 (FAIL); an unreachable or unusable target stays exit 3 (tool error).",
+            "`rowshape explain <code>` documents the new code, and the docs-site findings page generated from the registry includes it.",
+            "The MCP validate_migration response carries the finding, so an agent can read the failure without stderr."
+          ],
+          "verification": [
+            "go test ./internal/validate/ ./internal/verdict/ ./internal/findings/ ./cmd/... -count=1",
+            "go test ./cmd/mcp/ -count=1",
+            "End-to-end against PostgreSQL 16: validate a migration with a deliberate typo and assert a finding with remediation in --json"
+          ],
+          "artifacts": [
+            "internal/validate/validate.go",
+            "internal/verdict/verdict.go",
+            "internal/findings/registry.go",
+            "cmd/validate.go"
+          ],
+          "type": "fix",
+          "passes": false,
+          "status": "todo"
+        },
+        {
+          "id": "PR-T10",
+          "priority": 10,
+          "found_by_deep_dive": "internal/profile/catalog.go opens `BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})` and sets no statement_timeout, no lock_timeout, and no idle_in_transaction_session_timeout; grep across the repo finds none of the three. No application_name is set either, so a DBA looking at pg_stat_activity during a pull sees an anonymous connection running unfamiliar aggregate queries against their largest tables.",
+          "title": "`pull` has nothing to stop it hurting the production database it is pointed at",
+          "description": "The entire premise is that `pull` runs against production, and `--exact` is documented as taking \"minutes to hours\". Today a single profiling query against a large table can run unbounded; a long-lived read transaction holds back vacuum on every table it has touched; and an ACCESS SHARE lock acquired behind a queued ALTER TABLE will stall every subsequent query on that table. None of that is hypothetical for the customer this is aimed at — it is the standard reason DBAs refuse to let a new tool near a primary. Set all three timeouts with SET LOCAL inside the read transaction, expose them as flags with documented defaults, and set `application_name` to `rowshape/<version>` so the connection is identifiable. A timeout must DEGRADE rather than abort: the affected fact drops to estimated or absent, the run continues, and the operational warning names the column and the flag that raises the ceiling — silent truncation is already forbidden and the Warn hook exists for exactly this. Document the read-only role and the timeouts on the privacy/install pages, because being able to point at this section is what gets the tool approved.",
+          "depends_on": [],
+          "spec_refs": [
+            "PRD §11",
+            "RFC-0001 §13",
+            "INV-BLAST-RADIUS-ZERO"
+          ],
+          "acceptance_criteria": [
+            "The read transaction sets statement_timeout, lock_timeout, and idle_in_transaction_session_timeout, each overridable by a flag with a documented default.",
+            "application_name identifies rowshape and its version on the connection.",
+            "A statement that hits the timeout degrades the affected fact and emits a warning naming the column and the flag; `pull` still writes a usable fixture.",
+            "No timeout value can be set to unlimited without an explicit opt-in flag.",
+            "The docs state what `pull` does to the database it reads, including the locks it takes and the timeouts it sets."
+          ],
+          "verification": [
+            "go test ./internal/profile/ -count=1",
+            "End-to-end against PostgreSQL 16: a deliberately tiny statement_timeout degrades facts and still emits a fixture",
+            "Verify application_name is visible in pg_stat_activity during a pull"
+          ],
+          "artifacts": [
+            "internal/profile/catalog.go",
+            "cmd/pull.go",
+            "docs-site/src/content/docs/privacy/index.md"
+          ],
+          "type": "feature",
+          "passes": false,
+          "status": "todo"
+        },
+        {
+          "id": "PR-T11",
+          "priority": 11,
+          "found_by_deep_dive": "`app.events` was emitted as `rows: 40000` with `id: distinct: {value: 41305, confidence: measured, via: hll, error: 0.008125}`, and `orders.customer_id` as 60706 distinct over 60000 rows. Both are inside HLL's error bound and both are impossible.",
+          "title": "A measured distinct count can exceed the row count",
+          "description": "HyperLogLog at precision 14 has ~1.6% error in either direction, so on a high-cardinality column its estimate routinely lands above the row count. A fixture that says a column has more distinct values than the table has rows is internally incoherent, and any consumer computing selectivity as distinct/rows gets a ratio above 1 — which can flip an index-usefulness or fan-out judgement, and makes the fixture fail its own §3 readability goal. Clamp the reported estimate to the row count, keep `error` so the uncertainty is still visible, and do not silently upgrade the confidence: the value is still `measured`. Where distinct == rows and `unique` is absent, be careful not to imply uniqueness — INV-UNIQUENESS forbids inferring it from anything but an exact probe.",
+          "depends_on": [],
+          "spec_refs": [
+            "RFC-0001 §6.1",
+            "RFC-0001 §7.2",
+            "INV-UNIQUENESS",
+            "OQ-HLL-PRECISION"
+          ],
+          "acceptance_criteria": [
+            "A measured distinct count is never emitted above the table's row count.",
+            "The `error` field and the `measured` confidence are unchanged by the clamp.",
+            "Clamping to equal the row count never causes `unique: true` to be inferred.",
+            "A property test over HLL output confirms the invariant across cardinalities that straddle the row count."
+          ],
+          "verification": [
+            "go test ./internal/profile/ ./internal/profile/hll/ -count=1",
+            "End-to-end against PostgreSQL 16: no column in a pulled fixture reports distinct greater than rows"
+          ],
+          "artifacts": [
+            "internal/profile/columns.go",
+            "internal/profile/hll/hll.go",
+            "internal/profile/columns_test.go"
+          ],
+          "type": "fix",
+          "passes": false,
+          "status": "todo"
+        },
+        {
+          "id": "PR-T12",
+          "priority": 12,
+          "found_by_deep_dive": "A real `pull` of a 300-table schema (5 columns each) emitted 347,329 bytes — 1,158 bytes per table. Extrapolated to the 200 tables RFC §3.3 names, a real fixture is about 231KB against a stated budget of \"under 100KB\". The only guard, TestEmitSizeUnder100KB, builds its 200-table fixture BY HAND with facts deliberately \"at estimated (bare)\" and passes at 101,424 bytes against a 102,400 limit — 976 bytes of headroom, under 1%. Nothing warns at pull time and `inspect` does not report size at all.",
+          "title": "The fixture size budget is guarded only by a synthetic fixture 2x lighter than a real pull",
+          "description": "This is the phase-dd pattern again, in the test suite: a hand-authored fixture is lighter than a real one in ways the author did not intend, so the budget test passes while the emitter overruns the budget by more than 2x. And the margin is so thin that any addition to the emitted vocabulary — several of which this phase adds — turns it red for reasons unrelated to the change. RFC §3.3 makes the budget load-bearing (\"If it doesn't [fit] it won't be committed\"), and it also bears on the MCP context discipline the README claims. Rebuild the guard from a REAL pull (a fixture generated against a scripted schema and committed, or generated in a DB-backed test) so the number it defends is the number users get. Then pick the honest resolution and record it: slim the emitted representation (histogram bounds are the largest single contributor), scope the claim to what the emitter actually achieves, or make the budget an enforced ceiling. `pull` must warn when the fixture it wrote exceeds the budget and name what reduces it (`--schema`, fewer histogram buckets); `inspect` must report the size.",
+          "depends_on": [],
+          "spec_refs": [
+            "RFC-0001 §3.3",
+            "PRD §8.2"
+          ],
+          "acceptance_criteria": [
+            "The size guard is computed from a fixture a real `pull` produced, not a hand-built one.",
+            "RFC §3.3's stated budget and the emitter agree — either the emitter fits or the claim is corrected, and which one was chosen is recorded in docs/DECISIONS.md.",
+            "`pull` warns when the fixture exceeds the budget and names the flags that reduce it.",
+            "`inspect` reports the fixture's size against the budget.",
+            "The guard has enough headroom that a legitimate vocabulary addition does not trip it accidentally."
+          ],
+          "verification": [
+            "go test ./internal/fixture/ -run TestEmitSize -count=1",
+            "End-to-end against PostgreSQL 16: pull a 200-table schema and compare the emitted size to the budget"
+          ],
+          "artifacts": [
+            "internal/fixture/emit_test.go",
+            "cmd/pull.go",
+            "cmd/inspect.go",
+            "RFC-0001-rowshape-fixture-spec.md",
+            "docs/DECISIONS.md"
+          ],
+          "type": "fix",
+          "passes": false,
+          "status": "todo"
+        },
+        {
+          "id": "PR-T13",
+          "priority": 13,
+          "found_by_deep_dive": "`scripts/verify-all.sh` reports `FAIL golangci-lint` and exits non-zero: `can't load config: the Go language version (go1.25) used to build golangci-lint is lower than the targeted Go version (1.26.5)`. CI pins golangci-lint v2.12.2 deliberately (ci.yml comments why), and that binary cannot read a module targeting 1.26.5 — so the lint job is red for a toolchain reason, on a repo whose one-command verification is supposed to be the thing you trust.",
+          "title": "The lint job cannot start, and go.mod pins a patch-level toolchain floor",
+          "description": "Two separate problems behind one symptom. The lint pin and the go directive have to be compatible, and today they are not, which means the repo's own \"one command proves it\" claim currently fails. Bump golangci-lint to a release built against the targeted Go, or lower the go directive — but not blindly, because the second problem is that `go 1.26.5` declares a PATCH-level floor. A `go install github.com/rowshape/rowshape@latest` from anyone whose toolchain is even 1.26.4 fails outright, and `go install` is one of the five advertised distribution channels. Nothing in the codebase needs a specific patch release. Declare the minor-level floor the code actually needs (`go 1.26`), use the `toolchain` directive if a newer toolchain is wanted for development, and keep verify-all green so a skipped or broken check cannot be mistaken for a passing one.",
+          "depends_on": [],
+          "spec_refs": [
+            "PRD §7",
+            "INV-SUPPLY-CHAIN"
+          ],
+          "acceptance_criteria": [
+            "`scripts/verify-all.sh` reports no failed checks with ROWSHAPE_TEST_PG_DSN set and the lint and goreleaser tools installed.",
+            "go.mod declares a minor-level floor, not a patch-level one, and the floor is the lowest version the code actually builds on.",
+            "The pinned golangci-lint version can read the module's go directive, and the pin stays explicit (not `latest`).",
+            "The docs state the minimum Go version for `go install`."
+          ],
+          "verification": [
+            "scripts/verify-all.sh",
+            "golangci-lint run",
+            "go build ./... on the declared minimum Go version"
+          ],
+          "artifacts": [
+            "go.mod",
+            ".github/workflows/ci.yml",
+            "scripts/verify-all.sh",
+            "README.md"
+          ],
+          "type": "ops",
+          "passes": false,
+          "status": "todo"
+        },
+        {
+          "id": "PR-T14",
+          "priority": 14,
+          "found_by_deep_dive": "corpus.yml runs `pg: [\"10\",\"11\",\"12\",\"13\",\"14\",\"15\",\"16\",\"17\"]` and the README documents a PG 10–17 matrix. PostgreSQL 18 is generally available, so the newest major anyone is deploying is the one major the version-conditional finding rules have never been run against.",
+          "title": "The supported-version matrix stops at PostgreSQL 17",
+          "description": "The whole point of the matrix (D-006/D-007, PRD §14, the corpus.yml header) is that a rule right on one major can be wrong on another, and the catalog reads already branch on serverMajor at 12 and 15. A new major is exactly where those branches break: catalog columns move, lock behavior for particular ALTERs changes, and a version-conditional rule that was correct through 17 may not be on 18. Add 18 to corpus.yml and conformance.yml, run the catalog reads and the full corpus against it, and record any per-major expected-verdict override the run turns up. Refusing to extrapolate without a known engine version is already an invariant; being unable to say anything at all about the current major is the same gap one step earlier. Also decide and record the support policy — how many majors back, and what happens on the next release — so this does not silently rot again.",
+          "depends_on": [],
+          "spec_refs": [
+            "PRD §14",
+            "D-006",
+            "D-007",
+            "INV-DURATIONS-BUCKETS"
+          ],
+          "acceptance_criteria": [
+            "corpus.yml and conformance.yml include PostgreSQL 18 and the full corpus is green on it.",
+            "Any behavior that differs on 18 is captured as a per-major override with a comment naming the change, not by weakening the assertion.",
+            "The README's stated version range matches the matrix.",
+            "The supported-majors policy is recorded in docs/DECISIONS.md."
+          ],
+          "verification": [
+            "go test ./corpus/harness/ -count=1 against a PostgreSQL 18 DSN",
+            "CI: corpus (PG 18) job green"
+          ],
+          "artifacts": [
+            ".github/workflows/corpus.yml",
+            ".github/workflows/conformance.yml",
+            "corpus/",
+            "README.md",
+            "docs/DECISIONS.md"
+          ],
+          "type": "ops",
+          "passes": false,
+          "status": "todo"
+        }
+      ]
+    },
+    {
+      "id": "phase-4",
+      "order": 8,
       "name": "GitHub Action, docs site (Cloudflare Pages), the agent-loop demo",
       "weeks": "12",
       "ships": "The three launch surfaces: a GitHub Action that runs `validate` in anyone's CI and renders the shared Verdict, the docs site (Astro Starlight on Cloudflare Pages), and the end-to-end agent-loop demo that is the launch and the week-12 kill-criterion gate.",
@@ -3350,7 +3829,7 @@
     },
     {
       "id": "phase-5",
-      "order": 8,
+      "order": 9,
       "name": "Findings breadth, version matrix depth, MySQL, then cloud only if pull-through is real",
       "weeks": "13+",
       "deferred": true,
@@ -3829,9 +4308,10 @@
         "name": "Launch: agent-loop demo closes with no human turn (Week-12 gate)",
         "target_week": "12",
         "phases": [
+          "phase-pr",
           "phase-4"
         ],
-        "definition": "GitHub Action runs `validate` in CI rendering the shared Verdict; docs site live on Cloudflare Pages with the narrow-and-true privacy claim; the agent-loop demo runs end-to-end (naive migration -> FAIL RS-LOCK-001 -> three-step backfill -> PASS) with no human turn, guarded by a CI regression job. This is v1-done and the launch.",
+        "definition": "The wrong-verdict gaps found by the production deep dive are closed (phase-pr: a migration Postgres rejects never returns PASS, and a schema using extension types hydrates) and then the launch surfaces ship. GitHub Action runs `validate` in CI rendering the shared Verdict; docs site live on Cloudflare Pages with the narrow-and-true privacy claim; the agent-loop demo runs end-to-end (naive migration -> FAIL RS-LOCK-001 -> three-step backfill -> PASS) with no human turn, guarded by a CI regression job. This is v1-done and the launch.",
         "kill_checkpoint": "Week 12 (PRD §14.1): if the demo doesn't work end-to-end without a human turn, the wedge isn't real — reassess.",
         "source": "PRD §13, §14 (phase 4), §14.1"
       },
