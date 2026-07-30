@@ -63,7 +63,11 @@ func (r *reader) profileTable(ctx context.Context, t tableRef, tbl *fixture.Tabl
 	}
 
 	for name, col := range tbl.Columns {
-		category := categorize(col.Type)
+		// profileType, not col.Type: a domain must be profiled as its base type, or a
+		// domain over integer is treated as text and loses its range and histogram.
+		// The fixture still RECORDS the domain name — that is the column's real type;
+		// only the profiling decision follows the base.
+		category := categorize(r.profileType(col.Type))
 
 		// Exact mode: null counts are exact and distinct is measured via a full
 		// HLL pass. Fast mode: both come from the planner's stats (estimated).
@@ -91,7 +95,7 @@ func (r *reader) profileTable(ctx context.Context, t tableRef, tbl *fixture.Tabl
 		case "numeric", "temporal":
 			// Numeric/temporal columns may carry a range (§6.2). Text and bytea
 			// MUST NOT (§6.1) — that is why range is only reached here.
-			rng, err := r.rangeStat(ctx, from, name, category)
+			rng, err := r.rangeStat(ctx, from, name, category, r.profileType(col.Type))
 			if err != nil {
 				return err
 			}
@@ -99,7 +103,7 @@ func (r *reader) profileTable(ctx context.Context, t tableRef, tbl *fixture.Tabl
 			// A skewed numeric column also earns a histogram — the only field that
 			// captures skew (§6.2). Privacy-gated at standard+ (§8.2).
 			if category == "numeric" {
-				hist, err := r.measureHistogram(ctx, from, name)
+				hist, err := r.measureHistogram(ctx, from, name, r.profileType(col.Type))
 				if err != nil {
 					return err
 				}
@@ -223,12 +227,33 @@ func (r *reader) columnStats(ctx context.Context, schema, table string) (map[str
 	return out, rows.Err()
 }
 
+// numericCast renders the expression that reads a numeric-category column as a
+// double precision, which the range aggregate needs.
+//
+// `money` is the exception that makes this a function. Postgres refuses to cast it
+// directly:
+//
+//	ERROR: cannot cast type money to double precision (SQLSTATE 42846)
+//
+// so profiling a table with a money column aborted the whole pull with a tool
+// error — every schema that prices anything in `money`. Routing through numeric,
+// which money DOES cast to, is the documented path. Only money takes the detour:
+// float8 does not round-trip through numeric for infinities on older majors, so
+// applying it to everything would trade this bug for a subtler one.
+func numericCast(col, typ string) string {
+	if strings.EqualFold(strings.TrimSpace(typ), "money") {
+		return fmt.Sprintf("(%s)::numeric::double precision", col)
+	}
+	return fmt.Sprintf("(%s)::double precision", col)
+}
+
 // rangeStat computes min/max (and, for numeric, mean) over the sample. All are
 // read as aggregates — no row values enter the profiler (INV-NO-ROWS).
-func (r *reader) rangeStat(ctx context.Context, from, col, category string) (*fixture.Range, error) {
+func (r *reader) rangeStat(ctx context.Context, from, col, category, typ string) (*fixture.Range, error) {
 	c := pgx.Identifier{col}.Sanitize()
 	if category == "numeric" {
-		q := fmt.Sprintf(`SELECT min((%s)::double precision), max((%s)::double precision), avg((%s)::double precision) FROM %s`, c, c, c, from)
+		num := numericCast(c, typ)
+		q := fmt.Sprintf(`SELECT min(%s), max(%s), avg(%s) FROM %s`, num, num, num, from)
 		var lo, hi, mean *float64
 		if err := r.tx.QueryRow(ctx, q).Scan(&lo, &hi, &mean); err != nil {
 			return nil, err

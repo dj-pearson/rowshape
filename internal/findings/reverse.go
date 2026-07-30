@@ -2,10 +2,10 @@ package findings
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/rowshape/rowshape/internal/fixture"
+	"github.com/rowshape/rowshape/internal/sqlkind"
 	"github.com/rowshape/rowshape/internal/validate"
 	"github.com/rowshape/rowshape/internal/verdict"
 )
@@ -237,44 +237,21 @@ func isNarrowing(oldType, newType string) bool {
 	return false
 }
 
+// The character-type readers below are thin aliases over internal/sqlkind, which
+// is the single home for this parsing now that internal/hydrate needs the same
+// reading of the same type strings (it must keep a synthesized value inside the
+// column it is COPYed into). The aliases stay so the analyzer code reads as it
+// did; the parsing itself has exactly one implementation.
+
 // isBoundedStringBase reports whether a base type is a character string type that
 // can carry a length modifier.
-func isBoundedStringBase(base string) bool {
-	switch base {
-	case "text", "varchar", "character varying", "character", "char":
-		return true
-	}
-	return false
-}
+func isBoundedStringBase(base string) bool { return sqlkind.IsBoundedStringBase(base) }
 
 // typeLength extracts the length modifier from a character type: typeLength(
 // "varchar(200)") is (200, true); typeLength("text") is (0, false). Only the
 // first modifier is read, so a stray precision list cannot mislead it.
-func typeLength(t string) (int, bool) {
-	i := strings.IndexByte(t, '(')
-	if i < 0 {
-		return 0, false
-	}
-	rest := t[i+1:]
-	j := strings.IndexByte(rest, ')')
-	if j < 0 {
-		return 0, false
-	}
-	inner := rest[:j]
-	if k := strings.IndexByte(inner, ','); k >= 0 {
-		inner = inner[:k]
-	}
-	v, err := strconv.Atoi(strings.TrimSpace(inner))
-	if err != nil {
-		return 0, false
-	}
-	return v, true
-}
+func typeLength(t string) (int, bool) { return sqlkind.TypeLength(t) }
 
-// baseSQLType strips a type's length/precision modifier ("varchar(255)" -> "varchar").
-func baseSQLType(t string) string {
-	if i := strings.IndexByte(t, '('); i >= 0 {
-		return strings.TrimSpace(t[:i])
-	}
-	return t
-}
+// baseSQLType strips a type's length/precision modifier ("varchar(255)" ->
+// "varchar"), also lowercasing and trimming it.
+func baseSQLType(t string) string { return sqlkind.BaseType(t) }

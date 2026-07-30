@@ -20,6 +20,7 @@ package fixture
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -35,9 +36,139 @@ type Fixture struct {
 	RowshapeFixture string           `yaml:"rowshape_fixture"`
 	Meta            Meta             `yaml:"meta"`
 	Tables          map[string]Table `yaml:"tables"`
+	// Types describes the user-defined types the columns reference — enums and
+	// domains (RFC §6.7). Keyed by the type's schema-qualified name, exactly as it
+	// appears in a column's `type`, so a column and its definition join by string
+	// equality.
+	//
+	// Without this section a column typed `app.status` names something the fixture
+	// never defines, so the DDL that receives hydrated rows cannot be built:
+	// hydration died on `type "app.status" does not exist`, meaning no schema using
+	// a Postgres enum could be hydrated at all. Optional and omitted when empty, so
+	// every fixture written before it stays valid (RFC §12).
+	Types map[string]UserType `yaml:"types,omitempty"`
 
 	// X holds preserved x_-prefixed vendor extensions (RFC §12).
 	X map[string]any `yaml:",inline"`
+}
+
+// UserType defines a user-defined column type (RFC §6.7).
+//
+// It carries only what is needed to RECREATE the type in a disposable database,
+// which is the whole reason it is recorded: an enum's labels are its full domain
+// of legal values, and a domain's base type plus constraint are its definition.
+// Both are DDL — the same class of information as a column name or a CHECK
+// expression (§6.4), not row content.
+type UserType struct {
+	// Kind is "enum" or "domain".
+	Kind string `yaml:"kind"`
+
+	// Labels are an enum's values in declaration order, which is significant:
+	// Postgres orders an enum by it, so a migration comparing or sorting the column
+	// depends on it. Omitted under privacy:strict, where a label is treated like a
+	// verbatim CHECK expression (§8.2) and only LabelCount survives.
+	Labels []string `yaml:"labels,omitempty"`
+	// LabelCount is the number of enum labels. It is always present for an enum, so
+	// cardinality is known even when the vocabulary is withheld — the same trade
+	// strict already makes for ranges, keeping `distinct` while dropping values.
+	LabelCount int `yaml:"label_count,omitempty"`
+
+	// Base is a domain's underlying type ("integer", "text", "numeric(12,2)").
+	Base string `yaml:"base,omitempty"`
+	// NotNull records a domain declared NOT NULL, which constrains every column
+	// using it regardless of that column's own nullability.
+	NotNull bool `yaml:"not_null,omitempty"`
+	// Check is a domain's constraint expression, verbatim, over the keyword VALUE
+	// ("(VALUE > 0)"). Opaque under privacy:strict for the same reason a table
+	// CHECK is (§6.4): it can embed literals from the domain.
+	Check string `yaml:"check,omitempty"`
+
+	X map[string]any `yaml:",inline"`
+}
+
+// UnmarshalYAML ignores unknown fields but preserves x_ vendor extensions.
+func (u *UserType) UnmarshalYAML(node *yaml.Node) error {
+	type alias UserType
+	var a alias
+	if err := node.Decode(&a); err != nil {
+		return err
+	}
+	*u = UserType(a)
+	u.X = pruneExtensions(u.X)
+	return nil
+}
+
+// EffectiveLabels returns the enum labels to materialize: the real vocabulary when
+// the fixture carries it, and placeholders derived from LabelCount when it does not.
+//
+// It is the ONE place that decision is made, because two callers must agree on it
+// exactly. The DDL emitter creates the type from these labels and the synthesis
+// engine draws column values from them; if they disagreed by even one label, every
+// insert of the missing value would be rejected as not a member of the type. A
+// privacy:strict fixture withholds the vocabulary but keeps the count (§8.2),
+// which is precisely the case that needs both sides to invent the same names.
+//
+// Returns nil for a non-enum or an enum with neither labels nor a count.
+func (u UserType) EffectiveLabels() []string {
+	if u.Kind != "enum" {
+		return nil
+	}
+	if len(u.Labels) > 0 {
+		return u.Labels
+	}
+	if u.LabelCount <= 0 {
+		return nil
+	}
+	out := make([]string, u.LabelCount)
+	for i := range out {
+		// Obviously synthetic, like every other value the hydrator invents (§13).
+		out[i] = "label_" + strconv.Itoa(i)
+	}
+	return out
+}
+
+// ResolveType reduces a type name to the underlying type that governs how a value
+// is built: a domain becomes its base type, anything else is returned unchanged.
+//
+// A domain is a base type plus constraints, so `app.positive_int` over `integer`
+// must be generated AS an integer. Reading it as an opaque name produced the
+// generic text fallback and the server rejected it:
+//
+//	unable to encode "val_14" into binary format for int4 (OID 23)
+//
+// Domains over domains are followed to the bottom, with a hard step limit so a
+// malformed fixture describing a cycle cannot hang the generator.
+func (f *Fixture) ResolveType(typeName string) string {
+	if f == nil {
+		return typeName
+	}
+	name := typeName
+	for range 16 {
+		t, ok := f.Types[name]
+		if !ok || t.Kind != "domain" || t.Base == "" {
+			return name
+		}
+		name = t.Base
+	}
+	return name
+}
+
+// EnumLabels resolves a column's type name to the enum labels to use, and reports
+// whether the named type is an enum at all.
+//
+// The boolean is separate from the label list on purpose: an enum is still an enum
+// when its vocabulary was withheld, and the caller must draw from EffectiveLabels
+// rather than fall through to a generic string — no arbitrary string is a member of
+// the type, so falling through produces a value Postgres refuses.
+func (f *Fixture) EnumLabels(typeName string) ([]string, bool) {
+	if f == nil {
+		return nil, false
+	}
+	t, ok := f.Types[typeName]
+	if !ok || t.Kind != "enum" {
+		return nil, false
+	}
+	return t.EffectiveLabels(), true
 }
 
 // UnmarshalYAML ignores unknown fields but preserves x_ vendor extensions.
@@ -205,9 +336,19 @@ type Constraint struct {
 
 // Index is a table index (RFC §6.5).
 type Index struct {
-	Name          string   `yaml:"name"`
-	Method        string   `yaml:"method"` // btree | hash | gin | gist | ...
-	Columns       []string `yaml:"columns"`
+	Name    string   `yaml:"name"`
+	Method  string   `yaml:"method"` // btree | hash | gin | gist | ...
+	Columns []string `yaml:"columns"`
+	// Keys are the index's key expressions as SQL text, in order, present only when
+	// at least one key is an EXPRESSION rather than a plain column (RFC §6.5).
+	//
+	// `columns` cannot describe such an index: a unique index on `lower(email)` has
+	// no column key at all, so it was recorded with an empty column list and
+	// silently dropped when the disposable database was built. The production
+	// uniqueness constraint then did not exist there, and a migration that violates
+	// it could PASS. When present, Keys is authoritative for reconstruction while
+	// `columns` keeps listing the plain-column subset the analyzers read.
+	Keys          []string `yaml:"keys,omitempty"`
 	Unique        bool     `yaml:"unique,omitempty"`
 	Partial       string   `yaml:"partial,omitempty"` // a partial-index predicate
 	Bytes         int64    `yaml:"bytes,omitempty"`

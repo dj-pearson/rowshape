@@ -161,6 +161,11 @@ func hydrateApplyEphemeral(ctx context.Context, f *fixture.Fixture, opts *valida
 			redactedTargetError("hydration into the disposable database failed", err),
 			"check the admin connection (--ephemeral) and that the fixture hydrates cleanly; set ROWSHAPE_DEBUG=1 for the underlying error")
 	}
+	// Surfaced before the verdict: a missing UNIQUE index means the disposable
+	// database enforces less than production does, which is exactly the direction that
+	// turns a real FAIL into a PASS.
+	warnSkippedIndexes("validate", report.SkippedIndexes)
+
 	cap, err := applyAndCapture(ctx, eph, opts)
 	if err != nil {
 		return nil, err

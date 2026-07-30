@@ -282,3 +282,152 @@ func TestSchemaAndGoAgreeOnTextTypes(t *testing.T) {
 		}
 	}
 }
+
+// TestCheckEmitterUserTypes covers the §6.7 MUSTs. The referenced-but-undefined
+// case is the one with teeth: a column's `type` is only a name, so an undefined
+// type leaves a consumer with no database to build at all — which is exactly the
+// fixture the reference implementation used to emit.
+func TestCheckEmitterUserTypes(t *testing.T) {
+	base := func() *fixture.Fixture {
+		return &fixture.Fixture{
+			RowshapeFixture: fixture.FormatVersion,
+			Meta:            fixture.Meta{Engine: fixture.Engine{Name: "postgres", Version: "16"}},
+			Types: map[string]fixture.UserType{
+				"app.status": {Kind: "enum", Labels: []string{"a", "b"}, LabelCount: 2},
+			},
+			Tables: map[string]fixture.Table{
+				"app.t": {
+					Rows: fixture.Fact[int64]{Value: 1, Confidence: fixture.Exact},
+					Columns: map[string]fixture.Column{
+						"s": {Type: "app.status"},
+					},
+				},
+			},
+		}
+	}
+
+	if vs := CheckEmitter(base()); len(vs) != 0 {
+		t.Fatalf("a well-formed types section reported violations: %v", vs)
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(*fixture.Fixture)
+		wantSub string
+	}{
+		{
+			name:    "referenced type undefined",
+			mutate:  func(f *fixture.Fixture) { delete(f.Types, "app.status") },
+			wantSub: "has no entry in `types`",
+		},
+		{
+			name: "enum declares no size",
+			mutate: func(f *fixture.Fixture) {
+				f.Types["app.status"] = fixture.UserType{Kind: "enum"}
+			},
+			wantSub: "neither labels nor label_count",
+		},
+		{
+			name: "label_count disagrees with labels",
+			mutate: func(f *fixture.Fixture) {
+				f.Types["app.status"] = fixture.UserType{Kind: "enum", Labels: []string{"a", "b"}, LabelCount: 5}
+			},
+			wantSub: "label_count is 5 but 2 labels",
+		},
+		{
+			name: "domain without a base",
+			mutate: func(f *fixture.Fixture) {
+				f.Types["app.status"] = fixture.UserType{Kind: "domain"}
+			},
+			wantSub: "no base type",
+		},
+		{
+			name: "unknown kind",
+			mutate: func(f *fixture.Fixture) {
+				f.Types["app.status"] = fixture.UserType{Kind: "composite"}
+			},
+			wantSub: `unknown kind "composite"`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := base()
+			tc.mutate(f)
+			vs := CheckEmitter(f)
+			found := false
+			for _, v := range vs {
+				if strings.Contains(v.Message, tc.wantSub) {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("no violation mentioning %q; got %v", tc.wantSub, vs)
+			}
+		})
+	}
+}
+
+// TestBuiltInTypesAreNotReportedAsUndefined: the undefined-type rule keys off a
+// schema qualification, so a length or precision modifier must not be mistaken for
+// one — `numeric(10,2)` contains a dot but is built in.
+func TestBuiltInTypesAreNotReportedAsUndefined(t *testing.T) {
+	f := &fixture.Fixture{
+		RowshapeFixture: fixture.FormatVersion,
+		Meta:            fixture.Meta{Engine: fixture.Engine{Name: "postgres", Version: "16"}},
+		Tables: map[string]fixture.Table{
+			"public.t": {
+				Rows: fixture.Fact[int64]{Value: 1, Confidence: fixture.Exact},
+				Columns: map[string]fixture.Column{
+					"amount": {Type: "numeric(10,2)"},
+					"code":   {Type: "character varying(3)"},
+					"n":      {Type: "integer"},
+					"tags":   {Type: "text[]"},
+				},
+			},
+		},
+	}
+	if vs := CheckEmitter(f); len(vs) != 0 {
+		t.Errorf("built-in types reported as undefined: %v", vs)
+	}
+}
+
+// TestCheckEmitterIndexKeys: an index with neither columns nor keys is unbuildable.
+// The shape catches the specific real mistake — reading only pg_index.indkey, where
+// an expression key is stored as attribute 0 and so vanishes.
+func TestCheckEmitterIndexKeys(t *testing.T) {
+	withIndex := func(ix fixture.Index) *fixture.Fixture {
+		return &fixture.Fixture{
+			RowshapeFixture: fixture.FormatVersion,
+			Meta:            fixture.Meta{Engine: fixture.Engine{Name: "postgres", Version: "16"}},
+			Tables: map[string]fixture.Table{
+				"app.users": {
+					Rows:    fixture.Fact[int64]{Value: 1, Confidence: fixture.Exact},
+					Columns: map[string]fixture.Column{"email": {Type: "text"}},
+					Indexes: []fixture.Index{ix},
+				},
+			},
+		}
+	}
+
+	// The bug: an expression index recorded with no keys at all.
+	vs := CheckEmitter(withIndex(fixture.Index{Name: "users_lower_email_key", Method: "btree", Unique: true}))
+	found := false
+	for _, v := range vs {
+		if strings.Contains(v.Message, "neither columns nor keys") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("an index with no keys was accepted; got %v", vs)
+	}
+
+	// Both well-formed shapes pass.
+	for _, ok := range []fixture.Index{
+		{Name: "i1", Method: "btree", Columns: []string{"email"}},
+		{Name: "i2", Method: "btree", Keys: []string{"lower(email)"}},
+	} {
+		if vs := CheckEmitter(withIndex(ok)); len(vs) != 0 {
+			t.Errorf("well-formed index %q reported violations: %v", ok.Name, vs)
+		}
+	}
+}
