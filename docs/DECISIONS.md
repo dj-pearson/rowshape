@@ -752,6 +752,13 @@ vocabulary to grow. The principle it serves is untouched — 320KB of YAML is st
 a file a reviewer reads in a diff — and it is now a number derived from the
 artifact rather than asserted at it.
 
+**CONFIRMED by the owner.** The three `prd.json` statements that still asserted
+the old number — the phase-1 `ships` line, `P1-T6`'s acceptance criterion, and the
+`M1` milestone definition — were corrected too. They belonged to PASSED work, so
+leaving them would have meant a task marked green against a criterion the code
+does not meet, which is exactly the rot `D-017`/`D-018` were written to catch.
+Each now carries the corrected figure and points here.
+
 **And make the guard real.** `TestEmitSizeAgainstBudget` parses
 `testdata/real-pull.yaml`, the output of an actual `pull` against a 20-table
 schema shaped like §3.3's own description (a heavy tail of lookup tables plus a
@@ -838,7 +845,25 @@ the six classify hazards and this classifies their absence.
 The extension is additive: existing codes keep their meaning, and consumers were
 always going to meet codes they had not seen. What INV-VERDICT-STABLE guarantees
 is that codes are **permanent** and **namespaced**, not that the namespace list is
-closed. **The owner should confirm this reading**, since it is the public contract.
+closed.
+
+**CONFIRMED by the owner.** `INV-VERDICT-STABLE` in `prd.json` now names seven
+namespaces and carries a `namespace_note` recording why the list grew, so the
+invariant no longer contradicts the code it governs.
+
+Landing it exposed how many places had their own copy of the list: the invariant,
+the `Finding` doc comment in `internal/verdict`, the registry, and
+`corpus/harness`'s `KnownCodes`. The one that was missed failed as `unknown
+finding code "RS-APPLY"` on a corpus case that was perfectly correct. `KnownCodes`
+is now DERIVED from the registry rather than hand-written — a list that must be
+updated in lockstep with another list is a list that will drift — which leaves the
+registry as the single source and the two prose statements as deliberate,
+reviewable restatements of it.
+
+The family also has a corpus case now (`rsapply-statement-rejected`, a `42P01`
+undefined table), so the newest namespace is not a documented hole in the
+credibility asset. It has no `resolve_contains` case deliberately: its remediation
+names no command to re-run, because nothing resolves a typo but fixing it.
 
 **Shape.** `RS-APPLY-001` carries the SQLSTATE and the engine's message in
 `evidence`, the file and line from the capture in `location` (so the Action's

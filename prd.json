@@ -141,8 +141,9 @@
     },
     {
       "id": "INV-VERDICT-STABLE",
-      "statement": "The verdict contract (fields, codes, exit codes) is the public API. Finding codes are permanent and namespaced (RS-LOCK, RS-DATA, RS-CONSTRAINT, RS-INDEX, RS-PERF, RS-REVERSE). Exit codes: 0 PASS, 1 FAIL, 2 WARN-only, 3 tool error. `remediation` is mandatory on every error.",
-      "source": "PRD §10"
+      "statement": "The verdict contract (fields, codes, exit codes) is the public API. Finding codes are permanent and namespaced (RS-LOCK, RS-DATA, RS-CONSTRAINT, RS-INDEX, RS-PERF, RS-REVERSE, RS-APPLY). Exit codes: 0 PASS, 1 FAIL, 2 WARN-only, 3 tool error. `remediation` is mandatory on every error.",
+      "source": "PRD §10",
+      "namespace_note": "RS-APPLY was added by PR-T9 and CONFIRMED by the owner (docs/DECISIONS.md D-023). The original six all classify a HAZARD found in a migration that RAN — a lock it takes, data it breaks on, an index it rebuilds. RS-APPLY says the migration DID NOT RUN, which none of the six can express: folding it into RS-DATA would claim the data rejected a statement that may never have parsed. Before it existed, a failed apply was floored to FAIL with `findings: null` — no code, no location, no remediation — which violated this invariant's own last sentence, since an error with no finding carries no remediation at all.\n\nThe extension is ADDITIVE and that is what makes it compatible: every existing code keeps its meaning, and a consumer was always going to meet codes it had not seen. What this invariant guarantees is that codes are permanent and namespaced, not that the namespace list is closed. Adding a namespace is therefore a deliberate, recorded act rather than a silent one — D-023 is the record, and this note is why the list grew."
     },
     {
       "id": "INV-CONFIDENCE-CAPPING",
@@ -436,7 +437,7 @@
       "source": "PRD §14 Phase 1, §6, §11; RFC §5/§6/§8/§9/§10/§13",
       "scope_note": "Fast mode only: catalog + pg_stats + reservoir sample. HyperLogLog, uniqueness existence probes, auto-escalation, and `inspect --leaks` are DEFERRED to phase-1b. In phase 1, `distinct` stays `estimated` (via pg_stats) and `unique` is `exact` only when a catalog constraint/index proves it, otherwise absent (INV-UNIQUENESS).",
       "definition_of_done": [
-        "A read-only `pull` against a Postgres produces a valid, digest-stable, <100KB rowshape.yaml in fast mode, with a confidence attached to every fact and privacy enforced.",
+        "A read-only `pull` against a Postgres produces a valid, digest-stable, <320KB (budget corrected by D-021) rowshape.yaml in fast mode, with a confidence attached to every fact and privacy enforced.",
         "`hydrate --seed N` deterministically reconstructs a disposable database honoring null_fraction (+/-0.5%), `unique`, and fan-out distribution shape.",
         "Declared rows and hydrated rows are never conflated (RFC §9).",
         "Week-6 kill-criteria smoke passes: pull + hydrate reproduces a known migration pathology (kill_criteria Week 6)."
@@ -626,7 +627,7 @@
           "acceptance_criteria": [
             "Output is valid YAML that round-trips through the P1-T1 data model.",
             "meta.engine.version is always present.",
-            "Fixture for a 200-table schema is under 100KB (RFC §3.3).",
+            "Fixture for a 200-table schema is under 320KB (RFC §3.3). (Budget corrected from <100KB to <320KB by D-021 — the original number was never measured against the emitter; a real 200-table pull is ~246KB and the guard that defended 100KB built its fixture by hand. The criterion is restated rather than left contradicting the spec, because a passed task carrying a criterion the code does not meet is the rot D-017/D-018 exist to catch.)",
             "meta.digest matches a fresh recomputation over the file."
           ],
           "verification": [
@@ -4368,7 +4369,7 @@
           "phase-1",
           "phase-1b"
         ],
-        "definition": "A read-only fast-mode `pull` emits a digest-stable <100KB fixture with confidence on every fact; `hydrate --seed N` deterministically reconstructs a disposable Postgres reproducing a known corpus pathology. The confidence engine (HLL, uniqueness probes, auto-escalation, inspect --leaks) is in.",
+        "definition": "A read-only fast-mode `pull` emits a digest-stable <320KB fixture with confidence on every fact; `hydrate --seed N` deterministically reconstructs a disposable Postgres reproducing a known corpus pathology. The confidence engine (HLL, uniqueness probes, auto-escalation, inspect --leaks) is in.",
         "kill_checkpoint": "Week 6 (PRD §14.1): if pull + hydrate don't reproduce a known corpus pathology, the fixture premise is wrong — stop before building validate.",
         "source": "PRD §14 (phases 1, 1b), §14.1"
       },
