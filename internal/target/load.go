@@ -30,6 +30,11 @@ type LoadReport struct {
 	// production rejects: an UPDATE of a generated column fails in production with
 	// `column "total" can only be updated to DEFAULT` and succeeds here.
 	UnreproducibleGenerated []string
+	// UnreproducedPartitionCount names partitioned tables whose partition COUNT the
+	// target does not match, with what it has instead. Count changes lock behaviour
+	// — a DDL statement on a parent locks every partition — so a target standing one
+	// partition in for ninety understates it.
+	UnreproducedPartitionCount []string
 }
 
 // Load orchestrates a full hydration into a target: it connects, creates the
@@ -75,7 +80,20 @@ func Load(ctx context.Context, t Target, f *fixture.Fixture, opts hydrate.Option
 		}
 	}
 
-	report := &LoadReport{Tables: map[string]int64{}, UnreproducibleGenerated: UnreproducibleGenerated(f)}
+	// Partitions come after the parents and BEFORE any row: a partitioned parent
+	// accepts no rows until a partition exists that can hold them, so a COPY into one
+	// fails outright with "no partition of relation found for row".
+	for _, stmt := range Partitions(f) {
+		if _, err := tx.Exec(ctx, stmt); err != nil {
+			return nil, fmt.Errorf("partition failed on `%s`: %w", stmt, err)
+		}
+	}
+
+	report := &LoadReport{
+		Tables:                     map[string]int64{},
+		UnreproducibleGenerated:    UnreproducibleGenerated(f),
+		UnreproducedPartitionCount: UnreproducedPartitionCounts(f),
+	}
 
 	for _, gt := range res.Tables {
 		n, err := insertRows(ctx, tx, gt)

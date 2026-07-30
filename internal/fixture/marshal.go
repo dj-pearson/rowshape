@@ -143,6 +143,11 @@ func (t Table) MarshalYAML() (any, error) {
 			return nil, err
 		}
 		appendScalar(pn, "strategy", t.Partitions.Strategy)
+		// The key is what lets a partitioned table be REBUILT rather than merely
+		// described; dropped here it is silently lost, whatever the struct tag says.
+		if t.Partitions.Key != "" {
+			appendScalar(pn, "key", t.Partitions.Key)
+		}
 		if t.Partitions.Skew != 0 {
 			if err := appendField(pn, "skew", t.Partitions.Skew); err != nil {
 				return nil, err

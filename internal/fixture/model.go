@@ -269,6 +269,15 @@ type Table struct {
 type Partitions struct {
 	Count    int    `yaml:"count"`
 	Strategy string `yaml:"strategy"` // range | list | hash
+	// Key is the partition key — the column list or expression inside
+	// `PARTITION BY <strategy> (...)`, without the strategy word.
+	//
+	// Count and strategy DESCRIBE a partitioned table; the key is what lets one be
+	// REBUILT. Without it a consumer had nothing to declare `PARTITION BY` with, so
+	// the parent was recreated as an ordinary table — and the target then accepted
+	// `CREATE INDEX CONCURRENTLY`, which Postgres refuses outright on a partitioned
+	// table (`cannot create index on partitioned table "events" concurrently`).
+	Key string `yaml:"key,omitempty"`
 	// Skew is the fraction of rows in the largest partition (1/count is uniform;
 	// approaching 1 means one partition dominates).
 	Skew float64 `yaml:"skew,omitempty"`

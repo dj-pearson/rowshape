@@ -456,6 +456,48 @@ enforces and turns a loud failure into a wrong verdict.
 An extension name is schema, not data, so `extensions` is emitted at every
 privacy level and is not a `--leaks` finding (§8.3).
 
+### 6.9 Partitioned tables
+
+```yaml
+  public.events:
+    rows: { value: 412000000, confidence: estimated }
+    bytes: 431000000000        # the WHOLE tree, not the parent's own storage
+    partitions:
+      count: 90
+      strategy: range          # range | list | hash
+      key: occurred_at
+      skew: 0.31
+```
+
+A partitioned parent declares its partitioning; individual partitions are NOT
+recorded as tables of their own. Ninety partitions would be ninety near-identical
+table entries, and what changes a migration's behaviour is the count, the
+strategy, and the skew — not each partition's bounds.
+
+`key` is the partition key: the column list or expression inside `PARTITION BY
+<strategy> (...)`, without the strategy word. `count`, `strategy` and `skew`
+DESCRIBE a partitioned table; `key` is what lets one be REBUILT. Without it a
+consumer has nothing to declare `PARTITION BY` with, so it recreates the parent
+as an ordinary table — and an ordinary table accepts `CREATE INDEX
+CONCURRENTLY`, which Postgres refuses outright on a partitioned parent. A
+migration that cannot run at all in production is then reported as safe.
+
+`bytes` on a partitioned parent MUST be the total across the whole partition
+tree. The engine's own relation-size function measures the parent's storage,
+which is zero, so a naive emitter reports `bytes: 0` for a 400GB table and every
+size-driven duration estimate (§9.1) extrapolates from nothing — understating
+precisely the migrations whose cost matters most. `rows` follows the same rule
+for the same reason.
+
+A consumer MUST recreate a partitioned parent as a partitioned table. It is NOT
+required to reproduce production's bounds: bounds are not recorded, and the
+behaviour that matters does not depend on them. It SHOULD reproduce the `count`
+where the strategy allows this mechanically — `hash` does, through modulus and
+remainder — and where it cannot, it MUST report the difference, because a DDL
+statement on a parent takes locks on every partition and a target standing one
+partition in for ninety understates that. Whatever partitions it creates MUST
+span the key space, since a row matching no partition fails to load at all.
+
 ## 7. Confidence
 
 This section exists because of one failure mode: **a wrong PASS.**
@@ -764,9 +806,12 @@ eventually mistake the output for real data.
    correlation matters for composite unique constraints, where independent
    generation understates collisions. Defer to v2, or add an optional
    `correlations` block now?
-2. **Partitioned tables.** Parent only, or every partition? Partition count and
-   per-partition skew change lock behavior materially. Leaning: parent declares
-   `partitions: { count, strategy, skew }`, no per-partition entries.
+2. **Partitioned tables.** ~~Parent only, or every partition?~~ **Resolved:**
+   parent only, and normative in §6.9. The parent declares
+   `partitions: { count, strategy, key, skew }` with no per-partition entries.
+   `key` was added after the parent-only decision proved insufficient to REBUILD
+   a partitioned table — count and strategy describe one, the key is what
+   declares it.
 3. **Does `bloat_estimate` belong in a portable spec,** or is it Postgres trivia
    that will embarrass us at MySQL?
 4. **HLL parameters.** Precision 14 (~1.6% error, 16KB state) vs 16 (~0.4%, 64KB)?

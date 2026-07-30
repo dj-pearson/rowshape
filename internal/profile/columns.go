@@ -196,6 +196,17 @@ func (r *reader) profileTable(ctx context.Context, t tableRef, tbl *fixture.Tabl
 			return err
 		}
 		tbl.Rows = fixture.Fact[int64]{Value: total, Confidence: fixture.Estimated}
+
+		// And its BYTES come from the partitions too, for exactly the same reason the
+		// rows do. pg_total_relation_size on the parent measures the parent's own
+		// storage, which is zero — so a 400GB partitioned table reported `bytes: 0` and
+		// every size-driven duration bucket for it extrapolated from nothing,
+		// understating precisely the migrations whose cost matters most.
+		bytes, err := r.partitionTotalBytes(ctx, t.oid)
+		if err != nil {
+			return err
+		}
+		tbl.Bytes = bytes
 	}
 	return nil
 }

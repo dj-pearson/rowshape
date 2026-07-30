@@ -457,6 +457,17 @@ func createTable(name string, tbl fixture.Table) string {
 		lines = append(lines, line)
 	}
 	for _, con := range tbl.Constraints {
+		// On a PARTITIONED table, Postgres requires every UNIQUE or PRIMARY KEY to
+		// INCLUDE the partition key, and refuses the whole CREATE TABLE otherwise
+		// ("unique constraint on partitioned table must include all partitioning
+		// columns"). Production's constraint satisfies that by construction; the
+		// fixture's may not describe it well enough to prove so — and taking the whole
+		// table down is worse than the constraint being reported as unenforced, which
+		// is what skipping it here achieves via the same savepoint path everything
+		// else uses.
+		if !constraintFitsPartitionKey(con, tbl.Partitions) {
+			continue
+		}
 		switch con.Kind {
 		case "primary_key":
 			lines = append(lines, fmt.Sprintf("  PRIMARY KEY (%s)", quoteCols(con.Columns)))
@@ -464,7 +475,8 @@ func createTable(name string, tbl fixture.Table) string {
 			lines = append(lines, fmt.Sprintf("  UNIQUE (%s)", quoteCols(con.Columns)))
 		}
 	}
-	return fmt.Sprintf("CREATE TABLE %s (\n%s\n)", quoteTable(name), strings.Join(lines, ",\n"))
+	return fmt.Sprintf("CREATE TABLE %s (\n%s\n)%s", quoteTable(name), strings.Join(lines, ",\n"),
+		partitionClause(tbl.Partitions))
 }
 
 // generatedClause renders the GENERATED part of a column definition, or "" for an
@@ -501,6 +513,111 @@ func generatedClause(c fixture.Column) string {
 	}
 	return ""
 }
+
+// partitionClause renders the `PARTITION BY <strategy> (<key>)` a partitioned
+// parent is declared with, or "" for an ordinary table (RFC §14.2).
+//
+// It is what stopped a partitioned table being rebuilt as an ordinary one, which
+// was a wrong PASS with no findings at all: `CREATE INDEX CONCURRENTLY` on a
+// partitioned parent is refused OUTRIGHT by Postgres (`cannot create index on
+// partitioned table "events" concurrently`), and the target happily built it.
+// Partitioned tables are the norm on exactly the large tables rowshape exists for.
+//
+// An unrecognized strategy, or a missing key, renders nothing: the table is then
+// created unpartitioned and REPORTED, rather than declared over a key that is a
+// guess.
+func partitionClause(p *fixture.Partitions) string {
+	if p == nil || p.Key == "" {
+		return ""
+	}
+	switch p.Strategy {
+	case "range", "list", "hash":
+		return " PARTITION BY " + strings.ToUpper(p.Strategy) + " (" + p.Key + ")"
+	}
+	return ""
+}
+
+// Partitions renders the CREATE TABLE ... PARTITION OF statements for every
+// partitioned parent, which must run after the parents exist and before any row is
+// loaded — a partitioned parent accepts no rows until a partition can hold them.
+//
+// Bounds deliberately do NOT match production, and do not need to: what changes a
+// migration's behaviour is the strategy, the partition COUNT, and the fact that
+// the table is partitioned at all. Reproducing real bounds would need the key
+// column's true extremes, which for a sampled `range` are not known (PR-T7) and
+// for a text or composite key are not recorded at all.
+//
+// The shapes are chosen so rows always land somewhere:
+//
+//   - HASH: MODULUS/REMAINDER covers the whole key space by construction, needs no
+//     knowledge of the values, and reproduces the count exactly.
+//   - RANGE and LIST: a single DEFAULT partition. It catches every row whatever the
+//     synthesised values are, which matters because a row that matches no partition
+//     fails the COPY outright and takes the load down.
+//
+// Where the count could not be reproduced, UnreproducedPartitionCounts says so:
+// partition count changes lock behaviour, so a target with one partition standing
+// in for ninety is a difference the operator has to know about.
+func Partitions(f *fixture.Fixture) []string {
+	var stmts []string
+	for _, tname := range sortedKeys(f.Tables) {
+		p := f.Tables[tname].Partitions
+		if partitionClause(p) == "" {
+			continue
+		}
+		base := partitionName(tname)
+		switch p.Strategy {
+		case "hash":
+			n := p.Count
+			if n < 1 {
+				n = 1
+			}
+			for i := 0; i < n; i++ {
+				stmts = append(stmts, fmt.Sprintf(
+					"CREATE TABLE %s PARTITION OF %s FOR VALUES WITH (MODULUS %d, REMAINDER %d)",
+					quoteTable(base+fmt.Sprintf("_p%d", i)), quoteTable(tname), n, i))
+			}
+		default:
+			stmts = append(stmts, fmt.Sprintf("CREATE TABLE %s PARTITION OF %s DEFAULT",
+				quoteTable(base+"_default"), quoteTable(tname)))
+		}
+	}
+	return stmts
+}
+
+// UnreproducedPartitionCounts names the partitioned tables whose partition COUNT
+// the target does not reproduce, with what it has instead.
+//
+// Reported rather than passed over because count is not decoration: a DDL
+// statement on a partitioned parent takes locks on every partition, and index
+// builds and ATTACH/DETACH scale with the number of them. A target standing one
+// partition in for ninety understates that, and understating a lock is the
+// direction that turns a real finding into a clean run.
+func UnreproducedPartitionCounts(f *fixture.Fixture) []string {
+	var out []string
+	for _, tname := range sortedKeys(f.Tables) {
+		p := f.Tables[tname].Partitions
+		if p == nil {
+			continue
+		}
+		if partitionClause(p) == "" {
+			out = append(out, fmt.Sprintf(
+				"%s is partitioned (%s, %d partitions) but the fixture does not record a usable partition key, so it was created as an ordinary table",
+				tname, p.Strategy, p.Count))
+			continue
+		}
+		if p.Strategy != "hash" && p.Count > 1 {
+			out = append(out, fmt.Sprintf(
+				"%s has %d %s partitions in production; the target has 1 (a DEFAULT partition), because %s bounds cannot be reconstructed from a fixture",
+				tname, p.Count, p.Strategy, p.Strategy))
+		}
+	}
+	return out
+}
+
+// partitionName is the local (unqualified-safe) stem for a synthesized partition:
+// the parent's qualified name, so the partition lands in the parent's schema.
+func partitionName(table string) string { return table }
 
 // identityResets renders the statements that move each identity column's sequence
 // past the rows just loaded.
@@ -546,6 +663,33 @@ func UnreproducibleGenerated(f *fixture.Fixture) []string {
 		}
 	}
 	return out
+}
+
+// constraintFitsPartitionKey reports whether a PRIMARY KEY / UNIQUE can be
+// declared on a partitioned table: Postgres requires it to contain every
+// partitioning column.
+//
+// Only a plain single-column key is checked, because that is the only shape a
+// fixture describes unambiguously; a composite or expression key returns false,
+// which skips the constraint rather than emitting one Postgres will reject. An
+// unpartitioned table always fits.
+func constraintFitsPartitionKey(con fixture.Constraint, p *fixture.Partitions) bool {
+	if p == nil || p.Key == "" {
+		return true
+	}
+	if con.Kind != "primary_key" && con.Kind != "unique" {
+		return true
+	}
+	key := strings.TrimSpace(p.Key)
+	if key == "" || strings.ContainsAny(key, "(), ") {
+		return false // composite or expression key: not provably contained
+	}
+	for _, c := range con.Columns {
+		if c == key {
+			return true
+		}
+	}
+	return false
 }
 
 // quotedCols quotes each column separately, for callers that assemble the list
