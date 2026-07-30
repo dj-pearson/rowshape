@@ -348,8 +348,8 @@ type Index struct {
 	// uniqueness constraint then did not exist there, and a migration that violates
 	// it could PASS. When present, Keys is authoritative for reconstruction while
 	// `columns` keeps listing the plain-column subset the analyzers read.
-	Keys   []string `yaml:"keys,omitempty"`
-	Unique bool     `yaml:"unique,omitempty"`
+	Keys          []string `yaml:"keys,omitempty"`
+	Unique        bool     `yaml:"unique,omitempty"`
 	Partial       string   `yaml:"partial,omitempty"` // a partial-index predicate
 	Bytes         int64    `yaml:"bytes,omitempty"`
 	BloatEstimate *float64 `yaml:"bloat_estimate,omitempty"`
