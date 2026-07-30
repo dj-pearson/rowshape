@@ -21,14 +21,30 @@ import (
 func DDL(f *fixture.Fixture) []string {
 	var stmts []string
 
-	// Create every referenced schema first (sorted for determinism).
+	// Create every referenced schema first (sorted for determinism). A user-defined
+	// type can live in a schema no table does, so the type names contribute here
+	// too — otherwise CREATE TYPE would target a schema that does not exist yet.
 	schemas := map[string]bool{}
 	for name := range f.Tables {
+		schemas[schemaOf(name)] = true
+	}
+	for name := range f.Types {
 		schemas[schemaOf(name)] = true
 	}
 	for _, s := range sortedStrings(schemas) {
 		if s != "" && s != "public" {
 			stmts = append(stmts, "CREATE SCHEMA IF NOT EXISTS "+quoteIdent(s))
+		}
+	}
+
+	// Then the user-defined types, before any table that carries one as a column
+	// type (RFC §6.7). A column typed `z.mood` names something a fresh disposable
+	// database has never heard of, so without these the whole DDL failed with
+	// `type "z.mood" does not exist` and no enum- or domain-using schema could be
+	// hydrated at all.
+	for _, name := range sortedKeys(f.Types) {
+		if stmt := createType(name, f.Types[name]); stmt != "" {
+			stmts = append(stmts, stmt)
 		}
 	}
 
@@ -101,6 +117,54 @@ func createIndex(table string, ix fixture.Index) string {
 		using = " USING " + ix.Method
 	}
 	return fmt.Sprintf("CREATE %sINDEX %s ON %s%s (%s)", unique, quoteIdent(ix.Name), quoteTable(table), using, quoteCols(ix.Columns))
+}
+
+// createType renders CREATE TYPE / CREATE DOMAIN for one user-defined type
+// (RFC §6.7). An unrecognized kind returns "" so an extension to the vocabulary
+// degrades to the pre-existing behavior — the DDL names the missing type and fails
+// there — rather than emitting a statement built from a guess.
+func createType(name string, t fixture.UserType) string {
+	switch t.Kind {
+	case "enum":
+		// EffectiveLabels, not t.Labels: under privacy:strict the vocabulary is
+		// withheld and only the count survives, and the placeholders it invents must
+		// be the SAME ones the synthesis engine draws from — a single disagreement
+		// would make every insert of the missing label fail as not a member of the
+		// type. Hence one shared implementation on the model rather than a copy here.
+		labels := t.EffectiveLabels()
+		if len(labels) == 0 {
+			return "" // an enum with neither labels nor a count cannot be created
+		}
+		quoted := make([]string, len(labels))
+		for i, l := range labels {
+			quoted[i] = quoteLiteral(l)
+		}
+		return fmt.Sprintf("CREATE TYPE %s AS ENUM (%s)", quoteTable(name), strings.Join(quoted, ", "))
+	case "domain":
+		if t.Base == "" {
+			return ""
+		}
+		stmt := fmt.Sprintf("CREATE DOMAIN %s AS %s", quoteTable(name), t.Base)
+		if t.NotNull {
+			stmt += " NOT NULL"
+		}
+		// An opaque CHECK (privacy:strict) is deliberately NOT reconstructed: the
+		// expression is unknown, and inventing one would constrain hydrated data in a
+		// way production may not. The domain is created without it, which is the
+		// weaker but honest reading of what the fixture actually says.
+		if t.Check != "" && t.Check != "opaque" {
+			stmt += " CHECK " + t.Check
+		}
+		return stmt
+	}
+	return ""
+}
+
+// quoteLiteral renders a SQL string literal, doubling embedded quotes. Enum labels
+// are arbitrary text from the source catalog, so a label containing an apostrophe
+// must not be able to break out of the statement.
+func quoteLiteral(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
 // createTable renders one CREATE TABLE statement.

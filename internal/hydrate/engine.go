@@ -87,6 +87,29 @@ func generateTable(f *fixture.Fixture, name string, tbl fixture.Table, seed int6
 	n := rowCounts[name]
 	colNames := sortedKeys(tbl.Columns)
 
+	// Refuse a type there is no synthesis rule for BEFORE generating anything, and
+	// name the column. The alternative is what used to happen: generation produced a
+	// generic "val_141", and the failure surfaced hundreds of thousands of rows
+	// later as a pgx internals message from inside COPY —
+	//
+	//	unable to encode "val_141" into binary format for inet (OID 869)
+	//
+	// which names neither the table nor the column and reads as a rowshape defect
+	// rather than a decision the operator has to make. An enum or domain the fixture
+	// DEFINES is not affected: it is resolved before this check.
+	for _, col := range colNames {
+		c := tbl.Columns[col]
+		if _, isEnum := f.EnumLabels(c.Type); isEnum {
+			continue
+		}
+		if unsupportedType(f.ResolveType(c.Type)) {
+			return GeneratedTable{}, fmt.Errorf(
+				"%s.%s has type %q, which rowshape cannot synthesize values for: "+
+					"exclude the column from the fixture, or hydrate against a "+
+					"--target that already holds data of this shape", name, col, c.Type)
+		}
+	}
+
 	gt := GeneratedTable{
 		Name:         name,
 		Columns:      colNames,
@@ -117,7 +140,7 @@ func generateTable(f *fixture.Fixture, name string, tbl fixture.Table, seed int6
 				// the parent's identity column actually generated for that ordinal.
 				v = parentIDValue(seed, f, fkRefs[col], fk[ord], rowCounts[parentTable(fkRefs[col].To)])
 			default:
-				v = generateValue(seed, name, col, c, ord)
+				v = generateValue(f, seed, name, col, c, ord)
 			}
 			gt.Rows[ord][ci] = v
 		}
@@ -128,11 +151,36 @@ func generateTable(f *fixture.Fixture, name string, tbl fixture.Table, seed int6
 // generateValue synthesizes one cell. Nulls are placed by a deterministic
 // low-discrepancy quota so the null fraction is honored within a row or two
 // (RFC §13, ±0.5%) and a cell's null-ness never changes as --scale grows.
-func generateValue(seed int64, table, column string, c fixture.Column, ord int64) any {
+func generateValue(f *fixture.Fixture, seed int64, table, column string, c fixture.Column, ord int64) any {
 	if c.Nullable && c.NullFraction != nil && isNullAt(ord, c.NullFraction.Value) {
 		return nil
 	}
 	r := cellRNG(seed, table, column, ord)
+
+	// An enum column accepts ONLY its own labels, so its value has to come from the
+	// type definition rather than from a format hint or the type-name fallback: a
+	// generic string is not a member of the type and Postgres rejects it outright.
+	// The fixture's `distinct` for such a column is at most the label count, so
+	// drawing a label reproduces the cardinality as well.
+	if labels, isEnum := f.EnumLabels(c.Type); isEnum && len(labels) > 0 {
+		return labels[r.intn(int64(len(labels)))]
+	}
+
+	// An ARRAY of an enum has the same constraint on its elements, and the array
+	// path below builds elements from the type name alone — with no way to reach the
+	// type definitions — so it would fill an `app.status[]` with generic strings that
+	// are not members of the element type. Resolved here, where the definitions are
+	// in hand.
+	if elem, isArray := strings.CutSuffix(strings.TrimSpace(c.Type), "[]"); isArray {
+		if labels, isEnum := f.EnumLabels(elem); isEnum && len(labels) > 0 {
+			return `{"` + labels[r.intn(int64(len(labels)))] + `"}`
+		}
+	}
+
+	// A domain is a base type plus constraints, so generate for the base. Rewriting
+	// c.Type here (rather than at each use) also gets the character-width clamp and
+	// the numeric range right for a domain over varchar(n) or over integer.
+	c.Type = f.ResolveType(c.Type)
 
 	// A unique column derives its value from the ordinal so values never collide
 	// (RFC §13 honor `unique`). A non-unique column draws a bucket in [0, distinct)
@@ -223,39 +271,137 @@ func toFloat(v any) (float64, bool) {
 // paths would make a child cell differ from the parent id it references and
 // manufacture an orphan.
 func fakeValue(c fixture.Column, n int64, r *rng, unique bool) any {
-	return fitCharWidth(c, n, rawFakeValue(c, n, r, unique))
+	return fitCharWidth(c, n, rawFakeValue(c, n, r, unique), unique)
 }
 
-// fitCharWidth keeps a synthesized string inside its column's character limit.
+// fitCharWidth keeps a synthesized string within the width the fixture and the
+// column type between them allow.
 //
-// A format hint renders content of its own natural length, with no reference to
-// how wide the column is: `format: enum_like` with no declared values renders
-// "value_0" (7 characters). `pull` reports a Postgres `char(3)` country/currency
-// column as exactly that — enum_like, three characters wide — and COPYing
-// "value_0" into it aborts hydration with `value too long for type character(3)`.
-// This was reached by an ordinary two-value currency column, so it is the common
-// case for narrow enum-ish keys, not a corner.
+// TWO limits apply, and the tighter one wins:
 //
-// The over-wide value is replaced by n in base 36 (its low-order digits, so
-// consecutive n differ), not by a truncation of the rendered string. Truncating
-// would collapse cardinality — "value_0" and "value_1" both become "val" — and the
-// distinct count is the shape the fixture is asking for, whereas the specific
-// letters are content the hydrator never promises to reproduce. Base 36 also stays
-// injective in n while 36^width values remain, which is what keeps a unique narrow
-// column unique.
+//   - the TYPE's character limit. A format hint renders content of its own natural
+//     length with no reference to the column: `enum_like` with no declared values
+//     renders "value_0" (7 characters), and `pull` reports a Postgres char(3)
+//     currency column as exactly that, so the COPY aborted with `value too long for
+//     type character(3)`.
+//   - the fixture's `length.max`. For a text column this is the ONLY shape §6.1
+//     permits, and ignoring it produces a WRONG VERDICT rather than merely odd
+//     content: a varchar(12) column whose production values are 2-5 characters
+//     hydrated as 9-character values, so `ALTER COLUMN ... TYPE varchar(8)` — which
+//     production data satisfies comfortably — came back FAIL with `value too long`.
+//     A verdict the migration would not have produced is the failure this format
+//     exists to prevent, in the direction that destroys trust rather than safety.
 //
-// Only character types with a real limit are touched: text and unadorned varchar
-// are unbounded, and a non-string type has no character width to violate.
-func fitCharWidth(c fixture.Column, n int64, v any) any {
+// An over-wide value becomes a PREFIX of the rendered string followed by n in base
+// 36, sized to fill the width exactly. That keeps all three properties that matter:
+//
+//   - injective in n while 36^k values remain, so a unique column stays unique;
+//   - cardinality preserved, which plain truncation destroys whenever the varying
+//     part sits at the end ("value_0" and "value_1" both truncate to "val");
+//   - still recognizable, which a bare ordinal destroys — an email clamped to 19
+//     characters stays "user_00000@examp3o" rather than becoming "3o".
+//
+// Only character types are touched: a non-string value has no character width to
+// violate.
+func fitCharWidth(c fixture.Column, n int64, v any, unique bool) any {
 	s, isString := v.(string)
 	if !isString {
 		return v
 	}
-	width, bounded := sqlkind.CharMaxLength(c.Type)
+	width, bounded := effectiveWidth(c)
 	if !bounded || len(s) <= width {
 		return s
 	}
-	return base36Tail(n, width)
+	tail := base36Tail(n, width)
+	if unique {
+		// The ordinal ALONE, filling the width. base36Tail is injective in n on its
+		// own, but combining it with a rendered prefix is not: the tail's length
+		// varies with n, so the prefix length varies too, and two different ordinals
+		// can assemble the same string — n=0 gives "va"+"0" while n=360 gives
+		// "v"+"a0", both "va0". Recognizability is worth less than the uniqueness the
+		// fixture states as an exact fact.
+		return tail
+	}
+	if len(tail) >= width {
+		return tail
+	}
+	// Not unique: keep as much of the rendered value as the ordinal leaves room for,
+	// so an email clamped to 19 characters still reads as one. Distinct ordinals can
+	// now collide, which is acceptable where only the cardinality is being
+	// approximated — and the varying tail is what keeps that cardinality from
+	// collapsing the way plain truncation does.
+	return s[:width-len(tail)] + tail
+}
+
+// effectiveWidth is the tightest character limit that applies to a column: the
+// type's own limit, the fixture's declared length.max, or whichever is smaller when
+// both are present.
+//
+// length.max is a fact about production values and the type limit is a fact about
+// the column, so honoring only one of them is wrong in a different direction each
+// time — exceeding the type aborts the load, and exceeding the declared length
+// fabricates data wider than production ever held.
+func effectiveWidth(c fixture.Column) (int, bool) {
+	width, bounded := sqlkind.CharMaxLength(c.Type)
+
+	if c.Length != nil && c.Length.Max != nil {
+		if m := *c.Length.Max; m > 0 && m <= int64(maxInt) {
+			declared := int(m)
+			if !bounded || declared < width {
+				width, bounded = declared, true
+			}
+		}
+	}
+	return width, bounded
+}
+
+// maxInt guards the int64 -> int narrowing of a declared length on 32-bit builds.
+const maxInt = int64(^uint(0) >> 1)
+
+// arrayLiteral renders a one-element array literal whose element is generated from
+// the element type, so an `integer[]` gets a number and a `text[]` a string.
+//
+// One element, not the real length: the fixture records nothing about array length
+// (RFC §6 has no such statistic), so any other count would be invented. One is the
+// honest minimum that still exercises the column as a non-empty array.
+func arrayLiteral(c fixture.Column, n int64, r *rng, unique bool) string {
+	elem := fixture.Column{
+		Type: strings.TrimSuffix(strings.TrimSpace(c.Type), "[]"),
+		// The element carries no format hint: a format describes the COLUMN's
+		// content, and applying it to the element would put an email inside an
+		// integer[] as readily as inside a text[].
+	}
+	v := rawFakeValue(elem, n, r, unique)
+	s := fmt.Sprintf("%v", v)
+	// Quote the element and escape the characters that are structural inside an
+	// array literal, so a generated value can never change the literal's shape.
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return `{"` + s + `"}`
+}
+
+// bitLiteral renders a bit string of exactly the column's declared width, which
+// bit(n) requires — a shorter or longer string is rejected outright. An unadorned
+// `bit` is bit(1), and `bit varying` accepts anything up to its width, so the
+// declared width is a safe length for both.
+func bitLiteral(c fixture.Column, n int64) string {
+	width, ok := sqlkind.TypeLength(c.Type)
+	if !ok || width <= 0 {
+		width = 1
+	}
+	if width > 64 {
+		width = 64
+	}
+	out := make([]byte, width)
+	for i := range width {
+		// Fill from the low-order bit up, so consecutive n differ.
+		if (n>>(width-1-i))&1 == 1 {
+			out[i] = '1'
+		} else {
+			out[i] = '0'
+		}
+	}
+	return string(out)
 }
 
 // base36Tail renders n in base 36, keeping at most the last `width` digits — that
@@ -305,6 +451,31 @@ func rawFakeValue(c fixture.Column, n int64, r *rng, unique bool) any {
 
 	// No format hint: fall back to the type category.
 	switch categorize(c.Type) {
+	case "array":
+		return arrayLiteral(c, n, r, unique)
+	case "inet":
+		// Valid for both inet and cidr: a bare host address is accepted by each
+		// (cidr reads it as /32). 192.0.2.0/24 is the RFC 5737 documentation range,
+		// so the address is as obviously non-real as the rest of the content.
+		return fmt.Sprintf("192.0.2.%d", n%256)
+	case "macaddr":
+		// 08:00:2b is a reserved OUI prefix, keeping the address obviously synthetic.
+		return fmt.Sprintf("08:00:2b:%02x:%02x:%02x", (n>>16)&0xff, (n>>8)&0xff, n&0xff)
+	case "macaddr8":
+		return fmt.Sprintf("08:00:2b:%02x:%02x:%02x:%02x:%02x",
+			(n>>32)&0xff, (n>>24)&0xff, (n>>16)&0xff, (n>>8)&0xff, n&0xff)
+	case "interval":
+		return fmt.Sprintf("%d seconds", n)
+	case "xml":
+		return fmt.Sprintf("<value>%d</value>", n)
+	case "bit":
+		return bitLiteral(c, n)
+	case "point":
+		return fmt.Sprintf("(%d,%d)", n, n)
+	case "json":
+		// A jsonb/json column with no format hint still needs parseable JSON; the
+		// bare fallback ("val_7") is not, and the server rejects it.
+		return "{}"
 	case "numeric":
 		return numericInRange(c, n, unique)
 	case "temporal":
@@ -583,6 +754,8 @@ func toTime(v any) (time.Time, bool) {
 func categorize(typ string) string {
 	t := strings.ToLower(strings.TrimSpace(typ))
 	switch {
+	case strings.HasSuffix(t, "[]"):
+		return "array"
 	case t == "bytea":
 		return "bytea"
 	case t == "json" || t == "jsonb":
@@ -591,6 +764,20 @@ func categorize(typ string) string {
 		return "uuid"
 	case t == "boolean":
 		return "bool"
+	case t == "inet" || t == "cidr":
+		return "inet"
+	case t == "macaddr":
+		return "macaddr"
+	case t == "macaddr8":
+		return "macaddr8"
+	case t == "interval":
+		return "interval"
+	case t == "xml":
+		return "xml"
+	case strings.HasPrefix(t, "bit"): // bit(n) and bit varying(n)
+		return "bit"
+	case t == "point":
+		return "point"
 	case strings.HasPrefix(t, "timestamp") || t == "date" || strings.HasPrefix(t, "time"):
 		return "temporal"
 	case t == "text" || strings.Contains(t, "char") || strings.Contains(t, "varying") || t == "citext" || t == "name":
@@ -602,4 +789,35 @@ func categorize(typ string) string {
 	default:
 		return "text"
 	}
+}
+
+// unsupportedType reports whether a type has no synthesis rule AND is not
+// string-compatible, so generating for it would produce a value Postgres refuses.
+//
+// The distinction matters because the generic fallback is a text value like
+// "val_141", and pgx will happily hand that to the server for anything whose text
+// representation is free-form. It is only rejected where the type has a real
+// grammar — which is what made `inet` fail with
+//
+//	unable to encode "val_141" into binary format for inet (OID 869)
+//
+// The types listed here are the ones with a grammar that no plausible generic
+// value satisfies and for which the fixture carries nothing to build one from:
+// range and multirange types, tsvector/tsquery, and composite/geometric types
+// beyond point. They get a NAMED error at generation time rather than a pgx
+// internals message from deep inside COPY, because the fix is a decision the
+// operator has to make (exclude the column, or extend the spec), not something the
+// engine can guess.
+func unsupportedType(typ string) bool {
+	t := strings.ToLower(strings.TrimSpace(typ))
+	switch t {
+	case "tsvector", "tsquery", "line", "lseg", "box", "path", "polygon", "circle":
+		return true
+	}
+	// Built-in range and multirange types, plus any user-defined type the fixture
+	// declared no definition for, share the same problem: a strict literal grammar.
+	if strings.HasSuffix(t, "range") {
+		return true
+	}
+	return false
 }

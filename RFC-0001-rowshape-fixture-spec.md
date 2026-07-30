@@ -101,6 +101,9 @@ tables:
     constraints: [ ... ]       # §6.4
     indexes: [ ... ]           # §6.5
     references: [ ... ]        # §6.6
+
+types:
+  public.status: { ... }       # §6.7 (user-defined types, optional)
 ```
 
 `tables` is a map keyed by qualified name, not a list. Maps diff cleanly when a
@@ -260,6 +263,57 @@ distribution, not merely the mean.
 constraint — common where constraints were added `NOT VALID`, or dropped and
 never restored. If nonzero, a migration adding `FOREIGN KEY ... VALIDATE` will
 fail, and the fixture is the only thing that knows.
+
+### 6.7 User-defined types
+
+```yaml
+types:
+  public.order_status:
+    kind: enum
+    labels: [pending, paid, shipped]   # declaration order is significant
+    label_count: 3
+  public.positive_int:
+    kind: domain
+    base: integer
+    not_null: false
+    check: (VALUE > 0)                  # verbatim; opaque under privacy:strict
+```
+
+`types` is an OPTIONAL top-level map, keyed by the schema-qualified type name
+exactly as it appears in a column's `type` — so a column and its definition join
+by string equality. A fixture whose columns use only built-in types omits the
+section entirely.
+
+It exists because a column's `type` is only a NAME. For `integer` that is
+sufficient: every engine already has one. For `public.order_status` it is not,
+and a consumer reconstructing a database from the fixture has nothing to create.
+An emitter MUST define every enum and domain its columns reference; a consumer
+that cannot resolve a column's type MUST fail rather than substitute one, because
+a substituted type accepts values the real column would have rejected.
+
+`kind` is `enum` or `domain`.
+
+For an enum, `labels` is the full ordered vocabulary and `label_count` its size.
+The ORDER is normative: engines order an enum by declaration, so a migration that
+compares or sorts the column depends on it. `label_count` MUST be present even
+when `labels` is not, because cardinality is shape: a consumer that knows only
+the count can still build a type of the right size, whereas one with neither
+cannot build the type at all.
+
+For a domain, `base` is the underlying type — itself possibly another domain,
+which resolves transitively — with `not_null` and a verbatim `check` over the
+keyword `VALUE`.
+
+Labels and a domain's `check` are DDL, the same class of information as a column
+name or a table `CHECK` (§6.4), and are emitted at `standard`. Under
+`privacy:strict` they are withheld: `labels` is dropped (leaving `label_count`)
+and `check` becomes `opaque`, exactly as a table CHECK does. A consumer MUST NOT
+invent a predicate to replace an opaque `check` — an invented constraint would
+reject data production accepted.
+
+Types that are neither enum nor domain (composite, range, and engine-specific
+types) are outside this version. An emitter MUST NOT guess a definition for one,
+and a consumer meeting an unresolvable type MUST report it by name.
 
 ## 7. Confidence
 

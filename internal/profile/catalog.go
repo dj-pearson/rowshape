@@ -103,6 +103,15 @@ func read(ctx context.Context, conn *pgx.Conn, opts Options, profile bool) (*fix
 		f.Tables[t.qualified] = tbl
 	}
 
+	// Define the user-defined types the columns just read refer to (§6.6). This
+	// runs after the table loop because it is driven by the type OIDs that loop
+	// actually saw.
+	types, err := r.userTypes(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read user-defined types: %w", err)
+	}
+	f.Types = types
+
 	// Record the profile mode (RFC §7.3): `exact` for a full pass, `targeted` when
 	// auto-escalation fired on a sample-based pass, otherwise `fast`.
 	if profile {
@@ -131,6 +140,33 @@ type reader struct {
 	maxEscalationRows int64    // soft cost ceiling for escalation (P1b-T4)
 	warn              func(string)
 	exact             bool // full-pass exact mode (P1b-T5)
+	// typeUses maps every type OID seen on an in-scope column to the name
+	// format_type rendered for it, so only the types actually referenced are
+	// defined in the fixture (§6.6) — not every type in the database.
+	typeUses map[uint32]string
+	// domainBase maps a domain's rendered name to its base type's rendered name, so
+	// profiling can categorize a domain-typed column by what it actually holds.
+	domainBase map[string]string
+}
+
+// profileType is the type a column should be PROFILED as: a domain reduces to its
+// base type, everything else is itself.
+//
+// A domain is a base type plus constraints, so a domain over integer holds
+// integers and deserves a numeric range and histogram. Categorizing it by its own
+// name put it in the text category instead, and the fixture came back with neither
+// — losing the column's shape at the source, before hydrate ever saw it. Domains
+// over domains resolve to the bottom, bounded so a cycle cannot hang the pull.
+func (r *reader) profileType(typ string) string {
+	name := typ
+	for range 16 {
+		base, ok := r.domainBase[name]
+		if !ok || base == "" {
+			return name
+		}
+		name = base
+	}
+	return name
 }
 
 // warnf emits an operational warning if a sink is configured.
@@ -278,10 +314,17 @@ func (r *reader) columns(ctx context.Context, oid uint32) (map[string]fixture.Co
 	if r.serverMajor >= 12 {
 		generated = "a.attgenerated::text"
 	}
+	// The pg_type join resolves a DOMAIN to its base type. Profiling keys off the
+	// type category, and a domain read as an opaque name fell to the text category:
+	// a domain over integer got no range and no histogram, so `pull` silently lost
+	// the shape of every domain-typed column, and hydrate then had nothing to
+	// generate from. Every atttypid has a pg_type row, so the join drops nothing.
 	q := `
 SELECT a.attnum, a.attname, format_type(a.atttypid, a.atttypmod),
-       a.attnotnull, a.attidentity::text, ` + generated + `
+       a.attnotnull, a.attidentity::text, ` + generated + `, a.atttypid,
+       CASE WHEN t.typtype = 'd' THEN format_type(t.typbasetype, t.typtypmod) ELSE '' END
 FROM pg_attribute a
+JOIN pg_type t ON t.oid = a.atttypid
 WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped
 ORDER BY a.attnum`
 
@@ -300,10 +343,26 @@ ORDER BY a.attnum`
 			name, typ           string
 			notnull             bool
 			identity, generated string
+			typoid              uint32
+			domainBase          string
 		)
-		if err := rows.Scan(&attnum, &name, &typ, &notnull, &identity, &generated); err != nil {
+		if err := rows.Scan(&attnum, &name, &typ, &notnull, &identity, &generated, &typoid, &domainBase); err != nil {
 			return nil, nil, err
 		}
+		if domainBase != "" {
+			if r.domainBase == nil {
+				r.domainBase = map[string]string{}
+			}
+			r.domainBase[typ] = domainBase
+		}
+		// Remember the type by OID so userTypes can resolve enum/domain definitions
+		// exactly, rather than trying to re-parse format_type's rendering. The
+		// rendered name is the map key because that is the string a column's `type`
+		// carries, so a fixture consumer joins the two by equality.
+		if r.typeUses == nil {
+			r.typeUses = map[uint32]string{}
+		}
+		r.typeUses[typoid] = typ
 		col := fixture.Column{
 			Type:     typ,
 			Nullable: !notnull, // structural nullability from the DDL, always exact (§6.1)

@@ -846,3 +846,360 @@ func TestNoOrphansWhenFractionIsZero(t *testing.T) {
 		t.Errorf("%d orphans hydrated against a fixture proving orphan_fraction 0 (exact)", orphans)
 	}
 }
+
+// withTypes attaches user-defined type definitions to a fixture built by oneTable.
+func withTypes(f *fixture.Fixture, types map[string]fixture.UserType) *fixture.Fixture {
+	f.Types = types
+	return f
+}
+
+// TestEnumColumnDrawsItsOwnLabels: an enum column accepts ONLY the type's labels,
+// so its values must come from the type definition — not from a format hint and not
+// from the generic type-name fallback, either of which produces a string that is
+// not a member of the type and is rejected on the way in.
+func TestEnumColumnDrawsItsOwnLabels(t *testing.T) {
+	labels := []string{"sad", "ok", "happy"}
+	f := withTypes(
+		oneTable("z.wide", 300, map[string]fixture.Column{
+			"m": {Type: "z.mood", Nullable: false, Distinct: &fixture.Fact[int64]{Value: 3, Confidence: fixture.Estimated}},
+		}),
+		map[string]fixture.UserType{"z.mood": {Kind: "enum", Labels: labels, LabelCount: 3}},
+	)
+	res, err := Generate(f, Options{Seed: 5})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	allowed := map[string]bool{}
+	for _, l := range labels {
+		allowed[l] = true
+	}
+	seen := map[string]bool{}
+	for i, row := range res.Tables[0].Rows {
+		s, ok := row[0].(string)
+		if !ok {
+			t.Fatalf("row %d: got %T, want string", i, row[0])
+		}
+		if !allowed[s] {
+			t.Fatalf("row %d: %q is not a label of z.mood %v — Postgres rejects it", i, s, labels)
+		}
+		seen[s] = true
+	}
+	// Cardinality is shape: with 300 rows over 3 labels every label should appear.
+	if len(seen) != len(labels) {
+		t.Errorf("only %d of %d labels used; the column's cardinality was not reproduced", len(seen), len(labels))
+	}
+}
+
+// TestStrictEnumUsesTheSamePlaceholdersAsTheDDL: under privacy:strict the labels
+// are withheld and only the count survives. The engine and the DDL emitter both
+// invent placeholders, and they MUST agree — a single disagreement means every
+// insert of the missing label is rejected as not a member of the type. Both call
+// EffectiveLabels, and this pins the contract.
+func TestStrictEnumUsesTheSamePlaceholdersAsTheDDL(t *testing.T) {
+	ut := fixture.UserType{Kind: "enum", LabelCount: 3} // vocabulary redacted
+	f := withTypes(
+		oneTable("z.t", 100, map[string]fixture.Column{"m": {Type: "z.mood", Nullable: false}}),
+		map[string]fixture.UserType{"z.mood": ut},
+	)
+	res, err := Generate(f, Options{Seed: 2})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	allowed := map[string]bool{}
+	for _, l := range ut.EffectiveLabels() {
+		allowed[l] = true
+	}
+	if len(allowed) != 3 {
+		t.Fatalf("EffectiveLabels returned %d labels, want 3", len(allowed))
+	}
+	for i, row := range res.Tables[0].Rows {
+		if s := row[0].(string); !allowed[s] {
+			t.Fatalf("row %d: %q is not one of the placeholder labels the DDL creates", i, s)
+		}
+	}
+}
+
+// TestDomainColumnGeneratesItsBaseType: a domain is a base type plus constraints,
+// so a domain over integer must generate integers. Reading it as an opaque name fell
+// through to the text fallback and the server refused the value:
+//
+//	unable to encode "val_14" into binary format for int4 (OID 23)
+func TestDomainColumnGeneratesItsBaseType(t *testing.T) {
+	f := withTypes(
+		oneTable("z.wide", 50, map[string]fixture.Column{
+			"pos": {
+				Type:     "z.positive_int",
+				Nullable: false,
+				Distinct: &fixture.Fact[int64]{Value: 50, Confidence: fixture.Estimated},
+				Range:    &fixture.Range{Min: int64(1), Max: int64(50)},
+			},
+		}),
+		map[string]fixture.UserType{"z.positive_int": {Kind: "domain", Base: "integer", Check: "(VALUE > 0)"}},
+	)
+	res, err := Generate(f, Options{Seed: 9})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	for i, row := range res.Tables[0].Rows {
+		v, ok := row[0].(int64)
+		if !ok {
+			t.Fatalf("row %d: got %T (%v), want int64 for a domain over integer", i, row[0], row[0])
+		}
+		// The declared range comes from production, which satisfied the domain's
+		// CHECK — so generating within it satisfies the CHECK too. This is what keeps
+		// `value for domain violates check constraint` from firing.
+		if v < 1 || v > 50 {
+			t.Fatalf("row %d: %d escaped the declared range [1,50] and would violate CHECK (VALUE > 0)", i, v)
+		}
+	}
+}
+
+// TestDomainOverDomainResolvesToTheBottom: domains can nest, and only the ultimate
+// base type says how to build a value.
+func TestDomainOverDomainResolvesToTheBottom(t *testing.T) {
+	f := withTypes(
+		oneTable("z.t", 10, map[string]fixture.Column{
+			"c": {Type: "z.outer", Nullable: false, Range: &fixture.Range{Min: int64(5), Max: int64(9)}},
+		}),
+		map[string]fixture.UserType{
+			"z.outer": {Kind: "domain", Base: "z.inner"},
+			"z.inner": {Kind: "domain", Base: "bigint"},
+		},
+	)
+	res, err := Generate(f, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if _, ok := res.Tables[0].Rows[0][0].(int64); !ok {
+		t.Fatalf("got %T, want int64 through two domain levels", res.Tables[0].Rows[0][0])
+	}
+}
+
+// TestExoticTypesGetValidLiterals: pgx encodes a plain string for most Postgres
+// types, so the bug was never "strings don't encode" — it was that the generic
+// fallback "val_141" is not a valid literal for a type with a real grammar:
+//
+//	unable to encode "val_141" into binary format for inet (OID 869)
+//
+// Each case here asserts the shape a valid literal must have. The values are also
+// checked against real Postgres in TestHydrateExoticTypesRoundTrip.
+func TestExoticTypesGetValidLiterals(t *testing.T) {
+	cases := []struct {
+		colType string
+		check   func(string) bool
+		want    string
+	}{
+		{"inet", func(s string) bool { return strings.HasPrefix(s, "192.0.2.") }, "a 192.0.2.x address"},
+		{"cidr", func(s string) bool { return strings.HasPrefix(s, "192.0.2.") }, "a 192.0.2.x address"},
+		{"macaddr", func(s string) bool { return strings.Count(s, ":") == 5 }, "six colon-separated octets"},
+		{"macaddr8", func(s string) bool { return strings.Count(s, ":") == 7 }, "eight colon-separated octets"},
+		{"interval", func(s string) bool { return strings.HasSuffix(s, "seconds") }, "an interval literal"},
+		{"xml", func(s string) bool { return strings.HasPrefix(s, "<value>") }, "an XML element"},
+		{"point", func(s string) bool { return strings.HasPrefix(s, "(") && strings.HasSuffix(s, ")") }, "a point literal"},
+		{"jsonb", func(s string) bool { return s == "{}" }, "parseable JSON"},
+		{"json", func(s string) bool { return s == "{}" }, "parseable JSON"},
+		{"text[]", func(s string) bool { return strings.HasPrefix(s, "{") && strings.HasSuffix(s, "}") }, "an array literal"},
+		{"bit(3)", func(s string) bool { return len(s) == 3 && strings.Trim(s, "01") == "" }, "exactly 3 bits"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.colType, func(t *testing.T) {
+			f := oneTable("public.t", 20, map[string]fixture.Column{"c": {Type: tc.colType, Nullable: false}})
+			res, err := Generate(f, Options{Seed: 4})
+			if err != nil {
+				t.Fatalf("Generate: %v", err)
+			}
+			for i, row := range res.Tables[0].Rows {
+				s, ok := row[0].(string)
+				if !ok {
+					t.Fatalf("row %d: got %T, want a string literal", i, row[0])
+				}
+				if !tc.check(s) {
+					t.Fatalf("row %d: %q is not %s for %s", i, s, tc.want, tc.colType)
+				}
+			}
+		})
+	}
+}
+
+// TestUnsupportedTypeIsNamed: a type with no synthesis rule must be refused BEFORE
+// generation, naming the table and column. Previously it produced "val_141" and
+// failed hundreds of thousands of rows later as a pgx internals message that named
+// neither, reading as a rowshape defect rather than a decision for the operator.
+func TestUnsupportedTypeIsNamed(t *testing.T) {
+	for _, typ := range []string{"tsvector", "int4range", "polygon"} {
+		t.Run(typ, func(t *testing.T) {
+			f := oneTable("public.t", 5, map[string]fixture.Column{"weird": {Type: typ}})
+			_, err := Generate(f, Options{Seed: 1})
+			if err == nil {
+				t.Fatalf("Generate succeeded for %s; want a named refusal", typ)
+			}
+			for _, want := range []string{"public.t", "weird", typ} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// TestEnumIsNotMistakenForAnUnsupportedType: the refusal above must not fire for a
+// type the fixture actually DEFINES. An enum named e.g. "public.daterange" would
+// otherwise be rejected by the name-suffix heuristic despite being fully described.
+func TestEnumIsNotMistakenForAnUnsupportedType(t *testing.T) {
+	f := withTypes(
+		oneTable("public.t", 5, map[string]fixture.Column{"c": {Type: "public.daterange"}}),
+		map[string]fixture.UserType{"public.daterange": {Kind: "enum", Labels: []string{"x", "y"}, LabelCount: 2}},
+	)
+	if _, err := Generate(f, Options{Seed: 1}); err != nil {
+		t.Fatalf("a defined enum was refused as unsupported: %v", err)
+	}
+}
+
+// TestEnumArrayElementsAreLabels: an array OF an enum constrains its elements just
+// as the scalar type does. The array path builds elements from the type name alone
+// and cannot reach the type definitions, so without special handling an
+// `app.status[]` is filled with generic strings that are not members of the element
+// type and the insert is rejected.
+func TestEnumArrayElementsAreLabels(t *testing.T) {
+	f := withTypes(
+		oneTable("app.t", 60, map[string]fixture.Column{
+			"tags": {Type: "app.status[]", Nullable: false},
+		}),
+		map[string]fixture.UserType{"app.status": {Kind: "enum", Labels: []string{"pending", "paid"}, LabelCount: 2}},
+	)
+	res, err := Generate(f, Options{Seed: 6})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	for i, row := range res.Tables[0].Rows {
+		s := row[0].(string)
+		if s != `{"pending"}` && s != `{"paid"}` {
+			t.Fatalf("row %d: %q is not an array of app.status labels", i, s)
+		}
+	}
+}
+
+// TestDeclaredLengthIsHonored: a text column's `length` is the ONLY shape §6.1
+// permits it to carry, and ignoring it produces a WRONG VERDICT rather than merely
+// odd content.
+//
+// The observed case: a varchar(12) column whose production values are 2-5
+// characters (pull recorded length {min: 2, max: 5}) hydrated as 9-character
+// "slug-8999" values, so validating `ALTER COLUMN vc TYPE varchar(8)` — which the
+// real data satisfies comfortably — returned FAIL with `value too long for type
+// character varying(8)`. A FAIL the migration would not have produced is the
+// failure mode this format exists to prevent, in the direction that destroys trust.
+func TestDeclaredLengthIsHonored(t *testing.T) {
+	max := int64(5)
+	min := int64(2)
+	f := oneTable("z.wide", 9000, map[string]fixture.Column{
+		"vc": {
+			Type:     "character varying(12)", // the type allows 12...
+			Nullable: false,
+			Distinct: &fixture.Fact[int64]{Value: 9000, Confidence: fixture.Estimated},
+			Format:   "slug",
+			// ...but production never exceeded 5.
+			Length: &fixture.Length{Min: &min, Max: &max},
+		},
+	})
+	res, err := Generate(f, Options{Seed: 42})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	for i, row := range res.Tables[0].Rows {
+		s := row[0].(string)
+		if int64(len(s)) > max {
+			t.Fatalf("row %d: %q is %d chars but the fixture declares length.max=%d; "+
+				"a migration narrowing this column would FAIL against data production never held",
+				i, s, len(s), max)
+		}
+	}
+}
+
+// TestUniqueColumnStaysUniqueUnderDeclaredLength: honoring length.max must not cost
+// uniqueness. 9000 distinct values must still fit in 5 characters (36^5 is ample),
+// and the clamp must not be the thing that collapses them.
+func TestUniqueColumnStaysUniqueUnderDeclaredLength(t *testing.T) {
+	max := int64(5)
+	const rows = 9000
+	f := oneTable("z.wide", rows, map[string]fixture.Column{
+		"vc": {
+			Type:     "character varying(12)",
+			Nullable: false,
+			Unique:   &fixture.Fact[bool]{Value: true, Confidence: fixture.Exact, Via: "constraint"},
+			Format:   "slug",
+			Length:   &fixture.Length{Max: &max},
+		},
+	})
+	res, err := Generate(f, Options{Seed: 42})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	seen := make(map[string]bool, rows)
+	for i, row := range res.Tables[0].Rows {
+		s := row[0].(string)
+		if int64(len(s)) > max {
+			t.Fatalf("row %d: %q exceeds declared length.max=%d", i, s, max)
+		}
+		if seen[s] {
+			t.Fatalf("row %d: duplicate %q — honoring length.max collapsed a unique column", i, s)
+		}
+		seen[s] = true
+	}
+}
+
+// TestTypeWidthStillWinsWhenTighter: the two limits are independent, and the
+// TIGHTER one applies. A length.max wider than the column type must not be read as
+// permission to exceed the type.
+func TestTypeWidthStillWinsWhenTighter(t *testing.T) {
+	max := int64(50) // production values were long...
+	f := oneTable("public.t", 100, map[string]fixture.Column{
+		"code": {
+			Type:     "character(3)", // ...but the column only holds 3
+			Nullable: false,
+			Distinct: &fixture.Fact[int64]{Value: 5, Confidence: fixture.Estimated},
+			Format:   "free_text",
+			Length:   &fixture.Length{Max: &max},
+		},
+	})
+	res, err := Generate(f, Options{Seed: 1})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	for i, row := range res.Tables[0].Rows {
+		if s := row[0].(string); len(s) > 3 {
+			t.Fatalf("row %d: %q exceeds character(3) despite a wider declared length", i, s)
+		}
+	}
+}
+
+// TestNonUniqueClampKeepsTheValueRecognizable: for a non-unique column the clamp
+// keeps as much of the rendered value as the ordinal leaves room for, so an email
+// narrowed to 19 characters still reads as an email instead of becoming a bare
+// ordinal. This is the one place recognizability is preserved; a unique column
+// trades it away for injectivity.
+func TestNonUniqueClampKeepsTheValueRecognizable(t *testing.T) {
+	max := int64(19)
+	f := oneTable("public.users", 200, map[string]fixture.Column{
+		"email": {
+			Type:     "text",
+			Nullable: false,
+			Distinct: &fixture.Fact[int64]{Value: 150, Confidence: fixture.Estimated},
+			Format:   "email",
+			Length:   &fixture.Length{Max: &max},
+		},
+	})
+	res, err := Generate(f, Options{Seed: 8})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	for i, row := range res.Tables[0].Rows {
+		s := row[0].(string)
+		if int64(len(s)) > max {
+			t.Fatalf("row %d: %q exceeds length.max=%d", i, s, max)
+		}
+		if !strings.HasPrefix(s, "user_") {
+			t.Fatalf("row %d: %q lost the rendered prefix; a clamped email should still read as one", i, s)
+		}
+	}
+}

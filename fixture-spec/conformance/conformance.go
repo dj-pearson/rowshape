@@ -111,6 +111,8 @@ func CheckEmitter(f *fixture.Fixture) []Violation {
 		}
 	}
 
+	vs = append(vs, checkUserTypes(f)...)
+
 	// The digest MUST be stable across runs against an unchanged fixture (§11).
 	d1, e1 := fixture.Digest(f)
 	d2, e2 := fixture.Digest(f)
@@ -119,6 +121,76 @@ func CheckEmitter(f *fixture.Fixture) []Violation {
 	}
 
 	return vs
+}
+
+// checkUserTypes enforces the §6.7 emitter MUSTs for user-defined types:
+// every enum/domain a column references is DEFINED, an enum carries a label_count
+// even when its vocabulary is withheld, and a domain names a base type.
+//
+// The referenced-but-undefined case is the one with teeth. A column's `type` is
+// only a name, so an undefined `app.status` leaves a consumer with nothing to
+// create — the failure is not a missing statistic but a database that cannot be
+// built at all. The rule exists because the reference implementation shipped
+// exactly that fixture: pull recorded enum-typed columns and no definitions, and
+// hydrate died on `type "app.status" does not exist`.
+func checkUserTypes(f *fixture.Fixture) []Violation {
+	var vs []Violation
+
+	for name := range f.Types {
+		t := f.Types[name]
+		where := "types." + name
+		switch t.Kind {
+		case "enum":
+			// label_count is what lets a strict fixture still be reconstructed, so it
+			// is required even where the vocabulary is deliberately absent.
+			if t.LabelCount <= 0 && len(t.Labels) == 0 {
+				vs = append(vs, Violation{"§6.7 enum declares its size", where, "enum has neither labels nor label_count, so no consumer can create it"})
+			}
+			if t.LabelCount > 0 && len(t.Labels) > 0 && t.LabelCount != len(t.Labels) {
+				vs = append(vs, Violation{"§6.7 enum declares its size", where, fmt.Sprintf("label_count is %d but %d labels are listed", t.LabelCount, len(t.Labels))})
+			}
+		case "domain":
+			if t.Base == "" {
+				vs = append(vs, Violation{"§6.7 domain names its base", where, "domain has no base type, so no consumer can create it"})
+			}
+		default:
+			vs = append(vs, Violation{"§6.7 known type kind", where, fmt.Sprintf("unknown kind %q (expected enum or domain)", t.Kind)})
+		}
+	}
+
+	// Every non-built-in column type MUST have a definition. Anything unqualified is
+	// taken to be built-in: `integer` and `character varying(3)` carry no schema,
+	// while a user-defined type is reported by pull as schema-qualified.
+	for tname := range f.Tables {
+		for cname := range f.Tables[tname].Columns {
+			typ := f.Tables[tname].Columns[cname].Type
+			if !looksUserDefined(typ) {
+				continue
+			}
+			if _, ok := f.Types[typ]; !ok {
+				vs = append(vs, Violation{"§6.7 referenced types are defined", tname + "." + cname,
+					fmt.Sprintf("column type %q is not a built-in and has no entry in `types`; a consumer cannot create it", typ)})
+			}
+		}
+	}
+	return vs
+}
+
+// looksUserDefined reports whether a column type names something the engine does
+// not already have.
+//
+// The test is that the name is schema-qualified, which is how a conformant emitter
+// reports a user-defined type and never how it reports a built-in. Array and
+// length modifiers are stripped first so `app.status[]` and `app.code(4)` resolve
+// to the same name their definition is keyed by. A dot inside a modifier — as in
+// `numeric(10,2)` — is therefore never mistaken for a qualification.
+func looksUserDefined(typ string) bool {
+	t := strings.TrimSpace(typ)
+	if i := strings.IndexByte(t, '('); i >= 0 {
+		t = t[:i]
+	}
+	t = strings.TrimSuffix(strings.TrimSpace(t), "[]")
+	return strings.Contains(t, ".")
 }
 
 // checkConfidence enforces that a fact carries a valid confidence (RFC §6.1).

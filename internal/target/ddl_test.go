@@ -96,3 +96,136 @@ func TestDDLKeepsSecondaryIndexWithConstraintLikeName(t *testing.T) {
 		t.Errorf("an index with no matching constraint must still be created:\n%s", all)
 	}
 }
+
+// TestDDLCreatesUserDefinedTypes: a column typed with an enum or a domain needs
+// that type to EXIST before its CREATE TABLE runs.
+//
+// A fixture records a column's type as a name. For `integer` that is enough —
+// every server has one. For `z.mood` it is not, and the DDL failed outright:
+//
+//	ERROR: type "z.mood" does not exist (SQLSTATE 42704)
+//
+// which meant no schema using a Postgres enum or domain could be hydrated at all.
+func TestDDLCreatesUserDefinedTypes(t *testing.T) {
+	f := &fixture.Fixture{
+		Types: map[string]fixture.UserType{
+			"z.mood":         {Kind: "enum", Labels: []string{"sad", "ok", "happy"}, LabelCount: 3},
+			"z.positive_int": {Kind: "domain", Base: "integer", Check: "(VALUE > 0)", NotNull: true},
+		},
+		Tables: map[string]fixture.Table{
+			"z.wide": {
+				Rows: fixture.Fact[int64]{Value: 10},
+				Columns: map[string]fixture.Column{
+					"m":   {Type: "z.mood", Nullable: false},
+					"pos": {Type: "z.positive_int", Nullable: false},
+				},
+			},
+		},
+	}
+	stmts := DDL(f)
+	joined := strings.Join(stmts, "\n")
+
+	// Enum labels keep declaration order: Postgres orders the type by it, so a
+	// migration that compares or sorts the column depends on it.
+	wantEnum := `CREATE TYPE "z"."mood" AS ENUM ('sad', 'ok', 'happy')`
+	if !strings.Contains(joined, wantEnum) {
+		t.Errorf("missing enum definition\nwant: %s\ngot:\n%s", wantEnum, joined)
+	}
+	wantDomain := `CREATE DOMAIN "z"."positive_int" AS integer NOT NULL CHECK (VALUE > 0)`
+	if !strings.Contains(joined, wantDomain) {
+		t.Errorf("missing domain definition\nwant: %s\ngot:\n%s", wantDomain, joined)
+	}
+
+	// Ordering is the point: schema, then types, then the table that uses them.
+	iSchema := strings.Index(joined, "CREATE SCHEMA")
+	iType := strings.Index(joined, "CREATE TYPE")
+	iDomain := strings.Index(joined, "CREATE DOMAIN")
+	iTable := strings.Index(joined, "CREATE TABLE")
+	if !(iSchema < iType && iType < iTable) || !(iDomain < iTable) {
+		t.Errorf("statement order wrong: schema=%d type=%d domain=%d table=%d\n%s",
+			iSchema, iType, iDomain, iTable, joined)
+	}
+}
+
+// TestDDLTypeSchemaIsCreated: a user-defined type can live in a schema that holds
+// no table, so the type names must contribute to the CREATE SCHEMA set — otherwise
+// CREATE TYPE targets a schema that does not exist yet.
+func TestDDLTypeSchemaIsCreated(t *testing.T) {
+	f := &fixture.Fixture{
+		Types: map[string]fixture.UserType{
+			"enums.mood": {Kind: "enum", Labels: []string{"a", "b"}, LabelCount: 2},
+		},
+		Tables: map[string]fixture.Table{
+			"app.t": {
+				Rows:    fixture.Fact[int64]{Value: 1},
+				Columns: map[string]fixture.Column{"m": {Type: "enums.mood"}},
+			},
+		},
+	}
+	joined := strings.Join(DDL(f), "\n")
+	if !strings.Contains(joined, `CREATE SCHEMA IF NOT EXISTS "enums"`) {
+		t.Errorf("type's own schema was not created:\n%s", joined)
+	}
+	if strings.Index(joined, `CREATE SCHEMA IF NOT EXISTS "enums"`) > strings.Index(joined, "CREATE TYPE") {
+		t.Errorf("schema must be created before the type in it:\n%s", joined)
+	}
+}
+
+// TestDDLStrictEnumUsesPlaceholders: under privacy:strict the vocabulary is
+// withheld and only label_count survives (RFC §8.2). The type must still be
+// created, at the right size — an enum column is otherwise unhydratable, because no
+// arbitrary string is a member of the type.
+func TestDDLStrictEnumUsesPlaceholders(t *testing.T) {
+	f := &fixture.Fixture{
+		Types: map[string]fixture.UserType{
+			"z.mood": {Kind: "enum", LabelCount: 3}, // labels redacted
+		},
+		Tables: map[string]fixture.Table{
+			"z.t": {Rows: fixture.Fact[int64]{Value: 1}, Columns: map[string]fixture.Column{"m": {Type: "z.mood"}}},
+		},
+	}
+	joined := strings.Join(DDL(f), "\n")
+	want := `CREATE TYPE "z"."mood" AS ENUM ('label_0', 'label_1', 'label_2')`
+	if !strings.Contains(joined, want) {
+		t.Errorf("strict enum not reconstructed at its declared size\nwant: %s\ngot:\n%s", want, joined)
+	}
+}
+
+// TestDDLEnumLabelQuoting: labels are arbitrary text from the source catalog, so a
+// label containing an apostrophe must not be able to break out of the statement.
+func TestDDLEnumLabelQuoting(t *testing.T) {
+	f := &fixture.Fixture{
+		Types: map[string]fixture.UserType{
+			"public.st": {Kind: "enum", Labels: []string{"it's", "ok"}, LabelCount: 2},
+		},
+		Tables: map[string]fixture.Table{
+			"public.t": {Rows: fixture.Fact[int64]{Value: 1}, Columns: map[string]fixture.Column{"s": {Type: "public.st"}}},
+		},
+	}
+	joined := strings.Join(DDL(f), "\n")
+	if !strings.Contains(joined, `'it''s'`) {
+		t.Errorf("apostrophe in an enum label was not escaped:\n%s", joined)
+	}
+}
+
+// TestDDLOpaqueDomainCheckIsNotInvented: privacy:strict replaces a domain's CHECK
+// with "opaque". The domain must still be created, WITHOUT a constraint — emitting
+// `CHECK opaque` would be a syntax error, and inventing a real predicate would
+// constrain hydrated data in a way production may not.
+func TestDDLOpaqueDomainCheckIsNotInvented(t *testing.T) {
+	f := &fixture.Fixture{
+		Types: map[string]fixture.UserType{
+			"z.d": {Kind: "domain", Base: "integer", Check: "opaque"},
+		},
+		Tables: map[string]fixture.Table{
+			"z.t": {Rows: fixture.Fact[int64]{Value: 1}, Columns: map[string]fixture.Column{"c": {Type: "z.d"}}},
+		},
+	}
+	joined := strings.Join(DDL(f), "\n")
+	if !strings.Contains(joined, `CREATE DOMAIN "z"."d" AS integer`) {
+		t.Errorf("domain not created:\n%s", joined)
+	}
+	if strings.Contains(joined, "opaque") {
+		t.Errorf("the opaque placeholder leaked into SQL:\n%s", joined)
+	}
+}
