@@ -297,6 +297,14 @@ func (i Index) MarshalYAML() (any, error) {
 			return nil, err
 		}
 	}
+	// Include is payload, not key — and it has to survive for the same reason Keys
+	// does: dropped here, a covering UNIQUE index reaches the disposable database
+	// with its payload folded into the key, enforcing strictly less than production.
+	if len(i.Include) > 0 {
+		if err := appendField(n, "include", i.Include); err != nil {
+			return nil, err
+		}
+	}
 	if i.Unique {
 		if err := appendField(n, "unique", i.Unique); err != nil {
 			return nil, err

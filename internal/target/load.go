@@ -50,7 +50,15 @@ func Load(ctx context.Context, t Target, f *fixture.Fixture, opts hydrate.Option
 
 	for _, stmt := range DDL(f) {
 		if _, err := tx.Exec(ctx, stmt); err != nil {
-			return nil, fmt.Errorf("ddl failed: %w", err)
+			// Name the statement, not just the server's complaint. A missing extension
+			// reports as `extension "citext" is not available`, which says nothing about
+			// WHY rowshape wanted it or what to do; with the statement attached the
+			// operator can see that the fixture requires citext and either install it or
+			// point --ephemeral at an image that has it. Deliberately fatal rather than
+			// best-effort: an extension type cannot be degraded to text, because a citext
+			// column is case-insensitive and a text one is not, and quietly swapping them
+			// would be a wrong verdict rather than a loud failure.
+			return nil, fmt.Errorf("ddl failed on `%s`: %w", stmt, err)
 		}
 	}
 

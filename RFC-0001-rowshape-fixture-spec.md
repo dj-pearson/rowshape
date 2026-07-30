@@ -104,6 +104,9 @@ tables:
 
 types:
   public.status: { ... }       # §6.7 (user-defined types, optional)
+
+extensions:
+  citext: { schema: public }   # §6.8 (required extensions, optional)
 ```
 
 `tables` is a map keyed by qualified name, not a list. Maps diff cleanly when a
@@ -241,6 +244,11 @@ expensive question in §7.2 is already answered by the DDL.
         method: btree
         keys: ["lower(email)"]
         unique: true
+      - name: users_cust_created         # a COVERING index
+        method: btree
+        columns: [customer_id, created_at]
+        include: [total]                 # payload, NOT part of the key
+        unique: true
 ```
 
 `bytes` and `bloat_estimate` exist because index rebuild time is a first-order
@@ -254,8 +262,24 @@ key at all — so an emitter that records only `columns` describes it as having 
 keys, and a consumer rebuilding the schema drops it. That is not a lost
 statistic: a UNIQUE index present in production and absent from the target is a
 constraint no longer enforced, so a migration that violates it can be reported
-as safe. For an all-plain-column index `keys` SHOULD be omitted, since it would
-merely restate `columns`.
+as safe.
+
+`keys` MUST also be present when a key carries anything a bare column name
+cannot express — an ordering (`DESC`, `NULLS FIRST`), a collation, or a
+non-default operator class. These are not decoration. An index declared
+`USING gin (email gin_trgm_ops)` and rebuilt from the column name alone does not
+build at all (`data type text has no default operator class for access method
+"gin"`), so the target silently lacks an index production has. For an index whose
+keys are plain ascending columns on their default operator class, `keys` SHOULD
+be omitted, since it would merely restate `columns`.
+
+`include` carries a covering index's INCLUDE payload — columns stored in the
+index but NOT part of its key. It MUST be recorded separately from `columns`,
+and a consumer MUST NOT fold it into the key. The key is what a UNIQUE index
+ENFORCES: recording `UNIQUE (customer_id, created_at) INCLUDE (total)` as unique
+on all three describes a strictly weaker constraint, so the target accepts rows
+production rejects and a migration that violates the real two-column uniqueness
+is reported as safe.
 
 `partial` is the predicate alone, without the leading `WHERE`. A consumer MUST
 reproduce a partial index WITH its predicate: the predicate is what gives the
@@ -336,6 +360,51 @@ reject data production accepted.
 Types that are neither enum nor domain (composite, range, and engine-specific
 types) are outside this version. An emitter MUST NOT guess a definition for one,
 and a consumer meeting an unresolvable type MUST report it by name.
+
+### 6.8 Required extensions
+
+```yaml
+extensions:
+  citext:  { schema: public }
+  pg_trgm: { schema: public }
+  vector:  { schema: ext }
+```
+
+§6.7 covers a type the database itself defines. This covers the other case: a
+type that arrives with an ENGINE EXTENSION and cannot be reconstructed from the
+catalog at all. A `citext` column names something a freshly created disposable
+database has never heard of, so the DDL fails with `type "citext" does not
+exist` and validation cannot run on the schema at all — the same for `hstore`,
+`ltree`, PostGIS `geometry`, and pgvector's `vector`.
+
+An extension requirement can also hide where no column type mentions it: an
+index declared `USING gin (email gin_trgm_ops)` needs `pg_trgm` because of its
+OPERATOR CLASS (§6.5), not because of any column's type.
+
+An emitter MUST record every extension the read schema actually references —
+resolved from the types its columns carry and the operator classes its indexes
+use — and MUST NOT record extensions merely INSTALLED on the source. Recording
+all of them would make a fixture demand PostGIS of a disposable server for a
+schema that never touches it. An extension present in every database from
+initialization (`plpgsql`) carries no information and SHOULD be omitted.
+
+`schema` is where the extension's objects live, and matters because a type name
+in a column can be schema-qualified: `ext.citext` and `public.citext` are
+different strings, and only one resolves.
+
+No VERSION is recorded. The claim is "this schema needs citext", not "it needs
+citext 1.6" — pinning would make a fixture refuse to hydrate on a server that
+ships a different version, for no gain, since the target only has to provide the
+type.
+
+A consumer MUST install the recorded extensions before creating types or tables,
+and MUST fail loudly, naming the extension, when one is unavailable. It MUST NOT
+substitute a built-in type for a missing extension type: `citext` is
+case-insensitive and `text` is not, so the substitution changes what the target
+enforces and turns a loud failure into a wrong verdict.
+
+An extension name is schema, not data, so `extensions` is emitted at every
+privacy level and is not a `--leaks` finding (§8.3).
 
 ## 7. Confidence
 

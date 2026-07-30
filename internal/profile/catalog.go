@@ -13,6 +13,8 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/rowshape/rowshape/internal/fixture"
@@ -68,6 +70,7 @@ func read(ctx context.Context, conn *pgx.Conn, opts Options, profile bool) (*fix
 	r := &reader{
 		tx:                tx,
 		attNames:          map[uint32]map[int16]string{},
+		opclassUses:       map[uint32]struct{}{},
 		privacy:           opts.Privacy,
 		maxEscalationRows: effectiveCap(opts.MaxEscalationRows),
 		warn:              opts.Warn,
@@ -112,6 +115,15 @@ func read(ctx context.Context, conn *pgx.Conn, opts Options, profile bool) (*fix
 	}
 	f.Types = types
 
+	// Then the extensions those types and the index operator classes come from
+	// (§6.8). This runs last for the same reason: it is driven by the type and
+	// opclass OIDs the table loop actually saw, so nothing unreferenced is recorded.
+	exts, err := r.extensions(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read required extensions: %w", err)
+	}
+	f.Extensions = exts
+
 	// Record the profile mode (RFC §7.3): `exact` for a full pass, `targeted` when
 	// auto-escalation fired on a sample-based pass, otherwise `fast`.
 	if profile {
@@ -147,6 +159,10 @@ type reader struct {
 	// domainBase maps a domain's rendered name to its base type's rendered name, so
 	// profiling can categorize a domain-typed column by what it actually holds.
 	domainBase map[string]string
+	// opclassUses holds every operator class OID an in-scope index key uses, so
+	// extensions can resolve the ones an extension owns (§6.8). An index declared
+	// `gin (email gin_trgm_ops)` needs pg_trgm and no column type says so.
+	opclassUses map[uint32]struct{}
 }
 
 // profileType is the type a column should be PROFILED as: a domain reduces to its
@@ -461,14 +477,50 @@ func (r *reader) indexes(ctx context.Context, oid uint32) ([]fixture.Index, erro
 	//
 	// indnkeyatts, not indnatts: an INCLUDE column is payload, not part of the key,
 	// and emitting it as one would change what the index enforces.
+	// The rendered key is assembled here rather than taken from pg_get_indexdef's
+	// per-column form, because that form returns the key EXPRESSION only. It was
+	// believed to include "any DESC or operator class" and it does not: an index
+	// declared `(created_at DESC NULLS LAST)` renders as `created_at`, and
+	// `gin (email gin_trgm_ops)` renders as `email`. So the ordering was silently
+	// dropped, and the trigram index was rebuilt without its operator class and
+	// failed to build at all (`data type text has no default operator class for
+	// access method "gin"`), leaving the disposable database without an index
+	// production has.
+	//
+	// indclass, indoption and indcollation are 0-based vectors parallel to indkey.
+	// Each part is appended only when it is NOT the default, so an ordinary
+	// ascending btree key still renders as the bare column name and fixtures that
+	// have one do not churn:
+	//
+	//   - operator class: omitted when opcdefault, schema-qualified otherwise (the
+	//     extension providing it may not be on the target's search_path);
+	//   - DESC: bit 0 of indoption;
+	//   - NULLS FIRST/LAST: bit 1, emitted only when it differs from the default
+	//     implied by the direction (ASC defaults to NULLS LAST, DESC to NULLS FIRST).
+	//
+	// indclass also feeds opclassUses, which is how an extension requirement hiding
+	// in an index reaches §6.8: gin_trgm_ops needs pg_trgm and no column type says so.
 	const q = `
 SELECT ic.relname, am.amname, ix.indisunique,
        pg_get_expr(ix.indpred, ix.indrelid),
        pg_relation_size(ic.oid),
        array_to_string(ix.indkey, ' '),
-       (SELECT array_agg(pg_get_indexdef(ix.indexrelid, k, true) ORDER BY k)
-          FROM generate_series(1, ix.indnkeyatts) k),
-       EXISTS (SELECT 1 FROM unnest(ix.indkey) ik WHERE ik = 0)
+       (SELECT array_agg(
+                 pg_get_indexdef(ix.indexrelid, k.n::int, true)
+                 || CASE WHEN oc.opcdefault THEN ''
+                         WHEN ocn.nspname = 'pg_catalog' THEN ' ' || quote_ident(oc.opcname)
+                         ELSE ' ' || quote_ident(ocn.nspname) || '.' || quote_ident(oc.opcname) END
+                 || CASE WHEN (ix.indoption[k.n-1] & 1) = 1 THEN ' DESC' ELSE '' END
+                 || CASE WHEN (ix.indoption[k.n-1] & 1) = 1 AND (ix.indoption[k.n-1] & 2) = 0 THEN ' NULLS LAST'
+                         WHEN (ix.indoption[k.n-1] & 1) = 0 AND (ix.indoption[k.n-1] & 2) = 2 THEN ' NULLS FIRST'
+                         ELSE '' END
+                 ORDER BY k.n)
+          FROM generate_series(1, ix.indnkeyatts) AS k(n)
+          JOIN pg_opclass oc ON oc.oid = ix.indclass[k.n-1]
+          JOIN pg_namespace ocn ON ocn.oid = oc.opcnamespace),
+       EXISTS (SELECT 1 FROM unnest(ix.indkey) ik WHERE ik = 0),
+       ix.indnkeyatts,
+       array_to_string(ix.indclass, ' ')
 FROM pg_index ix
 JOIN pg_class ic ON ic.oid = ix.indexrelid
 JOIN pg_am am ON am.oid = ic.relam
@@ -491,21 +543,44 @@ ORDER BY ic.relname`
 			indkey        string
 			keys          []string
 			hasExpression bool
+			nkeyatts      int16
+			indclass      string
 		)
-		if err := rows.Scan(&name, &method, &unique, &partial, &bytes, &indkey, &keys, &hasExpression); err != nil {
+		if err := rows.Scan(&name, &method, &unique, &partial, &bytes, &indkey, &keys,
+			&hasExpression, &nkeyatts, &indclass); err != nil {
 			return nil, err
 		}
+		for _, cls := range parseOIDs(indclass) {
+			r.opclassUses[cls] = struct{}{}
+		}
+
+		// indkey holds key columns FOLLOWED BY the INCLUDE payload, so it has to be
+		// split at indnkeyatts. Emitting the payload as part of the key widened a
+		// covering UNIQUE index's key: `UNIQUE (customer_id, created_at) INCLUDE
+		// (total)` was recorded as unique on all three, which is strictly weaker than
+		// what production enforces — a migration that violates the real two-column
+		// uniqueness could reach PASS.
+		attnums := parseAttnums(indkey)
+		keyAtts, includeAtts := splitKeyAtts(attnums, int(nkeyatts))
+
 		idx := fixture.Index{
 			Name:    name,
 			Method:  method,
 			Unique:  unique,
-			Columns: r.namesFor(oid, parseAttnums(indkey)),
+			Columns: r.namesFor(oid, keyAtts),
+			Include: r.namesFor(oid, includeAtts),
 			Bytes:   bytes,
 		}
-		// Only carried when a key really is an expression: for an all-plain-column
-		// index `keys` would just restate `columns`, and the redundancy would be one
-		// more thing that can disagree with itself.
-		if hasExpression {
+		// `keys` is the rendered form of each key, from pg_get_indexdef. It used to be
+		// carried only for an EXPRESSION index, on the reasoning that for plain columns
+		// it would just restate `columns`. It does not always: `DESC NULLS LAST` and a
+		// non-default operator class are part of the rendered key and appear nowhere in
+		// a bare column name, so an index recorded from `columns` alone came back with
+		// its ordering silently dropped, and a trigram index came back unbuildable
+		// (`data type text has no default operator class for access method "gin"`).
+		// Carry it whenever the rendering is not reproducible from the names, which
+		// keeps an ordinary btree index free of the redundancy.
+		if hasExpression || !keysMatchColumns(keys, idx.Columns) {
 			idx.Keys = keys
 		}
 		if partial != nil {
@@ -514,6 +589,48 @@ ORDER BY ic.relname`
 		out = append(out, idx)
 	}
 	return out, rows.Err()
+}
+
+// splitKeyAtts splits an index's attribute numbers into its key columns and its
+// INCLUDE payload at nkeyatts. A count outside the slice is clamped, so a catalog
+// shape this code did not anticipate degrades to "all of it is key" — the reading
+// that over-constrains rather than under-constrains.
+func splitKeyAtts(attnums []int16, nkeyatts int) ([]int16, []int16) {
+	if nkeyatts <= 0 || nkeyatts >= len(attnums) {
+		return attnums, nil
+	}
+	return attnums[:nkeyatts], attnums[nkeyatts:]
+}
+
+// keysMatchColumns reports whether pg_get_indexdef's rendered keys say no more
+// than the plain column names do. Postgres renders a plain ascending key on a
+// default operator class as just the (quoted where needed) column name, so any
+// difference means the rendering carries something `columns` cannot: an ordering,
+// a collation, or an operator class.
+func keysMatchColumns(keys, cols []string) bool {
+	if len(keys) != len(cols) {
+		return false
+	}
+	for i, k := range keys {
+		if k != cols[i] && k != `"`+cols[i]+`"` {
+			return false
+		}
+	}
+	return true
+}
+
+// parseOIDs parses a space-separated oidvector rendering ("3126 10042") into OIDs,
+// skipping anything that is not a number.
+func parseOIDs(s string) []uint32 {
+	var out []uint32
+	for _, f := range strings.Fields(s) {
+		n, err := strconv.ParseUint(f, 10, 32)
+		if err != nil {
+			continue
+		}
+		out = append(out, uint32(n))
+	}
+	return out
 }
 
 // references reads foreign keys and their on_delete action. Fan-out and

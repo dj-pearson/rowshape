@@ -48,8 +48,42 @@ type Fixture struct {
 	// every fixture written before it stays valid (RFC §12).
 	Types map[string]UserType `yaml:"types,omitempty"`
 
+	// Extensions names the engine extensions the read schema depends on, keyed by
+	// extension name (RFC §6.8).
+	//
+	// Types is not enough. A column typed `citext` names a type that only exists once
+	// the citext EXTENSION is installed, and a freshly created disposable database has
+	// none installed beyond plpgsql — so the DDL failed with
+	//
+	//	ERROR: type "citext" does not exist (SQLSTATE 42704)
+	//
+	// aborting the whole load and leaving `validate` unable to run at all on the
+	// schema. The same shape covers hstore, ltree, postgis geometry and pgvector's
+	// `vector`, and it covers operator classes too: an index declared
+	// `gin (email gin_trgm_ops)` needs pg_trgm even though no column type mentions it.
+	//
+	// Only the extensions the read schema actually references are recorded, resolved
+	// through pg_depend from the types and operator classes the scan saw — an
+	// extension merely installed on the source contributes nothing. Optional and
+	// omitted when empty, so every fixture written before it stays valid (RFC §12).
+	Extensions map[string]Extension `yaml:"extensions,omitempty"`
+
 	// X holds preserved x_-prefixed vendor extensions (RFC §12).
 	X map[string]any `yaml:",inline"`
+}
+
+// Extension is one engine extension the schema depends on (RFC §6.8).
+//
+// It deliberately records no VERSION. The fixture's claim is "this schema needs
+// citext", not "it needs citext 1.6": pinning a version would make a fixture
+// refuse to hydrate on a server that ships a different one, for no gain — the
+// disposable database only has to provide the type, and `CREATE EXTENSION IF NOT
+// EXISTS` gets whatever that server has.
+type Extension struct {
+	// Schema is where the extension's objects live. It matters because a type name
+	// can be schema-qualified — `ext.citext` and `public.citext` are different
+	// strings in a column's `type`, and only one of them resolves.
+	Schema string `yaml:"schema,omitempty"`
 }
 
 // UserType defines a user-defined column type (RFC §6.7).
@@ -348,7 +382,17 @@ type Index struct {
 	// uniqueness constraint then did not exist there, and a migration that violates
 	// it could PASS. When present, Keys is authoritative for reconstruction while
 	// `columns` keeps listing the plain-column subset the analyzers read.
-	Keys          []string `yaml:"keys,omitempty"`
+	Keys []string `yaml:"keys,omitempty"`
+	// Include are a covering index's INCLUDE payload columns — stored in the index
+	// but NOT part of its key (RFC §6.5).
+	//
+	// They have to be separate from `columns` because the key is what a UNIQUE index
+	// ENFORCES. Folding the payload in recorded
+	// `UNIQUE (customer_id, created_at) INCLUDE (total)` as unique on all three,
+	// which is strictly weaker: the disposable database then accepted rows the
+	// source database rejects, and a migration that violates the real two-column
+	// uniqueness reached PASS.
+	Include       []string `yaml:"include,omitempty"`
 	Unique        bool     `yaml:"unique,omitempty"`
 	Partial       string   `yaml:"partial,omitempty"` // a partial-index predicate
 	Bytes         int64    `yaml:"bytes,omitempty"`

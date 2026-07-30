@@ -31,10 +31,29 @@ func DDL(f *fixture.Fixture) []string {
 	for name := range f.Types {
 		schemas[schemaOf(name)] = true
 	}
+	// An extension can be installed into a schema no table lives in, and CREATE
+	// EXTENSION ... WITH SCHEMA requires that schema to exist already.
+	for _, e := range f.Extensions {
+		schemas[e.Schema] = true
+	}
 	for _, s := range sortedStrings(schemas) {
 		if s != "" && s != "public" {
 			stmts = append(stmts, "CREATE SCHEMA IF NOT EXISTS "+quoteIdent(s))
 		}
+	}
+
+	// Then the extensions, before the types — because an extension IS how some types
+	// arrive. A `citext` column named a type a fresh disposable database has never
+	// heard of, so the whole DDL failed with `type "citext" does not exist` and
+	// `validate` could not run at all on any schema using an extension type: citext
+	// on an email column, hstore, ltree, postgis geometry, pgvector's `vector`.
+	//
+	// IF NOT EXISTS, and no version: the fixture's claim is that the schema NEEDS
+	// citext, not that it needs a particular citext. Pinning would make a fixture
+	// refuse to hydrate on a server shipping a different one, for nothing — the
+	// disposable database only has to provide the type.
+	for _, name := range sortedKeys(f.Extensions) {
+		stmts = append(stmts, createExtension(name, f.Extensions[name]))
 	}
 
 	// Then the user-defined types, before any table that carries one as a column
@@ -154,6 +173,14 @@ func createIndex(table string, ix fixture.Index) string {
 	stmt := fmt.Sprintf("CREATE %sINDEX %s ON %s%s (%s)",
 		unique, quoteIdent(ix.Name), quoteTable(table), using, strings.Join(keys, ", "))
 
+	// INCLUDE payload, which must stay OUT of the key list above. Folding it in is
+	// what turned `UNIQUE (customer_id, created_at) INCLUDE (total)` into a
+	// three-column unique index — strictly weaker than what production enforces, so
+	// the disposable database accepted rows the source database rejects.
+	if len(ix.Include) > 0 {
+		stmt += " INCLUDE (" + strings.Join(quotedCols(ix.Include), ", ") + ")"
+	}
+
 	// A PARTIAL index used to be skipped entirely. That is the dangerous one to drop:
 	// a partial UNIQUE index is the standard soft-delete uniqueness pattern
 	// (`UNIQUE (email) WHERE deleted_at IS NULL`), and without it the disposable
@@ -167,6 +194,21 @@ func createIndex(table string, ix fixture.Index) string {
 			return ""
 		}
 		stmt += " WHERE " + ix.Partial
+	}
+	return stmt
+}
+
+// createExtension renders CREATE EXTENSION for one required extension (RFC §6.8).
+//
+// WITH SCHEMA only when the fixture recorded one: a type name in a column can be
+// schema-qualified (`ext.citext`), and installing the extension somewhere else
+// would leave that name unresolvable. Where the source did not record a schema,
+// the server's default is the honest choice — inventing `public` would be a guess
+// that silently disagrees with a search_path this code does not control.
+func createExtension(name string, e fixture.Extension) string {
+	stmt := "CREATE EXTENSION IF NOT EXISTS " + quoteIdent(name)
+	if e.Schema != "" {
+		stmt += " WITH SCHEMA " + quoteIdent(e.Schema)
 	}
 	return stmt
 }
